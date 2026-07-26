@@ -2,6 +2,9 @@
   <v-app-bar color="primary">
     <v-app-bar-title>任务日志</v-app-bar-title>
     <template #append>
+      <v-btn variant="text" prepend-icon="mdi-delete-sweep" :disabled="!hasCompleted" @click="handleClear">
+        清空已完成
+      </v-btn>
       <v-btn icon to="/admin">
         <v-icon>mdi-chevron-left</v-icon>
       </v-btn>
@@ -76,22 +79,22 @@
           <v-expansion-panels class="mt-4">
             <v-expansion-panel title="提交参数">
               <v-expansion-panel-text>
-                <pre class="text-caption">{{ formatJson(selectedTask.aliasValues) }}</pre>
+                <pre class="detail-pre">{{ formatJson(selectedTask.aliasValues) }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
             <v-expansion-panel title="请求 URL">
               <v-expansion-panel-text>
-                <pre class="text-caption text-wrap">{{ selectedTask.comfyuiUrl }}</pre>
+                <pre class="detail-pre">{{ selectedTask.comfyuiUrl }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
             <v-expansion-panel title="请求体">
               <v-expansion-panel-text>
-                <pre class="text-caption">{{ selectedTask.comfyuiRequestBody ? formatJson(selectedTask.comfyuiRequestBody) : '-' }}</pre>
+                <pre class="detail-pre">{{ selectedTask.comfyuiRequestBody ? formatJson(selectedTask.comfyuiRequestBody) : '-' }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
             <v-expansion-panel title="ComfyUI 响应">
               <v-expansion-panel-text>
-                <pre class="text-caption">{{ selectedTask.comfyuiResponse ? formatJson(selectedTask.comfyuiResponse) : '-' }}</pre>
+                <pre class="detail-pre">{{ selectedTask.comfyuiResponse ? formatJson(selectedTask.comfyuiResponse) : '-' }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
           </v-expansion-panels>
@@ -107,7 +110,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { listTasks, type TaskLog } from '@/api/tasks';
+import { listTasks, clearCompletedTasks, type TaskLog } from '@/api/tasks';
 
 const headers = [
   { title: '提交时间', key: 'createdAt' },
@@ -121,6 +124,7 @@ const tasks = ref<TaskLog[]>([]);
 const loading = ref(true);
 const detailDialog = ref(false);
 const selectedTask = ref<TaskLog | null>(null);
+const hasCompleted = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -168,10 +172,20 @@ function handleRowClick(_event: PointerEvent, data: { item: TaskLog }) {
 async function fetchTasks() {
   try {
     tasks.value = await listTasks();
+    hasCompleted.value = tasks.value.some(t => t.status === 'completed' || t.status === 'failed');
   } catch {
     // ignore
   } finally {
     loading.value = false;
+  }
+}
+
+async function handleClear() {
+  try {
+    const result = await clearCompletedTasks();
+    await fetchTasks();
+  } catch {
+    // ignore
   }
 }
 
@@ -186,3 +200,17 @@ onUnmounted(() => {
   }
 });
 </script>
+
+<style scoped>
+.detail-pre {
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgb(var(--v-theme-surface-light));
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+</style>

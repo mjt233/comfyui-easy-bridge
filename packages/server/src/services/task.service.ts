@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
@@ -65,10 +65,10 @@ export class TaskService {
     return this.db.select().from(schema.taskLogs).where(eq(schema.taskLogs.id, id)).get() ?? null;
   }
 
-  /** 列出所有任务日志（按提交时间升序） */
+  /** 列出所有任务日志（按提交时间降序，最新在前） */
   list() {
     return this.db.select().from(schema.taskLogs)
-      .orderBy(schema.taskLogs.createdAt).all();
+      .orderBy(desc(schema.taskLogs.createdAt)).all();
   }
 
   /** 更新任务状态和结果 */
@@ -92,5 +92,13 @@ export class TaskService {
     return this.db.select().from(schema.taskLogs)
       .where(eq(schema.taskLogs.status, 'pending'))
       .all();
+  }
+
+  /** 删除所有已完成和失败的任务，返回删除数量 */
+  clearCompleted(): number {
+    const result = this.db.delete(schema.taskLogs)
+      .where(inArray(schema.taskLogs.status, ['completed', 'failed']))
+      .run();
+    return result.changes;
   }
 }

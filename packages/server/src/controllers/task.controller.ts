@@ -22,5 +22,11 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       }
       res.json(task);
     },
+
+    /** 清理所有已完成和失败的任务日志 */
+    clearCompleted(_req: Request, res: Response): void {
+      const count = taskService.clearCompleted();
+      res.json({ deleted: count });
+    },
   };
 }

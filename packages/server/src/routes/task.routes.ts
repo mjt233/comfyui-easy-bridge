@@ -11,6 +11,7 @@ export function createTaskRoutes(db: BetterSQLite3Database<typeof schema>): Rout
   const auth = createAuthMiddleware(db);
 
   router.get('/', auth, controller.list);
+  router.delete('/completed', auth, controller.clearCompleted);
   router.get('/:taskId', auth, controller.getById);
 
   return router;

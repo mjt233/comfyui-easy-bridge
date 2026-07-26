@@ -21,3 +21,9 @@ export async function listTasks(): Promise<TaskLog[]> {
   const res = await client.get<TaskLog[]>('/tasks');
   return res.data;
 }
+
+/** 清理所有已完成和失败的任务日志 */
+export async function clearCompletedTasks(): Promise<{ deleted: number }> {
+  const res = await client.delete<{ deleted: number }>('/tasks/completed');
+  return res.data;
+}
