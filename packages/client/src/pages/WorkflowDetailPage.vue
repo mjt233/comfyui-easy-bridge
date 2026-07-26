@@ -1,173 +1,224 @@
 <template>
   <v-app-bar color="primary">
     <v-app-bar-title>{{ workflow?.name ?? '加载中...' }}</v-app-bar-title>
-    <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">返回</v-btn>
+    <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">
+      返回
+    </v-btn>
   </v-app-bar>
 
   <v-container>
-      <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
+    <v-alert
+      v-if="error"
+      type="error"
+      closable
+      class="mb-4"
+    >
+      {{ error }}
+    </v-alert>
 
-      <v-card class="mb-4">
+    <v-card class="mb-4">
+      <v-card-text>
+        <div><strong>ID:</strong> {{ workflow?.id }}</div>
+        <div><strong>名称:</strong> {{ workflow?.name }}</div>
+        <div><strong>创建时间:</strong> {{ workflow?.createdAt }}</div>
+      </v-card-text>
+      <v-card-actions>
+        <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">
+          编辑
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+
+    <v-card>
+      <v-card-title>
+        参数别名配置
+        <v-btn-toggle
+          v-model="viewMode"
+          variant="outlined"
+          density="compact"
+          color="primary"
+          class="ml-4"
+          mandatory
+        >
+          <v-btn value="chip" size="small">
+            字段
+          </v-btn>
+          <v-btn value="list" size="small">
+            列表
+          </v-btn>
+        </v-btn-toggle>
+      </v-card-title>
+      <v-card-text>
+        <p v-if="viewMode === 'chip'" class="text-body-2 text-grey mb-4">
+          下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
+        </p>
+        <p v-else class="text-body-2 text-grey mb-4">
+          下方按字段平铺列出所有可配置输入。点击行可配置别名和标签。
+        </p>
+
+        <template v-if="nodes.length > 0">
+          <v-table v-show="viewMode === 'chip'">
+            <thead>
+              <tr>
+                <th style="min-width: 100px">
+                  节点 ID
+                </th>
+                <th style="min-width: 140px">
+                  节点标题
+                </th>
+                <th>字段名</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(node, ni) in nodes" :key="ni">
+                <td style="min-width: 100px">
+                  {{ node.nodeId }}
+                </td>
+                <td style="min-width: 140px">
+                  {{ node.title }}
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap ga-2 align-center">
+                    <v-chip
+                      v-for="(info, fi) in node.fields"
+                      :key="fi"
+                      :color="info.paramId ? 'primary' : undefined"
+                      :variant="info.paramId ? 'flat' : 'outlined'"
+                      size="small"
+                      @click="openDialog(node, info)"
+                    >
+                      <span v-if="info.paramId && info.label">{{ info.alias }}</span>
+                      <span v-else>{{ info.name }}</span>
+                      <template v-if="info.paramId" #append>
+                        <span class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
+                      </template>
+                    </v-chip>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+
+          <v-table v-show="viewMode === 'list'">
+            <thead>
+              <tr>
+                <th style="min-width: 100px">
+                  节点 ID
+                </th>
+                <th style="min-width: 140px">
+                  节点标题
+                </th>
+                <th style="min-width: 120px">
+                  字段名
+                </th>
+                <th>默认值</th>
+                <th style="min-width: 120px">
+                  别名
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(item, i) in flatFields"
+                :key="i"
+                style="cursor: pointer"
+                @click="openDialog(getNode(item.nodeId)!, item)"
+              >
+                <td>{{ item.nodeId }}</td>
+                <td>{{ item.title }}</td>
+                <td>{{ item.name }}</td>
+                <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                  {{ item.value }}
+                </td>
+                <td>
+                  <v-chip
+                    v-if="item.paramId"
+                    size="small"
+                    color="primary"
+                    variant="flat"
+                  >
+                    {{ item.alias }}
+                    <template v-if="item.paramId" #append>
+                      <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
+                        {{ item.label || item.alias }}
+                      </span>
+                    </template>
+                  </v-chip>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+        </template>
+
+        <p v-else class="text-grey text-center py-4">
+          无法解析工作流 JSON，请检查原始数据
+        </p>
+      </v-card-text>
+    </v-card>
+
+    <v-dialog v-model="dialog.show" max-width="500">
+      <v-card>
+        <v-card-title>编辑参数</v-card-title>
         <v-card-text>
-          <div><strong>ID:</strong> {{ workflow?.id }}</div>
-          <div><strong>名称:</strong> {{ workflow?.name }}</div>
-          <div><strong>创建时间:</strong> {{ workflow?.createdAt }}</div>
+          <v-text-field
+            :model-value="dialog.fieldName"
+            label="字段名"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="mb-3"
+            readonly
+          />
+          <v-text-field
+            :model-value="dialog.fieldValue"
+            label="默认值"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="mb-3"
+            readonly
+          />
+          <v-text-field
+            v-model="dialog.alias"
+            label="接口字段别名"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="mb-3"
+          />
+          <v-text-field
+            v-model="dialog.label"
+            label="标签(可选)"
+            density="compact"
+            variant="outlined"
+            hide-details
+          />
         </v-card-text>
         <v-card-actions>
-          <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">编辑</v-btn>
+          <v-btn color="error" variant="text" @click="deleteFromDialog">
+            删除
+          </v-btn>
+          <v-spacer />
+          <v-btn variant="text" @click="dialog.show = false">
+            取消
+          </v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!dialog.fieldName || !dialog.alias || dialog.saving"
+            :loading="dialog.saving"
+            @click="saveDialog"
+          >
+            保存
+          </v-btn>
         </v-card-actions>
       </v-card>
+    </v-dialog>
 
-      <v-card>
-        <v-card-title>
-          参数别名配置
-          <v-btn-toggle
-            v-model="viewMode"
-            variant="outlined"
-            density="compact"
-            color="primary"
-            class="ml-4"
-            mandatory
-          >
-            <v-btn value="chip" size="small">字段</v-btn>
-            <v-btn value="list" size="small">列表</v-btn>
-          </v-btn-toggle>
-        </v-card-title>
-        <v-card-text>
-          <p v-if="viewMode === 'chip'" class="text-body-2 text-grey mb-4">
-            下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
-          </p>
-          <p v-else class="text-body-2 text-grey mb-4">
-            下方按字段平铺列出所有可配置输入。点击行可配置别名和标签。
-          </p>
-
-          <template v-if="nodes.length > 0">
-            <v-table v-show="viewMode === 'chip'">
-              <thead>
-                <tr>
-                  <th style="min-width: 100px">节点 ID</th>
-                  <th style="min-width: 140px">节点标题</th>
-                  <th>字段名</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(node, ni) in nodes" :key="ni">
-                  <td style="min-width: 100px">{{ node.nodeId }}</td>
-                  <td style="min-width: 140px">{{ node.title }}</td>
-                  <td>
-                    <div class="d-flex flex-wrap ga-2 align-center">
-                      <v-chip
-                        v-for="(info, fi) in node.fields"
-                        :key="fi"
-                        :color="info.paramId ? 'primary' : undefined"
-                        :variant="info.paramId ? 'flat' : 'outlined'"
-                        size="small"
-                        @click="openDialog(node, info)"
-                      >
-                        <span v-if="info.paramId && info.label">{{ info.alias }}</span>
-                        <span v-else>{{ info.name }}</span>
-                        <template #append v-if="info.paramId">
-                          <span class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
-                        </template>
-                      </v-chip>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </v-table>
-
-            <v-table v-show="viewMode === 'list'">
-              <thead>
-                <tr>
-                  <th style="min-width: 100px">节点 ID</th>
-                  <th style="min-width: 140px">节点标题</th>
-                  <th style="min-width: 120px">字段名</th>
-                  <th>默认值</th>
-                  <th style="min-width: 120px">别名</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(item, i) in flatFields"
-                  :key="i"
-                  style="cursor: pointer"
-                  @click="openDialog(getNode(item.nodeId)!, item)"
-                >
-                  <td>{{ item.nodeId }}</td>
-                  <td>{{ item.title }}</td>
-                  <td>{{ item.name }}</td>
-                  <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ item.value }}</td>
-                  <td>
-                    <v-chip
-                      v-if="item.paramId"
-                      size="small"
-                      color="primary"
-                      variant="flat"
-                    >{{ item.alias }}
-                      <template #append v-if="item.paramId">
-                        <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
-                          {{ item.label || item.alias }}
-                        </span>
-                      </template></v-chip>
-                  </td>
-                </tr>
-              </tbody>
-            </v-table>
-          </template>
-
-          <p v-else class="text-grey text-center py-4">无法解析工作流 JSON，请检查原始数据</p>
-        </v-card-text>
-      </v-card>
-
-      <v-dialog v-model="dialog.show" max-width="500">
-        <v-card>
-          <v-card-title>编辑参数</v-card-title>
-          <v-card-text>
-            <v-text-field
-              :model-value="dialog.fieldName"
-              label="字段名"
-              density="compact"
-              variant="outlined"
-              hide-details
-              class="mb-3"
-              readonly
-            />
-            <v-text-field
-              :model-value="dialog.fieldValue"
-              label="默认值"
-              density="compact"
-              variant="outlined"
-              hide-details
-              class="mb-3"
-              readonly
-            />
-            <v-text-field
-              v-model="dialog.alias"
-              label="接口字段别名"
-              density="compact"
-              variant="outlined"
-              hide-details
-              class="mb-3"
-            />
-            <v-text-field
-              v-model="dialog.label"
-              label="标签(可选)"
-              density="compact"
-              variant="outlined"
-              hide-details
-            />
-          </v-card-text>
-          <v-card-actions>
-            <v-btn color="error" variant="text" @click="deleteFromDialog">删除</v-btn>
-            <v-spacer />
-            <v-btn variant="text" @click="dialog.show = false">取消</v-btn>
-            <v-btn color="primary" variant="flat" :disabled="!dialog.fieldName || !dialog.alias || dialog.saving" :loading="dialog.saving" @click="saveDialog">保存</v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-dialog>
-
-      <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
-    </v-container>
+    <v-snackbar v-model="snackbar.show" :color="snackbar.color">
+      {{ snackbar.text }}
+    </v-snackbar>
+  </v-container>
 </template>
 
 <script setup lang="ts">

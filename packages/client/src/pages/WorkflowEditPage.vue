@@ -1,13 +1,22 @@
 <template>
   <v-app-bar color="primary">
     <v-app-bar-title>{{ isEdit ? '编辑工作流' : '新建工作流' }}</v-app-bar-title>
-    <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">返回</v-btn>
+    <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">
+      返回
+    </v-btn>
   </v-app-bar>
 
   <v-container>
     <v-card>
       <v-card-text>
-        <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
+        <v-alert
+          v-if="error"
+          type="error"
+          closable
+          class="mb-4"
+        >
+          {{ error }}
+        </v-alert>
 
         <v-text-field
           v-model="form.id"
@@ -23,7 +32,9 @@
           variant="text"
           class="mb-3"
           @click="generateId"
-        >随机生成</v-btn>
+        >
+          随机生成
+        </v-btn>
 
         <v-text-field
           v-model="form.name"
@@ -51,12 +62,18 @@
       </v-card-text>
       <v-card-actions class="pa-4">
         <v-spacer />
-        <v-btn variant="text" to="/admin">取消</v-btn>
-        <v-btn color="primary" :loading="saving" @click="handleSave">保存</v-btn>
+        <v-btn variant="text" to="/admin">
+          取消
+        </v-btn>
+        <v-btn color="primary" :loading="saving" @click="handleSave">
+          保存
+        </v-btn>
       </v-card-actions>
     </v-card>
 
-    <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
+    <v-snackbar v-model="snackbar.show" :color="snackbar.color">
+      {{ snackbar.text }}
+    </v-snackbar>
   </v-container>
 </template>
 

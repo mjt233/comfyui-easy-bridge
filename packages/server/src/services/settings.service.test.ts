@@ -10,7 +10,7 @@ describe('SettingsService', () => {
 
   beforeEach(() => {
     sqlite = new Database(':memory:');
-    sqlite.exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+    sqlite.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     const db = drizzle(sqlite, { schema });
     service = new SettingsService(db);
   });

@@ -76,7 +76,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
-      .send({ id: 'wf-detail', name: 'Detail Test', rawJson: JSON.stringify({ "1": { "inputs": { "v": "x" }, "class_type": "T", "_meta": { "title": "T" } } }) });
+      .send({ id: 'wf-detail', name: 'Detail Test', rawJson: JSON.stringify({ '1': { 'inputs': { 'v': 'x' }, 'class_type': 'T', '_meta': { 'title': 'T' } } }) });
 
     const res = await supertest(app)
       .get('/api/workflows/wf-detail')

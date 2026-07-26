@@ -2,20 +2,32 @@
   <v-app-bar color="primary">
     <v-app-bar-title>ComfyUI Easy Bridge</v-app-bar-title>
     <v-spacer />
-    <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">设置</v-btn>
-    <v-btn variant="text" @click="handleLogout" prepend-icon="mdi-logout">退出</v-btn>
+    <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
+      设置
+    </v-btn>
+    <v-btn variant="text" prepend-icon="mdi-logout" @click="handleLogout">
+      退出
+    </v-btn>
   </v-app-bar>
 
   <v-container>
     <v-row class="mb-4 align-center">
-      <v-col><h2 class="text-h5">工作流列表</h2></v-col>
+      <v-col>
+        <h2 class="text-h5">
+          工作流列表
+        </h2>
+      </v-col>
       <v-col cols="auto">
-        <v-btn color="primary" to="/admin/workflow/new" prepend-icon="mdi-plus">新建工作流</v-btn>
+        <v-btn color="primary" to="/admin/workflow/new" prepend-icon="mdi-plus">
+          新建工作流
+        </v-btn>
       </v-col>
     </v-row>
 
     <v-card v-if="workflows.length === 0">
-      <v-card-text class="text-center py-8 text-grey">暂无工作流，点击上方按钮新建</v-card-text>
+      <v-card-text class="text-center py-8 text-grey">
+        暂无工作流，点击上方按钮新建
+      </v-card-text>
     </v-card>
 
     <v-list v-else lines="two">
@@ -40,13 +52,19 @@
         <v-card-text>确定要删除该工作流吗？此操作不可撤销。</v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="deleteDialog = false">取消</v-btn>
-          <v-btn color="error" @click="confirmDelete">删除</v-btn>
+          <v-btn variant="text" @click="deleteDialog = false">
+            取消
+          </v-btn>
+          <v-btn color="error" @click="confirmDelete">
+            删除
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
-    <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
+    <v-snackbar v-model="snackbar.show" :color="snackbar.color">
+      {{ snackbar.text }}
+    </v-snackbar>
   </v-container>
 </template>
 

@@ -1,17 +1,28 @@
 <template>
   <v-container class="fill-height d-flex align-center justify-center">
     <v-card width="400" class="pa-4">
-      <v-card-title class="text-h5 text-center">ComfyUI Easy Bridge</v-card-title>
-      <v-card-subtitle class="text-center mb-4">管理员登录</v-card-subtitle>
+      <v-card-title class="text-h5 text-center">
+        ComfyUI Easy Bridge
+      </v-card-title>
+      <v-card-subtitle class="text-center mb-4">
+        管理员登录
+      </v-card-subtitle>
       <v-card-text>
-        <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
+        <v-alert
+          v-if="error"
+          type="error"
+          closable
+          class="mb-4"
+        >
+          {{ error }}
+        </v-alert>
         <v-text-field
           v-model="password"
           label="密码"
           type="password"
           variant="outlined"
-          @keyup.enter="handleLogin"
           :disabled="loading"
+          @keyup.enter="handleLogin"
         />
       </v-card-text>
       <v-card-actions class="justify-center pb-4">
@@ -20,7 +31,9 @@
           size="large"
           :loading="loading"
           @click="handleLogin"
-        >登录</v-btn>
+        >
+          登录
+        </v-btn>
       </v-card-actions>
     </v-card>
   </v-container>

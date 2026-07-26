@@ -1,11 +1,21 @@
 {
   "name": "comfyui-easy-bridge",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev:server": "pnpm --filter server dev",
     "dev:client": "pnpm --filter client dev",
     "build:server": "pnpm --filter server build",
     "build:client": "pnpm --filter client build",
-    "test": "pnpm --filter server test"
+    "test": "pnpm --filter server test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "eslint-plugin-vue": "^9.33.0",
+    "typescript-eslint": "^8.65.0",
+    "vue-eslint-parser": "^9.4.3"
   }
 }

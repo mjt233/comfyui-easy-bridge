@@ -10,7 +10,7 @@ export interface WorkflowParam {
 export function applyAliases(
   rawJson: string,
   params: WorkflowParam[],
-  aliasValues: Record<string, string>
+  aliasValues: Record<string, string>,
 ): string {
   const workflow = JSON.parse(rawJson);
 
@@ -35,7 +35,7 @@ export async function executeWorkflow(
   rawJson: string,
   params: WorkflowParam[],
   aliasValues: Record<string, string>,
-  comfyuiBaseUrl: string
+  comfyuiBaseUrl: string,
 ): Promise<unknown> {
   const modifiedJson = applyAliases(rawJson, params, aliasValues);
   const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
