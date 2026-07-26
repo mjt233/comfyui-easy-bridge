@@ -24,7 +24,7 @@ export interface CreateTaskInput {
 /** 更新任务结果的输入参数 */
 export interface UpdateTaskResult {
   /** 目标状态 */
-  status: 'completed' | 'failed';
+  status: 'queued' | 'pending' | 'completed' | 'failed';
   /** ComfyUI prompt_id */
   promptId?: string;
   /** ComfyUI 响应 JSON */

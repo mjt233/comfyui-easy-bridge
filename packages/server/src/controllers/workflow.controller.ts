@@ -111,6 +111,32 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       // 先验证参数（applyAliases 会检查缺失参数并抛异常）
       const modifiedJson = applyAliases(wf.rawJson, params, aliasValues);
 
+      // 检查并发数
+      const concurrencyStr = settingsService.get('comfyui_concurrency');
+      const concurrency = concurrencyStr ? parseInt(concurrencyStr, 10) : 1;
+      const pendingCount = taskService.countByStatus('pending');
+
+      if (pendingCount >= concurrency) {
+        // 超过并发限制，进入排队
+        const task = taskService.create({
+          workflowId: wf.id,
+          workflowName: wf.name,
+          aliasValues: JSON.stringify(aliasValues),
+          comfyuiUrl: `${baseUrl}/prompt`,
+          comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
+          comfyuiResponse: null,
+          promptId: null,
+        });
+        // 覆盖为 queued 状态
+        taskService.updateStatus(task.id, { status: 'queued' });
+        res.json({
+          task_id: task.id,
+          status: 'queued',
+          comfyui_response: null,
+        });
+        return;
+      }
+
       const result = await executeWorkflow(wf.rawJson, params, aliasValues, baseUrl);
 
       const task = taskService.create({
