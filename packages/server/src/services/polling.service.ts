@@ -28,8 +28,16 @@ export function startPollingService(db: BetterSQLite3Database<typeof schema>): {
         }
         try {
           const res = await fetch(`${baseUrl}/history/${task.promptId}`);
-          // 404 means the prompt hasn't appeared in history yet (still queued/running)
           if (res.status === 404) continue;
+          // ComfyUI 返回服务端错误，标记为失败
+          if (res.status >= 500) {
+            const text = await res.text();
+            taskService.updateStatus(task.id, {
+              status: 'failed',
+              errorMessage: `ComfyUI returned ${res.status}: ${text}`,
+            });
+            continue;
+          }
 
           const text = await res.text();
           let data: unknown;
@@ -45,12 +53,12 @@ export function startPollingService(db: BetterSQLite3Database<typeof schema>): {
               comfyuiResponse: JSON.stringify(data),
             });
           }
-        } catch {
-          // 暂时性网络错误，下次再试
+        } catch (err: unknown) {
+          console.error('[PollingService] Error checking task', task.id, err);
         }
       }
-    } catch {
-      // 防止未捕获异常杀死轮询
+    } catch (err: unknown) {
+      console.error('[PollingService] Unexpected error in poll cycle', err);
     }
   }, POLL_INTERVAL);
 
