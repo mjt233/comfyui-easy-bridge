@@ -3,27 +3,43 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
 
+/** 创建任务日志的输入参数 */
 export interface CreateTaskInput {
+  /** 关联工作流 ID */
   workflowId: string;
+  /** 工作流名称（冗余存储） */
   workflowName: string;
+  /** 提交的字段参数 JSON */
   aliasValues: string;
+  /** 请求 ComfyUI 的完整 URL */
   comfyuiUrl: string;
+  /** 请求体 JSON */
   comfyuiRequestBody: string | null;
+  /** ComfyUI 响应 JSON */
   comfyuiResponse: string | null;
+  /** ComfyUI 返回的 prompt_id，为 null 表示提交失败 */
   promptId: string | null;
 }
 
+/** 更新任务结果的输入参数 */
 export interface UpdateTaskResult {
+  /** 目标状态 */
   status: 'completed' | 'failed';
+  /** ComfyUI prompt_id */
   promptId?: string;
+  /** ComfyUI 响应 JSON */
   comfyuiResponse?: string;
+  /** 错误信息（失败时） */
   errorMessage?: string;
+  /** 完成时间，默认当前时间 */
   completedAt?: string;
 }
 
+/** 任务日志服务：管理 task_logs 表的 CRUD 和状态流转 */
 export class TaskService {
   constructor(private db: BetterSQLite3Database<typeof schema>) {}
 
+  /** 创建任务日志记录。若 promptId 有值则状态为 pending，否则标记为 failed */
   create(input: CreateTaskInput) {
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -41,20 +57,21 @@ export class TaskService {
       createdAt: now,
       completedAt: input.promptId ? null : now,
     }).run();
-
-    // Get the created record back
     return this.getById(id)!;
   }
 
+  /** 按 ID 查询任务日志 */
   getById(id: string) {
     return this.db.select().from(schema.taskLogs).where(eq(schema.taskLogs.id, id)).get() ?? null;
   }
 
+  /** 列出所有任务日志（按提交时间升序） */
   list() {
     return this.db.select().from(schema.taskLogs)
       .orderBy(schema.taskLogs.createdAt).all();
   }
 
+  /** 更新任务状态和结果 */
   updateStatus(id: string, input: UpdateTaskResult) {
     const now = new Date().toISOString();
     this.db.update(schema.taskLogs)
@@ -70,6 +87,7 @@ export class TaskService {
     return this.getById(id)!;
   }
 
+  /** 查询所有 pending 状态的任务（供 PollingService 轮询使用） */
   listPending() {
     return this.db.select().from(schema.taskLogs)
       .where(eq(schema.taskLogs.status, 'pending'))
