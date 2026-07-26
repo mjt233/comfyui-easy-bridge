@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import './models/db';
 
 const app = express();
 const PORT = process.env.PORT ?? 10721;
@@ -13,8 +14,15 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+function startServer() {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
+if (process.env.VITEST !== 'true') {
+  startServer();
+}
+
+export { app, startServer };
 export default app;
