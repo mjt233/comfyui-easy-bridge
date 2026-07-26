@@ -1,4 +1,4 @@
-import { eq, desc, inArray } from 'drizzle-orm';
+import { eq, desc, inArray, count } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
@@ -100,5 +100,28 @@ export class TaskService {
       .where(inArray(schema.taskLogs.status, ['completed', 'failed']))
       .run();
     return result.changes;
+  }
+
+  /** 统计指定状态的任务数 */
+  countByStatus(status: string): number {
+    const row = this.db.select({ c: count() }).from(schema.taskLogs)
+      .where(eq(schema.taskLogs.status, status)).get();
+    return row?.c ?? 0;
+  }
+
+  /** 获取所有 queued 任务（按提交时间升序） */
+  listQueued() {
+    return this.db.select().from(schema.taskLogs)
+      .where(eq(schema.taskLogs.status, 'queued'))
+      .orderBy(schema.taskLogs.createdAt).all();
+  }
+
+  /** 更新任务进度百分比 */
+  updateProgress(id: string, progress: number) {
+    this.db.update(schema.taskLogs)
+      .set({ progress })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id)!;
   }
 }

@@ -43,20 +43,12 @@ export function applyAliases(
   return JSON.stringify(workflow);
 }
 
-/**
- * 提交工作流到 ComfyUI 执行
- * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回
- */
-export async function executeWorkflow(
-  rawJson: string,
-  params: WorkflowParam[],
-  aliasValues: Record<string, string>,
+/** 提交 prompt JSON 到 ComfyUI 并返回结果 */
+export async function submitPrompt(
+  body: string,
   comfyuiBaseUrl: string,
 ): Promise<ExecutionResult> {
   try {
-    const modifiedJson = applyAliases(rawJson, params, aliasValues);
-    // ComfyUI /prompt endpoint expects the workflow wrapped in a "prompt" field
-    const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
     const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -80,6 +72,30 @@ export async function executeWorkflow(
       promptId,
       errorMessage: null,
     };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      comfyuiResponse: null,
+      promptId: null,
+      errorMessage: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * 提交工作流到 ComfyUI 执行
+ * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回
+ */
+export async function executeWorkflow(
+  rawJson: string,
+  params: WorkflowParam[],
+  aliasValues: Record<string, string>,
+  comfyuiBaseUrl: string,
+): Promise<ExecutionResult> {
+  try {
+    const modifiedJson = applyAliases(rawJson, params, aliasValues);
+    const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
+    return submitPrompt(body, comfyuiBaseUrl);
   } catch (err: unknown) {
     return {
       success: false,
