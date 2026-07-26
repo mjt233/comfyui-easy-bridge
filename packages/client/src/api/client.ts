@@ -15,7 +15,8 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (res) => res,
   (error) => {
-    if (error.response?.status === 401) {
+    // Don't intercept 401 on the login endpoint — it's a valid "wrong password" response
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
       localStorage.removeItem('token');
       window.location.href = '/login';
     }
