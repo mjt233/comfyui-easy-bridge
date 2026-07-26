@@ -1,84 +1,228 @@
 # ComfyUI Easy Bridge
 
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![pnpm](https://img.shields.io/badge/pnpm-9-orange)](https://pnpm.io)
+
+将 ComfyUI 导出的 API 格式工作流 JSON 进行封装，通过可视化界面为节点输入字段标记别名，对外暴露简洁的 REST API — 传入别名 + 值即可触发工作流执行。
+
+---
+
+## 目录
+
+- [ComfyUI Easy Bridge](#comfyui-easy-bridge)
+  - [目录](#目录)
+  - [核心功能](#核心功能)
+    - [示例](#示例)
+  - [快速开始](#快速开始)
+    - [前置要求](#前置要求)
+    - [安装](#安装)
+    - [启动](#启动)
+  - [操作流程](#操作流程)
+  - [API 文档](#api-文档)
+    - [认证](#认证)
+    - [执行工作流](#执行工作流)
+    - [错误码](#错误码)
+  - [配置](#配置)
+  - [开发](#开发)
+    - [命令](#命令)
+    - [项目结构](#项目结构)
+    - [测试](#测试)
+  - [技术栈](#技术栈)
+    - [后端](#后端)
+    - [前端](#前端)
+  - [参考资料](#参考资料)
+
+---
+
 ## 核心功能
 
-提供一个简化的 API ，用于将 ComfyUI 导出的 API 格式工作流 JSON 进行封装，把指定的节点key的输入标记为一个别名，在该项目提供的API中只需要传入对应的别名+值，即可向 ComfyUI 发起完整的工作流运行接口调用
+1. **工作流管理** — 上传 / 粘贴 ComfyUI API JSON，在线编辑别名映射
+2. **参数别名** — 为任意节点输入字段绑定别名，屏蔽底层节点结构
+3. **简洁调用** — `POST /api/workflow/:id` 传入别名键值对，自动组装并转发给 ComfyUI
+4. **认证保护** — 管理员后台需登录，外部调用需 Bearer Token
 
-### 案例
+### 示例
 
-原始 ComfyUI API JSOn 文件(部分):
+原始 ComfyUI API JSON（部分）：
 
 ```json
 {
-  "29": {
-    "inputs": {
-      "filename_prefix": "Krea2_turbo",
-      "images": [
-        "30:8",
-        0
-      ]
-    },
-    "class_type": "SaveImage",
-    "_meta": {
-      "title": "保存图像"
-    }
-  },
-  "49": {
-    "inputs": {
-      "aspect_ratio": "16:9 (Widescreen)",
-      "megapixels": 1,
-      "multiple": 8
-    },
-    "class_type": "ResolutionSelector",
-    "_meta": {
-      "title": "分辨率选择器"
-    }
-  },
   "30:19": {
-    "inputs": {
-      "value": "生成人物角色正面、侧面、背面三个视角的全身图\n\n要求：纯白色背景、自然站立，双臂自然下垂\n以下为角色描述：\n\n日本动画风格\n头发：红色披肩散发，左侧单马尾\n眼睛：黄绿瞳\n身高：158cm\n体重：44kg\n年龄：17岁\n淡黄色长袖水手服，深灰色短裙，白色短袜，棕色皮鞋，背着黑色吉他背包，左脚大腿上有蓝色腿环，性格活泼\n"
-    },
+    "inputs": { "value": "..." },
     "class_type": "PrimitiveStringMultiline",
-    "_meta": {
-      "title": "Text String (User Prompt)"
-    }
+    "_meta": { "title": "Text String (User Prompt)" }
   }
 }
 ```
 
-通过将`30:19`的`input`的`value`标记为 `img_desc` 后，对该项目的接口发起以下 HTTP 调用
+将 `30:19.inputs.value` 标记为别名 `img_desc` 后，调用：
 
 ```
-POST /api/workflow/{工作流id}
+POST /api/workflow/:id
+Authorization: Bearer <token>
 
-{
-  "img_desc": "一只橘黄色的凶猛小猫，在圆形多隔层的木制置物架上，面向镜头，生气地张开嘴，写实风格"
-}
+{ "img_desc": "一只橘黄色的凶猛小猫，写实风格" }
 ```
+
+---
+
+## 快速开始
+
+### 前置要求
+
+- Node.js >= 18
+- pnpm 9+
+
+### 安装
+
+```bash
+git clone <repo-url>
+cd comfyui-easy-bridge
+
+pnpm install
+pnpm build:server
+```
+
+### 启动
+
+```bash
+pnpm dev:server   # 后端 (tsx watch, 默认 10721)
+pnpm dev:client   # 前端 (Vite HMR, 代理 /api → 10721)
+```
+
+首次启动会自动创建 SQLite 数据库及表，并初始化默认管理员密码。
+
+> 默认管理员密码: `0d000721`（首次启动后自动 bcrypt 哈希存储，请及时修改）
+
+---
 
 ## 操作流程
 
-系统默认端口: 10721W
+1. 浏览器访问 `/admin`，使用默认密码登录
+2. 进入 **系统设置**，配置 ComfyUI 的 HTTP 地址（baseUrl）
+3. 进入 **工作流管理 → 新增工作流**，上传或粘贴 ComfyUI 导出的 API JSON
+4. 为每个需要暴露的节点输入字段添加别名（唯一标识）和可选的标签
+5. 保存后即可通过 `POST /api/workflow/:id` 调用
 
-1. 浏览器访问系统管理员页面`/admin`
-2. 在系统设置中，配置 ComfyUI 的 HTTP 服务器地址 baseUrl
-3. 在工作流管理中选择新增工作流，上传或粘贴`ComfyUi`导出的原始API json文件
-4. 上传或粘贴JSON，并对工作流进行命名后（可自定义名称和唯一标识id，唯一标识id可在页面上选择随机生成）后，页面上会呈现一个列表，列表显示节点id、节点标题、可接受的输入字段。
-5. 可以选择一个输入字段添加为参数字段，对参数字段可以设置字段标识(必填) 和 标签(可选)，配置完成即可保存
+系统会解析原始 JSON，替换别名对应的节点字段值，然后向 ComfyUI 的 `POST /prompt` 发起请求并返回结果。
 
-外部调用接口 `POST /api/workflow/{工作流id}` 后，根据接口传入的字段参数，解析原始的 ComfyUI API JSON，替换掉对应节点的input字段值后，对ComfyUI的`POST /prompt`接口发起调用
+---
 
+## API 文档
+
+### 认证
+
+```
+POST /api/auth/login
+
+{ "password": "0d000721" }
+
+→ { "token": "eyJ..." }
+```
+
+Token 在 24 小时后过期。后续请求通过 `Authorization: Bearer <token>` 头传递。
+
+### 执行工作流
+
+```
+POST /api/workflow/:id
+Authorization: Bearer <token>
+
+{ "alias_key": "value", ... }
+
+→ ComfyUI 原始响应
+```
+
+### 错误码
+
+| code | 场景 |
+|------|------|
+| `missing_parameter` | 必填参数缺失 |
+| `unauthorized` | Token 无效 / 过期 |
+| `workflow_not_found` | 工作流不存在 |
+| `alias_conflict` | 别名重复（UNIQUE 约束） |
+| `comfyui_unreachable` | ComfyUI 服务不可达或返回错误 |
+
+---
+
+## 配置
+
+通过环境变量配置：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PORT` | `10721` | 服务端口 |
+| `DATA_DIR` | `data/` | 数据库文件目录 |
+
+数据库文件为 `bridge.db`，已加入 `.gitignore`。
+
+---
+
+## 开发
+
+### 命令
+
+```bash
+pnpm dev:server      # 后端开发（热重载）
+pnpm dev:client      # 前端开发（HMR）
+pnpm test            # 运行后端测试
+pnpm build:server    # 编译后端
+pnpm build:client    # 类型检查 + 构建前端
+```
+
+### 项目结构
+
+```
+packages/server/   Express 后端 (TypeScript + Drizzle ORM)
+  src/
+    routes/        URL 路径定义
+    controllers/   参数校验
+    services/      业务逻辑
+    models/        Drizzle schema + DB 连接
+
+packages/client/   Vue 3 + Vuetify 前端 (TypeScript + Vite)
+  src/
+    pages/         页面组件
+    api/           HTTP 客户端封装
+    router/        路由配置
+```
+
+### 测试
+
+后端使用 vitest + supertest，测试时使用 `:memory:` SQLite 数据库，不依赖磁盘文件。
+
+```bash
+pnpm test
+pnpm --filter server test:watch   # 监视模式
+```
+
+---
 
 ## 技术栈
 
 ### 后端
-- node.js
-- sqlite
+
+| 技术 | 用途 |
+|------|------|
+| Node.js / Express | HTTP 服务 |
+| TypeScript | 类型安全 |
+| Drizzle ORM | 数据库 ORM |
+| better-sqlite3 | SQLite 驱动 |
+| jsonwebtoken + bcryptjs | JWT 认证 |
 
 ### 前端
-- vue3
-- Vuetify
-- TypeScript
+
+| 技术 | 用途 |
+|------|------|
+| Vue 3 (Composition API) | UI 框架 |
+| Vuetify 3 | Material Design 组件库 |
+| TypeScript | 类型安全 |
+| Vite | 构建工具 |
+| Vue Router | 路由 |
+| Axios | HTTP 客户端 |
+
+---
 
 ## 参考资料
 

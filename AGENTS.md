@@ -83,5 +83,3 @@ pnpm --filter server test:watch    # vitest watch 模式
 
 - [ComfyUI API 文档](https://docs.comfy.org/development/comfyui-server/comms_routes) — `POST /prompt` 接口
 - [Vuetify 文档](https://next.vuetifyjs.com/zh-Hans/getting-started/installation/)
-- 设计文档: `docs/superpowers/specs/`
-- 实施计划: `docs/superpowers/plans/`
