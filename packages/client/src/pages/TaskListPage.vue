@@ -15,7 +15,7 @@
         :items="tasks"
         :loading="loading"
         item-value="id"
-        @click:row="openDetail"
+        @click:row="handleRowClick"
       >
         <template #item.createdAt="{ value }">
           {{ formatTime(value) }}
@@ -158,6 +158,11 @@ function statusText(status: string): string {
 function openDetail(item: TaskLog) {
   selectedTask.value = item;
   detailDialog.value = true;
+}
+
+/** Vuetify v-data-table 行点击事件处理：从事件数据中提取 item */
+function handleRowClick(_event: PointerEvent, data: { item: TaskLog }) {
+  openDetail(data.item);
 }
 
 async function fetchTasks() {
