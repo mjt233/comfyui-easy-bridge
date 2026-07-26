@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+// Initialize database (creates tables on first run)
 import './models/db';
 
 const app = express();

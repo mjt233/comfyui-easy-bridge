@@ -4,7 +4,8 @@ import * as schema from './schema';
 import path from 'path';
 import fs from 'fs';
 
-const dataDir = path.resolve(process.cwd(), 'data');
+// Schema source of truth: ./schema.ts
+const dataDir = process.env.DATA_DIR ?? path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
