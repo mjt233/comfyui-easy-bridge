@@ -19,7 +19,7 @@ const vuetify = createVuetify({
           secondary: '#90CAF9',
           accent: '#BBDEFB',
           surface: '#FFFFFF',
-          background: '#E3F2FD',
+          background: '#FFFFFF',
           error: '#EF5350',
           info: '#29B6F6',
           success: '#66BB6A',
