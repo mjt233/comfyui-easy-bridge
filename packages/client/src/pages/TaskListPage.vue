@@ -28,10 +28,36 @@
             {{ statusText(value) }}
           </v-chip>
         </template>
+        <template #item.progress="{ item }">
+          <v-progress-linear
+            v-if="item.status === 'pending' && item.progress != null"
+            :model-value="item.progress"
+            color="primary"
+            height="6"
+            rounded
+            class="mt-2"
+          >
+            <template #default>
+              <span class="text-caption">{{ item.progress }}%</span>
+            </template>
+          </v-progress-linear>
+          <span v-else-if="item.status === 'pending'" class="text-caption text-grey">等待中</span>
+          <span v-else class="text-caption text-grey">-</span>
+        </template>
         <template #item.completedAt="{ value }">
           {{ value ? formatTime(value) : '-' }}
         </template>
         <template #item.actions="{ item }">
+          <v-btn
+            v-if="item.status === 'queued'"
+            color="primary"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            @click.stop="handleSubmitTask(item.id)"
+          >
+            立即提交
+          </v-btn>
           <v-btn icon="mdi-information-outline" size="small" variant="text" @click.stop="openDetail(item)" />
         </template>
       </v-data-table>
@@ -110,12 +136,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { listTasks, clearCompletedTasks, type TaskLog } from '@/api/tasks';
+import { listTasks, clearCompletedTasks, submitTask, type TaskLog } from '@/api/tasks';
 
 const headers = [
   { title: '提交时间', key: 'createdAt' },
   { title: '工作流', key: 'workflowName' },
   { title: '状态', key: 'status' },
+  { title: '进度', key: 'progress' },
   { title: '完成时间', key: 'completedAt' },
   { title: '操作', key: 'actions', sortable: false },
 ];
@@ -143,6 +170,7 @@ function formatJson(str: string): string {
 
 function statusColor(status: string): string {
   switch (status) {
+    case 'queued': return 'blue';
     case 'pending': return 'orange';
     case 'completed': return 'green';
     case 'failed': return 'red';
@@ -152,6 +180,7 @@ function statusColor(status: string): string {
 
 function statusText(status: string): string {
   switch (status) {
+    case 'queued': return '排队中';
     case 'pending': return '处理中';
     case 'completed': return '已完成';
     case 'failed': return '失败';
@@ -182,7 +211,16 @@ async function fetchTasks() {
 
 async function handleClear() {
   try {
-    const result = await clearCompletedTasks();
+    await clearCompletedTasks();
+    await fetchTasks();
+  } catch {
+    // ignore
+  }
+}
+
+async function handleSubmitTask(taskId: string) {
+  try {
+    await submitTask(taskId);
     await fetchTasks();
   } catch {
     // ignore

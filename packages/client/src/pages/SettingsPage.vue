@@ -27,6 +27,15 @@
           placeholder="http://localhost:8188"
         />
 
+        <v-text-field
+          v-model="concurrency"
+          label="ComfyUI 任务执行并发数"
+          type="number"
+          min="1"
+          variant="outlined"
+          class="mb-4"
+        />
+
         <v-btn color="primary" :loading="saving" @click="handleSave">
           保存
         </v-btn>
@@ -44,6 +53,7 @@ import { ref, onMounted } from 'vue';
 import { getSettings, updateSetting } from '@/api/settings';
 
 const comfyuiUrl = ref('');
+const concurrency = ref('1');
 const error = ref('');
 const saving = ref(false);
 const snackbar = ref({ show: false, text: '', color: 'success' });
@@ -53,6 +63,7 @@ async function handleSave() {
   error.value = '';
   try {
     await updateSetting('comfyui_base_url', comfyuiUrl.value);
+    await updateSetting('comfyui_concurrency', concurrency.value);
     snackbar.value = { show: true, text: '已保存', color: 'success' };
   } catch {
     error.value = '保存失败';
@@ -65,6 +76,7 @@ onMounted(async () => {
   try {
     const settings = await getSettings();
     comfyuiUrl.value = settings.comfyui_base_url ?? '';
+    concurrency.value = settings.comfyui_concurrency ?? '1';
   } catch {
     error.value = '加载设置失败';
   }

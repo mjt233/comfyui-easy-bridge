@@ -10,8 +10,9 @@ export interface TaskLog {
   comfyuiUrl: string;
   comfyuiRequestBody: string | null;
   comfyuiResponse: string | null;
-  status: 'pending' | 'completed' | 'failed';
+  status: 'queued' | 'pending' | 'completed' | 'failed';
   errorMessage: string | null;
+  progress: number | null;
   createdAt: string;
   completedAt: string | null;
 }
@@ -25,5 +26,11 @@ export async function listTasks(): Promise<TaskLog[]> {
 /** 清理所有已完成和失败的任务日志 */
 export async function clearCompletedTasks(): Promise<{ deleted: number }> {
   const res = await client.delete<{ deleted: number }>('/tasks/completed');
+  return res.data;
+}
+
+/** 立即提交 queued 任务 */
+export async function submitTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const res = await client.post<{ task_id: string; status: string }>(`/tasks/${taskId}/submit`);
   return res.data;
 }
