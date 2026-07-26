@@ -29,6 +29,11 @@ const router = createRouter({
       component: () => import('@/pages/WorkflowEditPage.vue'),
     },
     {
+      path: '/admin/tasks',
+      name: 'TaskList',
+      component: () => import('@/pages/TaskListPage.vue'),
+    },
+    {
       path: '/admin/settings',
       name: 'Settings',
       component: () => import('@/pages/SettingsPage.vue'),

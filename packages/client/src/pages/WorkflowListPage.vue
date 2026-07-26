@@ -2,6 +2,9 @@
   <v-app-bar color="primary">
     <v-app-bar-title>ComfyUI Easy Bridge</v-app-bar-title>
     <v-spacer />
+    <v-btn to="/admin/tasks" variant="text" prepend-icon="mdi-clipboard-text">
+      任务日志
+    </v-btn>
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
       设置
     </v-btn>
@@ -244,9 +247,8 @@ async function confirmExecute() {
       aliasValues[field.alias] = executeForm[field.alias];
     }
     const result = await executeWorkflow(executeTarget.value, aliasValues);
-    snackbar.value = { show: true, text: '执行成功', color: 'success' };
+    snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
-    console.log('Execute result:', result);
   } catch {
     snackbar.value = { show: true, text: '执行失败', color: 'error' };
   } finally {
