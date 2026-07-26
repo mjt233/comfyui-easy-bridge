@@ -62,13 +62,15 @@ export async function executeWorkflow(
       headers: { 'Content-Type': 'application/json' },
       body,
     });
-    const responseBody = await response.json();
+    const text = await response.text();
+    let responseBody: unknown;
+    try { responseBody = JSON.parse(text); } catch { responseBody = text; }
     if (!response.ok) {
       return {
         success: false,
         comfyuiResponse: responseBody,
         promptId: null,
-        errorMessage: `ComfyUI returned status ${response.status}: ${JSON.stringify(responseBody)}`,
+        errorMessage: `ComfyUI returned status ${response.status}: ${text}`,
       };
     }
     const promptId = (responseBody as { prompt_id?: string }).prompt_id ?? null;
