@@ -1,10 +1,10 @@
 <template>
-  <v-app-bar>
+  <v-app-bar color="primary">
     <v-app-bar-title>{{ isEdit ? '编辑工作流' : '新建工作流' }}</v-app-bar-title>
     <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">返回</v-btn>
   </v-app-bar>
 
-  <v-container class="mt-4">
+  <v-container>
     <v-card>
       <v-card-text>
         <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>

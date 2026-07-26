@@ -1,29 +1,29 @@
 <template>
-  <v-app-bar>
+  <v-app-bar color="primary">
     <v-app-bar-title>系统设置</v-app-bar-title>
     <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">返回</v-btn>
   </v-app-bar>
 
-  <v-container class="mt-4">
-    <v-card>
-      <v-card-text>
-        <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
+  <v-container>
+      <v-card>
+        <v-card-text>
+          <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
 
-        <v-text-field
-          v-model="comfyuiUrl"
-          label="ComfyUI 服务地址"
-          hint="例如: http://localhost:8188"
-          variant="outlined"
-          class="mb-4"
-          placeholder="http://localhost:8188"
-        />
+          <v-text-field
+            v-model="comfyuiUrl"
+            label="ComfyUI 服务地址"
+            hint="例如: http://localhost:8188"
+            variant="outlined"
+            class="mb-4"
+            placeholder="http://localhost:8188"
+          />
 
-        <v-btn color="primary" :loading="saving" @click="handleSave">保存</v-btn>
-      </v-card-text>
-    </v-card>
+          <v-btn color="primary" :loading="saving" @click="handleSave">保存</v-btn>
+        </v-card-text>
+      </v-card>
 
-    <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
-  </v-container>
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
+    </v-container>
 </template>
 
 <script setup lang="ts">

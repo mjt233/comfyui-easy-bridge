@@ -1,109 +1,109 @@
 <template>
-  <v-app-bar>
+  <v-app-bar color="primary">
     <v-app-bar-title>{{ workflow?.name ?? '加载中...' }}</v-app-bar-title>
     <v-btn to="/admin" variant="text" prepend-icon="mdi-arrow-left">返回</v-btn>
   </v-app-bar>
 
-  <v-container class="mt-4">
-    <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
+  <v-container>
+      <v-alert v-if="error" type="error" closable class="mb-4">{{ error }}</v-alert>
 
-    <v-card class="mb-4">
-      <v-card-text>
-        <div><strong>ID:</strong> {{ workflow?.id }}</div>
-        <div><strong>名称:</strong> {{ workflow?.name }}</div>
-        <div><strong>创建时间:</strong> {{ workflow?.createdAt }}</div>
-      </v-card-text>
-      <v-card-actions>
-        <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">编辑</v-btn>
-      </v-card-actions>
-    </v-card>
+      <v-card class="mb-4">
+        <v-card-text>
+          <div><strong>ID:</strong> {{ workflow?.id }}</div>
+          <div><strong>名称:</strong> {{ workflow?.name }}</div>
+          <div><strong>创建时间:</strong> {{ workflow?.createdAt }}</div>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">编辑</v-btn>
+        </v-card-actions>
+      </v-card>
 
-    <v-card>
-      <v-card-title>参数别名配置</v-card-title>
-      <v-card-text>
-        <p class="text-body-2 text-grey mb-4">
-          下方列出了工作流 JSON 中所有节点的可配置输入字段。选择需要暴露给外部调用的字段，设置别名。
-        </p>
+      <v-card>
+        <v-card-title>参数别名配置</v-card-title>
+        <v-card-text>
+          <p class="text-body-2 text-grey mb-4">
+            下方列出了工作流 JSON 中所有节点的可配置输入字段。选择需要暴露给外部调用的字段，设置别名。
+          </p>
 
-        <v-table v-if="nodes.length > 0">
-          <thead>
-            <tr>
-              <th>节点 ID</th>
-              <th>节点标题</th>
-              <th>字段名</th>
-              <th>当前值</th>
-              <th>别名</th>
-              <th>标签</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(node, ni) in nodes" :key="ni">
-              <td>{{ node.nodeId }}</td>
-              <td>{{ node.title }}</td>
-              <td>
-                <v-select
-                  v-model="node.selectedField"
-                  :items="node.fields"
-                  density="compact"
-                  variant="outlined"
-                  hide-details
-                  @update:model-value="onFieldChange(node)"
-                />
-              </td>
-              <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
-                {{ node.fieldValue }}
-              </td>
-              <td>
-                <v-text-field
-                  v-if="node.selectedField"
-                  v-model="node.editAlias"
-                  density="compact"
-                  variant="outlined"
-                  placeholder="alias"
-                  hide-details
-                />
-              </td>
-              <td>
-                <v-text-field
-                  v-if="node.selectedField"
-                  v-model="node.editLabel"
-                  density="compact"
-                  variant="outlined"
-                  placeholder="标签(可选)"
-                  hide-details
-                />
-              </td>
-              <td>
-                <v-btn
-                  v-if="node.selectedField && node.editAlias"
-                  size="small"
-                  color="primary"
-                  variant="text"
-                  :loading="node.saving"
-                  :disabled="!node.editAlias"
-                  @click="saveParam(node)"
-                >
-                  {{ node.paramId ? '更新' : '添加' }}
-                </v-btn>
-                <v-btn
-                  v-if="node.paramId"
-                  size="small"
-                  color="error"
-                  variant="text"
-                  @click="removeParam(node)"
-                >删除</v-btn>
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
+          <v-table v-if="nodes.length > 0">
+            <thead>
+              <tr>
+                <th>节点 ID</th>
+                <th>节点标题</th>
+                <th>字段名</th>
+                <th>当前值</th>
+                <th>别名</th>
+                <th>标签</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(node, ni) in nodes" :key="ni">
+                <td>{{ node.nodeId }}</td>
+                <td>{{ node.title }}</td>
+                <td>
+                  <v-select
+                    v-model="node.selectedField"
+                    :items="node.fields"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                    @update:model-value="onFieldChange(node)"
+                  />
+                </td>
+                <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
+                  {{ node.fieldValue }}
+                </td>
+                <td>
+                  <v-text-field
+                    v-if="node.selectedField"
+                    v-model="node.editAlias"
+                    density="compact"
+                    variant="outlined"
+                    placeholder="alias"
+                    hide-details
+                  />
+                </td>
+                <td>
+                  <v-text-field
+                    v-if="node.selectedField"
+                    v-model="node.editLabel"
+                    density="compact"
+                    variant="outlined"
+                    placeholder="标签(可选)"
+                    hide-details
+                  />
+                </td>
+                <td>
+                  <v-btn
+                    v-if="node.selectedField && node.editAlias"
+                    size="small"
+                    color="primary"
+                    variant="text"
+                    :loading="node.saving"
+                    :disabled="!node.editAlias"
+                    @click="saveParam(node)"
+                  >
+                    {{ node.paramId ? '更新' : '添加' }}
+                  </v-btn>
+                  <v-btn
+                    v-if="node.paramId"
+                    size="small"
+                    color="error"
+                    variant="text"
+                    @click="removeParam(node)"
+                  >删除</v-btn>
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
 
-        <p v-else class="text-grey text-center py-4">无法解析工作流 JSON，请检查原始数据</p>
-      </v-card-text>
-    </v-card>
+          <p v-else class="text-grey text-center py-4">无法解析工作流 JSON，请检查原始数据</p>
+        </v-card-text>
+      </v-card>
 
-    <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
-  </v-container>
+      <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
+    </v-container>
 </template>
 
 <script setup lang="ts">

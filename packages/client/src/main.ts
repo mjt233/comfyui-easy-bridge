@@ -10,6 +10,24 @@ import { router } from './router';
 const vuetify = createVuetify({
   components,
   directives,
+  theme: {
+    defaultTheme: 'light',
+    themes: {
+      light: {
+        colors: {
+          primary: '#42A5F5',
+          secondary: '#90CAF9',
+          accent: '#BBDEFB',
+          surface: '#FFFFFF',
+          background: '#E3F2FD',
+          error: '#EF5350',
+          info: '#29B6F6',
+          success: '#66BB6A',
+          warning: '#FFA726',
+        },
+      },
+    },
+  },
 });
 
 const app = createApp(App);

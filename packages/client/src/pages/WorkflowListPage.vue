@@ -1,12 +1,12 @@
 <template>
-  <v-app-bar>
+  <v-app-bar color="primary">
     <v-app-bar-title>ComfyUI Easy Bridge</v-app-bar-title>
     <v-spacer />
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">设置</v-btn>
     <v-btn variant="text" @click="handleLogout" prepend-icon="mdi-logout">退出</v-btn>
   </v-app-bar>
 
-  <v-container class="mt-4">
+  <v-container>
     <v-row class="mb-4 align-center">
       <v-col><h2 class="text-h5">工作流列表</h2></v-col>
       <v-col cols="auto">
