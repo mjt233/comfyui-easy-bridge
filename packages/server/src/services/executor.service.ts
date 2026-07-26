@@ -7,6 +7,18 @@ export interface WorkflowParam {
   label: string | null;
 }
 
+/** 执行工作流的结果 */
+export interface ExecutionResult {
+  /** 是否成功提交到 ComfyUI */
+  success: boolean;
+  /** ComfyUI 的响应体（JSON） */
+  comfyuiResponse: unknown;
+  /** ComfyUI 返回的 prompt_id，为 null 表示提交失败 */
+  promptId: string | null;
+  /** 错误信息（失败时） */
+  errorMessage: string | null;
+}
+
 export function applyAliases(
   rawJson: string,
   params: WorkflowParam[],
@@ -31,22 +43,47 @@ export function applyAliases(
   return JSON.stringify(workflow);
 }
 
+/**
+ * 提交工作流到 ComfyUI 执行
+ * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回
+ */
 export async function executeWorkflow(
   rawJson: string,
   params: WorkflowParam[],
   aliasValues: Record<string, string>,
   comfyuiBaseUrl: string,
-): Promise<unknown> {
-  const modifiedJson = applyAliases(rawJson, params, aliasValues);
-  // ComfyUI /prompt endpoint expects the workflow wrapped in a "prompt" field
-  const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
-  const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-  });
-  if (!response.ok) {
-    throw new Error(`ComfyUI returned status ${response.status}`);
+): Promise<ExecutionResult> {
+  try {
+    const modifiedJson = applyAliases(rawJson, params, aliasValues);
+    // ComfyUI /prompt endpoint expects the workflow wrapped in a "prompt" field
+    const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
+    const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const responseBody = await response.json();
+    if (!response.ok) {
+      return {
+        success: false,
+        comfyuiResponse: responseBody,
+        promptId: null,
+        errorMessage: `ComfyUI returned status ${response.status}: ${JSON.stringify(responseBody)}`,
+      };
+    }
+    const promptId = (responseBody as { prompt_id?: string }).prompt_id ?? null;
+    return {
+      success: true,
+      comfyuiResponse: responseBody,
+      promptId,
+      errorMessage: null,
+    };
+  } catch (err: unknown) {
+    return {
+      success: false,
+      comfyuiResponse: null,
+      promptId: null,
+      errorMessage: err instanceof Error ? err.message : 'Unknown error',
+    };
   }
-  return response.json();
 }
