@@ -17,6 +17,21 @@ export const workflowParams = sqliteTable('workflow_params', {
   label: text('label'),
 });
 
+export const taskLogs = sqliteTable('task_logs', {
+  id: text('id').primaryKey(),
+  workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  workflowName: text('workflow_name').notNull(),
+  promptId: text('prompt_id'),
+  aliasValues: text('alias_values').notNull(),
+  comfyuiUrl: text('comfyui_url').notNull(),
+  comfyuiRequestBody: text('comfyui_request_body'),
+  comfyuiResponse: text('comfyui_response'),
+  status: text('status').notNull().default('pending'),
+  errorMessage: text('error_message'),
+  createdAt: text('created_at').notNull(),
+  completedAt: text('completed_at'),
+});
+
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),

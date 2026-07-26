@@ -41,3 +41,19 @@ db.run(`
     value TEXT NOT NULL
   )
 `);
+db.run(`
+  CREATE TABLE IF NOT EXISTS task_logs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    workflow_name TEXT NOT NULL,
+    prompt_id TEXT,
+    alias_values TEXT NOT NULL,
+    comfyui_url TEXT NOT NULL,
+    comfyui_request_body TEXT,
+    comfyui_response TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+  )
+`);
