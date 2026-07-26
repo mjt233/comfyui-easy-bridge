@@ -10,7 +10,7 @@ const DEFAULT_PASSWORD = '0d000721';
 export class AuthService {
   private settings: SettingsService;
 
-  constructor(private db: BetterSQLite3Database<typeof schema>) {
+  constructor(db: BetterSQLite3Database<typeof schema>) {
     this.settings = new SettingsService(db);
     this.ensureDefaultPassword();
   }

@@ -5,6 +5,12 @@
 - 生成的代码中，每个关键步骤需要有行内注释，新生成的函数需要有jsdoc注释
 - 涉及异步的函数优先使用async / await
 
+## 验证
+
+修改代码后需要执行以下命令进行TypeScript类型验证：
+- 验证后端 `pnpm --filter server exec tsc --noEmit`
+- 验证前端 `pnpm --filter client exec tsc --noEmit`
+
 ## 技术栈
 
 - 后端: Node.js + Express + TypeScript + Drizzle ORM (SQLite)

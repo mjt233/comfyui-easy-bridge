@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { db } from './models/db';
@@ -7,7 +7,7 @@ import { createWorkflowRoutes } from './routes/workflow.routes';
 import { createSettingsRoutes } from './routes/settings.routes';
 import { errorHandler } from './middleware/errorHandler';
 
-const app = express();
+const app: Express = express();
 const PORT = process.env.PORT ?? 10721;
 
 app.use(helmet());

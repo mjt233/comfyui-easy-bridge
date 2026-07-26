@@ -15,12 +15,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
     },
 
     getById(req: Request, res: Response): void {
-      const wf = workflowService.getById(req.params.id);
+      const id = req.params.id as string;
+      const wf = workflowService.getById(id);
       if (!wf) {
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const params = workflowService.getParams(req.params.id);
+      const params = workflowService.getParams(id);
       res.json({ ...wf, params });
     },
 
@@ -35,27 +36,30 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
     },
 
     update(req: Request, res: Response): void {
-      const existing = workflowService.getById(req.params.id);
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
       if (!existing) {
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const wf = workflowService.update(req.params.id, req.body);
+      const wf = workflowService.update(id, req.body);
       res.json(wf);
     },
 
     delete(req: Request, res: Response): void {
-      const existing = workflowService.getById(req.params.id);
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
       if (!existing) {
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      workflowService.delete(req.params.id);
+      workflowService.delete(id);
       res.status(204).send();
     },
 
     addParam(req: Request, res: Response): void {
-      const existing = workflowService.getById(req.params.id);
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
       if (!existing) {
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
@@ -66,7 +70,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       try {
-        const param = workflowService.addParam({ workflowId: req.params.id, nodeId, fieldName, alias, label });
+        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label });
         res.status(201).json(param);
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
@@ -88,12 +92,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
     },
 
     async execute(req: Request, res: Response): Promise<void> {
-      const wf = workflowService.getById(req.params.id);
+      const id = req.params.id as string;
+      const wf = workflowService.getById(id);
       if (!wf) {
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const params = workflowService.getParams(req.params.id);
+      const params = workflowService.getParams(id);
       const baseUrl = settingsService.get('comfyui_base_url');
       if (!baseUrl) {
         res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
