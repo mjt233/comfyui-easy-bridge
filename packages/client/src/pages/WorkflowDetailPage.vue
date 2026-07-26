@@ -22,77 +22,37 @@
         <v-card-title>参数别名配置</v-card-title>
         <v-card-text>
           <p class="text-body-2 text-grey mb-4">
-            下方列出了工作流 JSON 中所有节点的可配置输入字段。选择需要暴露给外部调用的字段，设置别名。
+            下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
           </p>
 
           <v-table v-if="nodes.length > 0">
             <thead>
               <tr>
-                <th>节点 ID</th>
-                <th>节点标题</th>
+                <th style="min-width: 100px">节点 ID</th>
+                <th style="min-width: 140px">节点标题</th>
                 <th>字段名</th>
-                <th>当前值</th>
-                <th>别名</th>
-                <th>标签</th>
-                <th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="(node, ni) in nodes" :key="ni">
-                <td>{{ node.nodeId }}</td>
-                <td>{{ node.title }}</td>
+                <td style="min-width: 100px">{{ node.nodeId }}</td>
+                <td style="min-width: 140px">{{ node.title }}</td>
                 <td>
-                  <v-select
-                    v-model="node.selectedField"
-                    :items="node.fields"
-                    density="compact"
-                    variant="outlined"
-                    hide-details
-                    @update:model-value="onFieldChange(node)"
-                  />
-                </td>
-                <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
-                  {{ node.fieldValue }}
-                </td>
-                <td>
-                  <v-text-field
-                    v-if="node.selectedField"
-                    v-model="node.editAlias"
-                    density="compact"
-                    variant="outlined"
-                    placeholder="alias"
-                    hide-details
-                  />
-                </td>
-                <td>
-                  <v-text-field
-                    v-if="node.selectedField"
-                    v-model="node.editLabel"
-                    density="compact"
-                    variant="outlined"
-                    placeholder="标签(可选)"
-                    hide-details
-                  />
-                </td>
-                <td>
-                  <v-btn
-                    v-if="node.selectedField && node.editAlias"
-                    size="small"
-                    color="primary"
-                    variant="text"
-                    :loading="node.saving"
-                    :disabled="!node.editAlias"
-                    @click="saveParam(node)"
-                  >
-                    {{ node.paramId ? '更新' : '添加' }}
-                  </v-btn>
-                  <v-btn
-                    v-if="node.paramId"
-                    size="small"
-                    color="error"
-                    variant="text"
-                    @click="removeParam(node)"
-                  >删除</v-btn>
+                  <div class="d-flex flex-wrap ga-2 align-center">
+                    <v-chip
+                      v-for="(info, fi) in node.fields"
+                      :key="fi"
+                      :color="info.paramId ? 'primary' : undefined"
+                      :variant="info.paramId ? 'flat' : 'outlined'"
+                      size="small"
+                      @click="openDialog(node, info)"
+                    >
+                      {{ info.name }}
+                      <template v-if="info.paramId" #append>
+                        <span class="text-caption opacity-80 ml-1">{{ info.alias }}</span>
+                      </template>
+                    </v-chip>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -101,6 +61,53 @@
           <p v-else class="text-grey text-center py-4">无法解析工作流 JSON，请检查原始数据</p>
         </v-card-text>
       </v-card>
+
+      <v-dialog v-model="dialog.show" max-width="500">
+        <v-card>
+          <v-card-title>编辑参数</v-card-title>
+          <v-card-text>
+            <v-text-field
+              :model-value="dialog.fieldName"
+              label="字段名"
+              density="compact"
+              variant="outlined"
+              hide-details
+              class="mb-3"
+              readonly
+            />
+            <v-text-field
+              :model-value="dialog.fieldValue"
+              label="默认值"
+              density="compact"
+              variant="outlined"
+              hide-details
+              class="mb-3"
+              readonly
+            />
+            <v-text-field
+              v-model="dialog.alias"
+              label="接口字段别名"
+              density="compact"
+              variant="outlined"
+              hide-details
+              class="mb-3"
+            />
+            <v-text-field
+              v-model="dialog.label"
+              label="标签(可选)"
+              density="compact"
+              variant="outlined"
+              hide-details
+            />
+          </v-card-text>
+          <v-card-actions>
+            <v-btn color="error" variant="text" @click="deleteFromDialog">删除</v-btn>
+            <v-spacer />
+            <v-btn variant="text" @click="dialog.show = false">取消</v-btn>
+            <v-btn color="primary" variant="flat" :disabled="!dialog.fieldName || !dialog.alias || dialog.saving" :loading="dialog.saving" @click="saveDialog">保存</v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
 
       <v-snackbar v-model="snackbar.show" :color="snackbar.color">{{ snackbar.text }}</v-snackbar>
     </v-container>
@@ -112,16 +119,18 @@ import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 
+interface FieldInfo {
+  name: string;
+  value: string;
+  alias: string;
+  label: string;
+  paramId: number | null;
+}
+
 interface NodeField {
   nodeId: string;
   title: string;
-  fields: string[];
-  selectedField: string;
-  fieldValue: string;
-  editAlias: string;
-  editLabel: string;
-  paramId: number | null;
-  saving: boolean;
+  fields: FieldInfo[];
 }
 
 const route = useRoute();
@@ -129,6 +138,17 @@ const workflow = ref<WorkflowDetail | null>(null);
 const nodes = ref<NodeField[]>([]);
 const error = ref('');
 const snackbar = ref({ show: false, text: '', color: 'success' });
+
+const dialog = ref({
+  show: false,
+  node: null as NodeField | null,
+  fieldName: '',
+  fieldValue: '',
+  alias: '',
+  label: '',
+  paramId: null as number | null,
+  saving: false,
+});
 
 function parseNodes(wf: WorkflowDetail) {
   const result: NodeField[] = [];
@@ -143,38 +163,22 @@ function parseNodes(wf: WorkflowDetail) {
       const n = node as Record<string, unknown>;
       const inputs = n.inputs as Record<string, unknown> ?? {};
       const title = ((n._meta as Record<string, unknown>)?.title as string) ?? nodeId;
-      const fields: string[] = [];
-      let selectedField = '';
-      let fieldValue = '';
-      let editAlias = '';
-      let editLabel = '';
-      let paramId: number | null = null;
+      const fields: FieldInfo[] = [];
 
       for (const [fieldName, fieldVal] of Object.entries(inputs)) {
         if (Array.isArray(fieldVal)) continue;
-        fields.push(fieldName);
         const existing = paramMap.get(`${nodeId}:${fieldName}`);
-        if (existing) {
-          selectedField = fieldName;
-          fieldValue = String(fieldVal);
-          editAlias = existing.alias;
-          editLabel = existing.label ?? '';
-          paramId = existing.id;
-        }
+        fields.push({
+          name: fieldName,
+          value: String(fieldVal),
+          alias: existing?.alias ?? '',
+          label: existing?.label ?? '',
+          paramId: existing?.id ?? null,
+        });
       }
 
       if (fields.length > 0) {
-        result.push({
-          nodeId,
-          title,
-          fields,
-          selectedField,
-          fieldValue,
-          editAlias,
-          editLabel,
-          paramId,
-          saving: false,
-        });
+        result.push({ nodeId, title, fields });
       }
     }
   } catch {
@@ -184,48 +188,55 @@ function parseNodes(wf: WorkflowDetail) {
   nodes.value = result;
 }
 
-function onFieldChange(node: NodeField) {
-  if (!node.selectedField) {
-    node.editAlias = '';
-    node.editLabel = '';
-    node.paramId = null;
-    return;
-  }
-  const key = `${node.nodeId}:${node.selectedField}`;
-  const existing = workflow.value?.params.find(p => `${p.nodeId}:${p.fieldName}` === key);
-  node.editAlias = existing?.alias ?? '';
-  node.editLabel = existing?.label ?? '';
-  node.paramId = existing?.id ?? null;
+function getNodeByField(node: NodeField, fieldName: string): FieldInfo | undefined {
+  return node.fields.find(f => f.name === fieldName);
 }
 
-async function saveParam(node: NodeField) {
-  if (!workflow.value || !node.selectedField || !node.editAlias) return;
-  node.saving = true;
+function openDialog(node: NodeField, info: FieldInfo) {
+  dialog.value = {
+    show: true,
+    node,
+    fieldName: info.name,
+    fieldValue: info.value,
+    alias: info.alias,
+    label: info.label,
+    paramId: info.paramId,
+    saving: false,
+  };
+}
+
+async function saveDialog() {
+  if (!workflow.value || !dialog.value.node || !dialog.value.fieldName || !dialog.value.alias) return;
+  dialog.value.saving = true;
   try {
-    if (node.paramId) {
-      await updateParam(workflow.value.id, node.paramId, { alias: node.editAlias, label: node.editLabel });
+    const node = dialog.value.node;
+    const info = getNodeByField(node, dialog.value.fieldName);
+    if (info?.paramId) {
+      await updateParam(workflow.value.id, info.paramId, { alias: dialog.value.alias, label: dialog.value.label });
     } else {
       await addParam(workflow.value.id, {
         nodeId: node.nodeId,
-        fieldName: node.selectedField,
-        alias: node.editAlias,
-        label: node.editLabel,
+        fieldName: dialog.value.fieldName,
+        alias: dialog.value.alias,
+        label: dialog.value.label,
       });
     }
     snackbar.value = { show: true, text: '保存成功', color: 'success' };
+    dialog.value.show = false;
     await load();
   } catch {
     snackbar.value = { show: true, text: '保存失败，别名可能重复', color: 'error' };
   } finally {
-    node.saving = false;
+    dialog.value.saving = false;
   }
 }
 
-async function removeParam(node: NodeField) {
-  if (!workflow.value || !node.paramId) return;
+async function deleteFromDialog() {
+  if (!workflow.value || !dialog.value.paramId) return;
   try {
-    await deleteParam(workflow.value.id, node.paramId);
+    await deleteParam(workflow.value.id, dialog.value.paramId);
     snackbar.value = { show: true, text: '已删除', color: 'success' };
+    dialog.value.show = false;
     await load();
   } catch {
     snackbar.value = { show: true, text: '删除失败', color: 'error' };
