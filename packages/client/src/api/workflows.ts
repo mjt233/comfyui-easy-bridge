@@ -38,3 +38,8 @@ export async function updateParam(workflowId: string, paramId: number, data: Par
 export async function deleteParam(workflowId: string, paramId: number): Promise<void> {
   await client.delete(`/workflows/${workflowId}/params/${paramId}`);
 }
+
+export async function executeWorkflow(workflowId: string, aliasValues: Record<string, string>): Promise<unknown> {
+  const res = await client.post(`/workflows/${workflowId}/execute`, aliasValues);
+  return res.data;
+}
