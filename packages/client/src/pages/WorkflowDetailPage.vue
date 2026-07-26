@@ -19,44 +19,101 @@
       </v-card>
 
       <v-card>
-        <v-card-title>参数别名配置</v-card-title>
+        <v-card-title>
+          参数别名配置
+          <v-btn-toggle
+            v-model="viewMode"
+            variant="outlined"
+            density="compact"
+            color="primary"
+            class="ml-4"
+            mandatory
+          >
+            <v-btn value="chip" size="small">字段</v-btn>
+            <v-btn value="list" size="small">列表</v-btn>
+          </v-btn-toggle>
+        </v-card-title>
         <v-card-text>
-          <p class="text-body-2 text-grey mb-4">
+          <p v-if="viewMode === 'chip'" class="text-body-2 text-grey mb-4">
             下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
           </p>
+          <p v-else class="text-body-2 text-grey mb-4">
+            下方按字段平铺列出所有可配置输入。点击行可配置别名和标签。
+          </p>
 
-          <v-table v-if="nodes.length > 0">
-            <thead>
-              <tr>
-                <th style="min-width: 100px">节点 ID</th>
-                <th style="min-width: 140px">节点标题</th>
-                <th>字段名</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(node, ni) in nodes" :key="ni">
-                <td style="min-width: 100px">{{ node.nodeId }}</td>
-                <td style="min-width: 140px">{{ node.title }}</td>
-                <td>
-                  <div class="d-flex flex-wrap ga-2 align-center">
+          <template v-if="nodes.length > 0">
+            <v-table v-show="viewMode === 'chip'">
+              <thead>
+                <tr>
+                  <th style="min-width: 100px">节点 ID</th>
+                  <th style="min-width: 140px">节点标题</th>
+                  <th>字段名</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(node, ni) in nodes" :key="ni">
+                  <td style="min-width: 100px">{{ node.nodeId }}</td>
+                  <td style="min-width: 140px">{{ node.title }}</td>
+                  <td>
+                    <div class="d-flex flex-wrap ga-2 align-center">
+                      <v-chip
+                        v-for="(info, fi) in node.fields"
+                        :key="fi"
+                        :color="info.paramId ? 'primary' : undefined"
+                        :variant="info.paramId ? 'flat' : 'outlined'"
+                        size="small"
+                        @click="openDialog(node, info)"
+                      >
+                        <span v-if="info.paramId && info.label">{{ info.alias }}</span>
+                        <span v-else>{{ info.name }}</span>
+                        <template #append v-if="info.paramId">
+                          <span class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
+                        </template>
+                      </v-chip>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+
+            <v-table v-show="viewMode === 'list'">
+              <thead>
+                <tr>
+                  <th style="min-width: 100px">节点 ID</th>
+                  <th style="min-width: 140px">节点标题</th>
+                  <th style="min-width: 120px">字段名</th>
+                  <th>默认值</th>
+                  <th style="min-width: 120px">别名</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(item, i) in flatFields"
+                  :key="i"
+                  style="cursor: pointer"
+                  @click="openDialog(getNode(item.nodeId)!, item)"
+                >
+                  <td>{{ item.nodeId }}</td>
+                  <td>{{ item.title }}</td>
+                  <td>{{ item.name }}</td>
+                  <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ item.value }}</td>
+                  <td>
                     <v-chip
-                      v-for="(info, fi) in node.fields"
-                      :key="fi"
-                      :color="info.paramId ? 'primary' : undefined"
-                      :variant="info.paramId ? 'flat' : 'outlined'"
+                      v-if="item.paramId"
                       size="small"
-                      @click="openDialog(node, info)"
-                    >
-                      {{ info.name }}
-                      <template v-if="info.paramId" #append>
-                        <span class="text-caption opacity-80 ml-1">{{ info.alias }}</span>
-                      </template>
-                    </v-chip>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
+                      color="primary"
+                      variant="flat"
+                    >{{ item.alias }}
+                      <template #append v-if="item.paramId">
+                        <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
+                          {{ item.label || item.alias }}
+                        </span>
+                      </template></v-chip>
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </template>
 
           <p v-else class="text-grey text-center py-4">无法解析工作流 JSON，请检查原始数据</p>
         </v-card-text>
@@ -114,7 +171,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
@@ -138,6 +195,16 @@ const workflow = ref<WorkflowDetail | null>(null);
 const nodes = ref<NodeField[]>([]);
 const error = ref('');
 const snackbar = ref({ show: false, text: '', color: 'success' });
+
+const viewMode = ref<'chip' | 'list'>('chip');
+
+const flatFields = computed(() => {
+  return nodes.value.flatMap(n => n.fields.map(f => ({ ...f, nodeId: n.nodeId, title: n.title })));
+});
+
+function getNode(nodeId: string): NodeField | undefined {
+  return nodes.value.find(n => n.nodeId === nodeId);
+}
 
 const dialog = ref({
   show: false,
