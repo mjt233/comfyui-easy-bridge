@@ -169,7 +169,7 @@
             class="mb-3"
             readonly
           />
-          <v-text-field
+          <v-textarea
             :model-value="dialog.fieldValue"
             label="默认值"
             density="compact"
@@ -177,6 +177,9 @@
             hide-details
             class="mb-3"
             readonly
+            max-rows="3"
+            :rows="1"
+            auto-grow
           />
           <v-text-field
             v-model="dialog.alias"

@@ -79,7 +79,7 @@
             color="primary"
             class="mb-3"
           />
-          <v-text-field
+          <v-textarea
             v-for="field in executeFields"
             :key="field.alias"
             v-model="executeForm[field.alias]"
@@ -89,6 +89,9 @@
             variant="outlined"
             density="compact"
             class="mb-2"
+            :rows="1"
+            max-rows="6"
+            auto-grow
           />
         </v-card-text>
         <v-card-actions>
