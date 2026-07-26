@@ -8,7 +8,12 @@
     </div>
 
     <v-row class="fill-height align-center justify-center ma-0">
-      <v-col cols="12" sm="8" md="5" lg="4">
+      <v-col
+        cols="12"
+        sm="8"
+        md="5"
+        lg="4"
+      >
         <v-fade-transition appear>
           <v-card
             class="login-card pa-6"
@@ -22,7 +27,9 @@
                 size="72"
                 class="mb-3 logo-avatar elevation-6"
               >
-                <v-icon size="36" color="white">mdi-palette-swatch</v-icon>
+                <v-icon size="36" color="white">
+                  mdi-palette-swatch
+                </v-icon>
               </v-avatar>
               <h1 class="text-h5 font-weight-bold mb-1">
                 ComfyUI Easy Bridge

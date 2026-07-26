@@ -1,0 +1,15 @@
+{
+  // ESLint 自动修复 — 保存时运行 eslint --fix
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  // 确保 ESLint 使用 flat config（ESLint v9）
+  "eslint.useFlatConfig": true,
+  // 显式声明需要校验的文件类型
+  "eslint.validate": [
+    "typescript",
+    "vue",
+    "html",
+    "javascript"
+  ]
+}
