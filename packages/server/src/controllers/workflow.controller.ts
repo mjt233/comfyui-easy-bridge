@@ -2,12 +2,14 @@ import { Request, Response } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from '../services/workflow.service';
-import { executeWorkflow } from '../services/executor.service';
+import { executeWorkflow, applyAliases } from '../services/executor.service';
 import { SettingsService } from '../services/settings.service';
+import { TaskService } from '../services/task.service';
 
 export function createWorkflowController(db: BetterSQLite3Database<typeof schema>) {
   const workflowService = new WorkflowService(db);
   const settingsService = new SettingsService(db);
+  const taskService = new TaskService(db);
 
   return {
     list(_req: Request, res: Response): void {
@@ -104,16 +106,35 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
         return;
       }
-      try {
-        const result = await executeWorkflow(wf.rawJson, params, req.body, baseUrl);
-        res.json(result);
-      } catch (err: unknown) {
-        if (err instanceof Error) {
-          res.status(502).json({ error: err.message, code: 'comfyui_unreachable' });
-          return;
-        }
-        throw err;
+      const aliasValues = req.body as Record<string, string>;
+
+      // 先验证参数（applyAliases 会检查缺失参数并抛异常）
+      const modifiedJson = applyAliases(wf.rawJson, params, aliasValues);
+
+      const result = await executeWorkflow(wf.rawJson, params, aliasValues, baseUrl);
+
+      const task = taskService.create({
+        workflowId: wf.id,
+        workflowName: wf.name,
+        aliasValues: JSON.stringify(aliasValues),
+        comfyuiUrl: `${baseUrl}/prompt`,
+        comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
+        comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
+        promptId: result.promptId,
+      });
+
+      if (!result.success) {
+        taskService.updateStatus(task.id, {
+          status: 'failed',
+          errorMessage: result.errorMessage ?? 'Unknown error',
+        });
       }
+
+      res.json({
+        task_id: task.id,
+        status: task.status,
+        comfyui_response: result.comfyuiResponse,
+      });
     },
   };
 }
