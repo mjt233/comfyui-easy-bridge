@@ -38,10 +38,12 @@ export async function executeWorkflow(
   comfyuiBaseUrl: string,
 ): Promise<unknown> {
   const modifiedJson = applyAliases(rawJson, params, aliasValues);
+  // ComfyUI /prompt endpoint expects the workflow wrapped in a "prompt" field
+  const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
   const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: modifiedJson,
+    body,
   });
   if (!response.ok) {
     throw new Error(`ComfyUI returned status ${response.status}`);
