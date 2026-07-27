@@ -16,7 +16,7 @@ export async function createWorkflow(data: { id: string; name: string; rawJson: 
   return res.data;
 }
 
-export async function updateWorkflow(id: string, data: Partial<{ name: string; rawJson: string }>): Promise<Workflow> {
+export async function updateWorkflow(id: string, data: Partial<{ id: string; name: string; rawJson: string }>): Promise<Workflow> {
   const res = await client.put<Workflow>(`/workflows/${id}`, data);
   return res.data;
 }
