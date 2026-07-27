@@ -21,6 +21,20 @@ export interface CreateTaskInput {
   promptId: string | null;
 }
 
+/** 输出文件信息 */
+export interface OutputFile {
+  /** 文件名 */
+  filename: string;
+  /** ComfyUI output 子目录 */
+  subfolder: string;
+  /** 类型（固定 output） */
+  type: string;
+  /** 工作流节点 ID */
+  nodeId: string;
+  /** 文件类型分类 */
+  fileType: 'image' | 'video' | 'audio';
+}
+
 /** 更新任务结果的输入参数 */
 export interface UpdateTaskResult {
   /** 目标状态 */
@@ -123,5 +137,21 @@ export class TaskService {
       .where(eq(schema.taskLogs.id, id))
       .run();
     return this.getById(id)!;
+  }
+
+  /** 更新任务的输出文件列表 */
+  updateOutputFiles(id: string, files: OutputFile[]) {
+    this.db.update(schema.taskLogs)
+      .set({ outputFiles: JSON.stringify(files) })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id)!;
+  }
+
+  /** 按 promptId 查找任务 */
+  getByPromptId(promptId: string) {
+    return this.db.select().from(schema.taskLogs)
+      .where(eq(schema.taskLogs.promptId, promptId))
+      .get() ?? null;
   }
 }
