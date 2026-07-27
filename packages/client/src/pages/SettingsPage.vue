@@ -36,6 +36,15 @@
           class="mb-4"
         />
 
+        <v-radio-group
+          v-model="downloadMode"
+          label="输出文件下载方式"
+          class="mb-4"
+        >
+          <v-radio label="通过桥接服务代理下载（推荐）" value="proxy" />
+          <v-radio label="直连 ComfyUI 下载" value="direct" />
+        </v-radio-group>
+
         <v-btn color="primary" :loading="saving" @click="handleSave">
           保存
         </v-btn>
@@ -70,6 +79,7 @@ import { authEnabled } from '@/api/auth-status';
 
 const comfyuiUrl = ref('');
 const concurrency = ref('1');
+const downloadMode = ref('proxy');
 const authEnabledLocal = ref(true);
 const error = ref('');
 const saving = ref(false);
@@ -81,6 +91,7 @@ async function handleSave() {
   try {
     await updateSetting('comfyui_base_url', comfyuiUrl.value);
     await updateSetting('comfyui_concurrency', concurrency.value);
+    await updateSetting('output_download_mode', downloadMode.value);
     snackbar.value = { show: true, text: '已保存', color: 'success' };
   } catch {
     error.value = '保存失败';
@@ -106,6 +117,7 @@ onMounted(async () => {
     const settings = await getSettings();
     comfyuiUrl.value = settings.comfyui_base_url ?? '';
     concurrency.value = settings.comfyui_concurrency ?? '1';
+    downloadMode.value = settings.output_download_mode ?? 'proxy';
   } catch {
     error.value = '加载设置失败';
   }
