@@ -47,9 +47,13 @@ function parseHistoryOutputs(historyData: unknown, promptId: string): OutputFile
   return result;
 }
 
-/** 按文件扩展名推断类型 */
+/** 按 ComfyUI 输出类型 key 或文件扩展名推断文件类型 */
 function guessFileType(key: string): 'image' | 'video' | 'audio' {
-  const ext = key.split('.').pop()?.toLowerCase() ?? '';
+  const lower = key.toLowerCase();
+  if (lower.includes('image') || lower.includes('gif')) return 'image';
+  if (lower.includes('video')) return 'video';
+  if (lower.includes('audio')) return 'audio';
+  const ext = lower.split('.').pop() ?? '';
   if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
   if (['mp4', 'webm', 'avi', 'mov', 'mkv'].includes(ext)) return 'video';
   if (['wav', 'mp3', 'ogg', 'flac', 'aac'].includes(ext)) return 'audio';

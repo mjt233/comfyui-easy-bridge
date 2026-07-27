@@ -88,7 +88,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         }
         const contentType = comfyRes.headers.get('content-type') || 'application/octet-stream';
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        const safeFilename = filename.replace(/["\\]/g, '_');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`);
         const body = comfyRes.body;
         if (body) {
           const reader = body.getReader();
