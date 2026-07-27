@@ -61,3 +61,8 @@ db.run(`
     completed_at TEXT
   )
 `);
+try {
+  sqlite.exec("ALTER TABLE task_logs ADD COLUMN output_files TEXT");
+} catch {
+  // column already exists in existing databases
+}
