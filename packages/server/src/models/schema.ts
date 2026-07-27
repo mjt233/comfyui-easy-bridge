@@ -15,6 +15,7 @@ export const workflowParams = sqliteTable('workflow_params', {
   fieldName: text('field_name').notNull(),
   alias: text('alias').notNull().unique(),
   label: text('label'),
+  paramType: text('param_type').notNull().default('text'),
 });
 
 export const taskLogs = sqliteTable('task_logs', {

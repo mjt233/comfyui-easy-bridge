@@ -17,7 +17,7 @@ describe('executor.service', () => {
 
   it('applyAliases replaces primitive values', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null },
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text' },
     ];
     const result = applyAliases(sampleJson, params, { img_desc: 'a cute cat' });
     const parsed = JSON.parse(result);
@@ -26,7 +26,7 @@ describe('executor.service', () => {
 
   it('applyAliases does not modify node connections (arrays)', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '29', fieldName: 'images', alias: 'img_alias', label: null },
+      { id: 1, workflowId: 'test', nodeId: '29', fieldName: 'images', alias: 'img_alias', label: null, paramType: 'text' },
     ];
     const result = applyAliases(sampleJson, params, { img_alias: 'something' });
     const parsed = JSON.parse(result);
@@ -36,14 +36,14 @@ describe('executor.service', () => {
 
   it('applyAliases throws on missing alias value', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null },
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text' },
     ];
     expect(() => applyAliases(sampleJson, params, {})).toThrow('Missing required parameter: img_desc');
   });
 
   it('applyAliases ignores params for non-existent nodes', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: 'nonexistent', fieldName: 'value', alias: 'x', label: null },
+      { id: 1, workflowId: 'test', nodeId: 'nonexistent', fieldName: 'value', alias: 'x', label: null, paramType: 'text' },
     ];
     const result = applyAliases(sampleJson, params, { x: 'val' });
     expect(result).toBe(sampleJson);

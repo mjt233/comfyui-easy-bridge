@@ -11,7 +11,7 @@ describe('schema', () => {
     sqlite = new Database(':memory:');
     sqlite.exec(`
       CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL UNIQUE, label TEXT);
+      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL UNIQUE, label TEXT, param_type TEXT NOT NULL DEFAULT 'text');
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
   });

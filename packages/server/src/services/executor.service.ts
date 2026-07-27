@@ -5,6 +5,7 @@ export interface WorkflowParam {
   fieldName: string;
   alias: string;
   label: string | null;
+  paramType: string;
 }
 
 /** 执行工作流的结果 */
