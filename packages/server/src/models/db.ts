@@ -36,6 +36,12 @@ db.run(`
     param_type TEXT NOT NULL DEFAULT 'text'
   )
 `);
+// 迁移：对已有数据库添加 param_type 列（CREATE TABLE IF NOT EXISTS 不会修改已有表）
+try {
+  sqlite.exec(`ALTER TABLE workflow_params ADD COLUMN param_type TEXT NOT NULL DEFAULT 'text'`);
+} catch {
+  // 列已存在则忽略
+}
 db.run(`
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
