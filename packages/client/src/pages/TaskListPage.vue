@@ -165,9 +165,15 @@
                 <v-list v-else density="compact">
                   <v-list-item v-for="file in outputFiles" :key="file.filename">
                     <template #prepend>
-                      <v-icon v-if="file.fileType === 'image'" color="primary">mdi-image</v-icon>
-                      <v-icon v-else-if="file.fileType === 'video'" color="purple">mdi-film</v-icon>
-                      <v-icon v-else color="orange">mdi-music</v-icon>
+                      <v-icon v-if="file.fileType === 'image'" color="primary">
+                        mdi-image
+                      </v-icon>
+                      <v-icon v-else-if="file.fileType === 'video'" color="purple">
+                        mdi-film
+                      </v-icon>
+                      <v-icon v-else color="orange">
+                        mdi-music
+                      </v-icon>
                     </template>
                     <v-list-item-title class="text-body-2">
                       {{ file.filename }}
@@ -227,9 +233,15 @@
           <v-list v-else density="compact">
             <v-list-item v-for="file in listOutputFiles" :key="file.filename">
               <template #prepend>
-                <v-icon v-if="file.fileType === 'image'" color="primary">mdi-image</v-icon>
-                <v-icon v-else-if="file.fileType === 'video'" color="purple">mdi-film</v-icon>
-                <v-icon v-else color="orange">mdi-music</v-icon>
+                <v-icon v-if="file.fileType === 'image'" color="primary">
+                  mdi-image
+                </v-icon>
+                <v-icon v-else-if="file.fileType === 'video'" color="purple">
+                  mdi-film
+                </v-icon>
+                <v-icon v-else color="orange">
+                  mdi-music
+                </v-icon>
               </template>
               <v-list-item-title class="text-body-2">
                 {{ file.filename }}
@@ -286,7 +298,7 @@
               :alt="previewFile.filename"
               class="preview-media"
               @error="previewError = true"
-            />
+            >
             <!-- 视频预览 -->
             <video
               v-else-if="previewFile.fileType === 'video'"
