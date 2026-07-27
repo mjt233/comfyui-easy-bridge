@@ -13,6 +13,8 @@ export function createTaskRoutes(db: BetterSQLite3Database<typeof schema>): Rout
   router.get('/', auth, controller.list);
   router.delete('/completed', auth, controller.clearCompleted);
   router.post('/:taskId/submit', auth, controller.submit);
+  router.get('/:taskId/output-files', auth, controller.listOutputFiles);
+  router.get('/:taskId/output-files/:filename', auth, controller.downloadOutputFile);
   router.get('/:taskId', auth, controller.getById);
 
   return router;

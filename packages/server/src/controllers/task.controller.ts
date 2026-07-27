@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
+import { Readable } from 'stream';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
-import { TaskService } from '../services/task.service';
+import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { submitPrompt } from '../services/executor.service';
 
@@ -30,6 +31,83 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
     clearCompleted(_req: Request, res: Response): void {
       const count = taskService.clearCompleted();
       res.json({ deleted: count });
+    },
+
+    /** 获取任务的输出文件列表 */
+    async listOutputFiles(req: Request, res: Response): Promise<void> {
+      const task = taskService.getById(req.params.taskId as string);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
+        return;
+      }
+      const baseUrl = settingsService.get('comfyui_base_url');
+      const mode = settingsService.get('output_download_mode') || 'proxy';
+      let files: OutputFile[] = [];
+      if (task.outputFiles) {
+        try {
+          files = JSON.parse(task.outputFiles);
+        } catch {
+          files = [];
+        }
+      }
+
+      const result = files.map(f => ({
+        ...f,
+        url: mode === 'direct' && baseUrl
+          ? `${baseUrl}/view?filename=${encodeURIComponent(f.filename)}&subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`
+          : `/api/tasks/${task.id}/output-files/${encodeURIComponent(f.filename)}?subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`,
+      }));
+      res.json({ files: result });
+    },
+
+    /** 代理下载输出文件（从 ComfyUI 流式转发） */
+    async downloadOutputFile(req: Request, res: Response): Promise<void> {
+      const task = taskService.getById(req.params.taskId as string);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
+        return;
+      }
+      const baseUrl = settingsService.get('comfyui_base_url');
+      if (!baseUrl) {
+        res.status(502).json({ error: 'ComfyUI base URL not configured', code: 'comfyui_unreachable' });
+        return;
+      }
+
+      const filename = req.params.filename as string;
+      const subfolder = (req.query.subfolder as string) || '';
+      const type = (req.query.type as string) || 'output';
+
+      const comfyUrl = `${baseUrl}/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`;
+
+      try {
+        const comfyRes = await fetch(comfyUrl);
+        if (!comfyRes.ok) {
+          res.status(comfyRes.status).json({ error: 'ComfyUI error', code: 'comfyui_unreachable' });
+          return;
+        }
+        const contentType = comfyRes.headers.get('content-type') || 'application/octet-stream';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        const body = comfyRes.body;
+        if (body) {
+          const reader = body.getReader();
+          const readable = new Readable({
+            async read() {
+              const { done, value } = await reader.read();
+              if (done) {
+                this.push(null);
+              } else {
+                this.push(Buffer.from(value));
+              }
+            },
+          });
+          readable.pipe(res);
+        } else {
+          res.end();
+        }
+      } catch {
+        res.status(502).json({ error: 'Failed to fetch from ComfyUI', code: 'comfyui_unreachable' });
+      }
     },
 
     /** 立即提交 queued 任务（无视并发限制） */
