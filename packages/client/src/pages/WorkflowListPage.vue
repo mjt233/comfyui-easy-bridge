@@ -229,6 +229,7 @@ import bash from 'highlight.js/lib/languages/bash';
 import powershell from 'highlight.js/lib/languages/powershell';
 import python from 'highlight.js/lib/languages/python';
 import java from 'highlight.js/lib/languages/java';
+import 'highlight.js/styles/atom-one-dark.css';
 
 hljs.registerLanguage('json', json);
 hljs.registerLanguage('bash', bash);
