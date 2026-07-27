@@ -8,7 +8,7 @@
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
       设置
     </v-btn>
-    <v-btn variant="text" prepend-icon="mdi-logout" @click="handleLogout">
+    <v-btn v-if="authEnabled !== false" variant="text" prepend-icon="mdi-logout" @click="handleLogout">
       退出
     </v-btn>
   </v-app-bar>
@@ -136,6 +136,7 @@ import { ref, reactive, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { listWorkflows, deleteWorkflow, getWorkflow, executeWorkflow } from '@/api/workflows';
 import type { Workflow } from '@/types';
+import { authEnabled } from '@/api/auth-status';
 
 interface ExecuteField {
   alias: string;
