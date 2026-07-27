@@ -1,12 +1,60 @@
 import WebSocket from 'ws';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
-import { TaskService } from './task.service';
+import { TaskService, type OutputFile } from './task.service';
 import { SettingsService } from './settings.service';
 import { submitPrompt } from './executor.service';
 
 const FALLBACK_INTERVAL = 30000;
 const RECONNECT_DELAY = 5000;
+
+/** 解析 ComfyUI /history/{promptId} 响应中的输出文件 */
+function parseHistoryOutputs(historyData: unknown, promptId: string): OutputFile[] {
+  const result: OutputFile[] = [];
+  if (!historyData || typeof historyData !== 'object') return result;
+  const promptEntry = (historyData as Record<string, unknown>)[promptId];
+  if (!promptEntry || typeof promptEntry !== 'object') return result;
+  const outputs = (promptEntry as { outputs?: Record<string, unknown> }).outputs;
+  if (!outputs) return result;
+
+  const typeKeyMap: Record<string, 'image' | 'video' | 'audio'> = {
+    images: 'image',
+    videos: 'video',
+    audio: 'audio',
+  };
+
+  for (const [nodeId, nodeOutput] of Object.entries(outputs)) {
+    if (!nodeOutput || typeof nodeOutput !== 'object') continue;
+    for (const [key, items] of Object.entries(nodeOutput as Record<string, unknown>)) {
+      const fileType = typeKeyMap[key] ?? guessFileType(key);
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        if (item && typeof item === 'object') {
+          const raw = item as Record<string, unknown>;
+          if (raw.filename && typeof raw.filename === 'string') {
+            result.push({
+              filename: raw.filename,
+              subfolder: typeof raw.subfolder === 'string' ? raw.subfolder : '',
+              type: typeof raw.type === 'string' ? raw.type : 'output',
+              nodeId,
+              fileType,
+            });
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+/** 按文件扩展名推断类型 */
+function guessFileType(key: string): 'image' | 'video' | 'audio' {
+  const ext = key.split('.').pop()?.toLowerCase() ?? '';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'avi', 'mov', 'mkv'].includes(ext)) return 'video';
+  if (['wav', 'mp3', 'ogg', 'flac', 'aac'].includes(ext)) return 'audio';
+  return 'image';
+}
 
 /** 启动 ComfyUI WebSocket 连接 + 队列调度 + 后备轮询服务 */
 export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): { stop: () => void } {
@@ -74,6 +122,26 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
     }
   }
 
+  async function fetchHistoryAndExtractOutputs(
+    promptId: string,
+    baseUrl: string,
+    taskService: TaskService,
+  ): Promise<void> {
+    try {
+      const res = await fetch(`${baseUrl}/history/${promptId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const files = parseHistoryOutputs(data, promptId);
+      if (files.length === 0) return;
+      const task = taskService.getByPromptId(promptId);
+      if (task) {
+        taskService.updateOutputFiles(task.id, files);
+      }
+    } catch (err) {
+      console.error('[ComfyUIService] fetchHistoryAndExtractOutputs error', err);
+    }
+  }
+
   function connect(): void {
     if (stopped) return;
     const url = getWsUrl();
@@ -109,6 +177,11 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
             if (tasks.length > 0) {
               for (const t of tasks) {
                 taskService.updateStatus(t.id, { status: 'completed' });
+              }
+              const baseUrl = getBaseUrl();
+              if (baseUrl) {
+                fetchHistoryAndExtractOutputs(promptId, baseUrl, taskService)
+                  .catch(err => console.error('[ComfyUIService] fetch outputs error', err));
               }
               drainQueue();
             }
@@ -170,6 +243,10 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
             const statusObj = (promptData as { status?: { completed?: boolean } }).status;
             if (statusObj?.completed) {
               taskService.updateStatus(task.id, { status: 'completed', comfyuiResponse: JSON.stringify(data) });
+              const files = parseHistoryOutputs(data, task.promptId);
+              if (files.length > 0) {
+                taskService.updateOutputFiles(task.id, files);
+              }
               drainQueue();
             }
           } catch {
