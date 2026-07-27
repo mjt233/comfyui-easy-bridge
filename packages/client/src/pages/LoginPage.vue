@@ -111,6 +111,7 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { login } from '@/api/auth';
+import { authEnabled } from '@/api/auth-status';
 
 const router = useRouter();
 const password = ref('');
@@ -120,6 +121,11 @@ const loading = ref(false);
 // Hide scrollbar on this page (login is full-screen, no scrolling needed)
 onMounted(() => {
   document.documentElement.style.overflow = 'hidden';
+
+  // Redirect to admin if auth is disabled
+  if (authEnabled.value === false) {
+    router.replace('/admin');
+  }
 });
 onUnmounted(() => {
   document.documentElement.style.overflow = '';
