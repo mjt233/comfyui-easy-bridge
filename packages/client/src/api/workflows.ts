@@ -25,12 +25,12 @@ export async function deleteWorkflow(id: string): Promise<void> {
   await client.delete(`/workflows/${id}`);
 }
 
-export async function addParam(workflowId: string, data: { nodeId: string; fieldName: string; alias: string; label?: string }) {
+export async function addParam(workflowId: string, data: { nodeId: string; fieldName: string; alias: string; label?: string; paramType?: string }) {
   const res = await client.post(`/workflows/${workflowId}/params`, data);
   return res.data;
 }
 
-export async function updateParam(workflowId: string, paramId: number, data: Partial<{ alias: string; label: string }>) {
+export async function updateParam(workflowId: string, paramId: number, data: Partial<{ alias: string; label: string; paramType: string }>) {
   const res = await client.put(`/workflows/${workflowId}/params/${paramId}`, data);
   return res.data;
 }

@@ -66,13 +66,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const { nodeId, fieldName, alias, label } = req.body;
+      const { nodeId, fieldName, alias, label, paramType } = req.body;
       if (!nodeId || !fieldName || !alias) {
         res.status(400).json({ error: 'nodeId, fieldName, and alias are required', code: 'missing_parameter' });
         return;
       }
       try {
-        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label });
+        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label, paramType });
         res.status(201).json(param);
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
