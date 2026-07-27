@@ -46,6 +46,22 @@
             </v-progress-circular>
           </div>
         </template>
+        <template #[`item.outputFiles`]="{ item, value }">
+          <div v-if="value" class="d-flex align-center ga-1">
+            <v-btn
+              variant="text"
+              size="small"
+              color="primary"
+              class="pa-0 text-caption font-weight-regular"
+              density="comfortable"
+              :prepend-icon="countOutputFiles(value) > 0 ? 'mdi-file-outline' : ''"
+              @click.stop="openListOutputFiles(item)"
+            >
+              {{ countOutputFiles(value) }} 个文件
+            </v-btn>
+          </div>
+          <span v-else class="text-caption text-grey">-</span>
+        </template>
         <template #[`item.completedAt`]="{ value }">
           {{ value ? formatTime(value) : '-' }}
         </template>
@@ -158,6 +174,12 @@
                     </v-list-item-title>
                     <template #append>
                       <v-btn
+                        icon="mdi-eye"
+                        size="small"
+                        variant="text"
+                        @click.stop="openPreview(file)"
+                      />
+                      <v-btn
                         icon="mdi-download"
                         size="small"
                         variant="text"
@@ -180,6 +202,123 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+    <!-- 列表输出文件弹窗 -->
+    <v-dialog v-model="listOutputDialog" max-width="500">
+      <v-card v-if="listOutputTaskId">
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon>mdi-file-download-outline</v-icon>
+          <span>输出文件</span>
+          <v-spacer />
+          <v-btn
+            icon="mdi-close"
+            size="small"
+            variant="text"
+            @click="listOutputDialog = false"
+          />
+        </v-card-title>
+        <v-divider />
+        <v-card-text>
+          <div v-if="listOutputLoading" class="text-center pa-4">
+            <v-progress-circular indeterminate size="20" />
+          </div>
+          <div v-else-if="listOutputFiles.length === 0" class="text-body-2 text-grey text-center pa-4">
+            无输出文件
+          </div>
+          <v-list v-else density="compact">
+            <v-list-item v-for="file in listOutputFiles" :key="file.filename">
+              <template #prepend>
+                <v-icon v-if="file.fileType === 'image'" color="primary">mdi-image</v-icon>
+                <v-icon v-else-if="file.fileType === 'video'" color="purple">mdi-film</v-icon>
+                <v-icon v-else color="orange">mdi-music</v-icon>
+              </template>
+              <v-list-item-title class="text-body-2">
+                {{ file.filename }}
+              </v-list-item-title>
+              <template #append>
+                <v-btn
+                  icon="mdi-eye"
+                  size="small"
+                  variant="text"
+                  @click.stop="openPreview(file)"
+                />
+                <v-btn
+                  icon="mdi-download"
+                  size="small"
+                  variant="text"
+                  :href="file.url"
+                  target="_blank"
+                  @click.stop
+                />
+              </template>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+    <!-- 文件预览弹窗 -->
+    <v-dialog v-model="previewDialog" max-width="900" @click:outside="previewDialog = false">
+      <v-card v-if="previewFile">
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon>mdi-file-eye-outline</v-icon>
+          <span class="text-truncate">{{ previewFile.filename }}</span>
+          <v-spacer />
+          <v-btn
+            icon="mdi-download"
+            size="small"
+            variant="text"
+            :href="previewFile.url"
+            target="_blank"
+          />
+          <v-btn
+            icon="mdi-close"
+            size="small"
+            variant="text"
+            @click="previewDialog = false"
+          />
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-0">
+          <div class="preview-container">
+            <!-- 图片预览 -->
+            <img
+              v-if="previewFile.fileType === 'image'"
+              :src="previewFile.url"
+              :alt="previewFile.filename"
+              class="preview-media"
+              @error="previewError = true"
+            />
+            <!-- 视频预览 -->
+            <video
+              v-else-if="previewFile.fileType === 'video'"
+              :src="previewFile.url"
+              class="preview-media"
+              controls
+              autoplay
+            >
+              您的浏览器不支持视频播放
+            </video>
+            <!-- 音频预览 -->
+            <audio
+              v-else-if="previewFile.fileType === 'audio'"
+              :src="previewFile.url"
+              class="preview-audio"
+              controls
+              autoplay
+            >
+              您的浏览器不支持音频播放
+            </audio>
+            <!-- 加载失败提示 -->
+            <v-alert
+              v-if="previewError"
+              type="error"
+              class="ma-4"
+              title="加载失败"
+              text="无法加载文件，请尝试下载查看"
+            />
+          </div>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -191,6 +330,7 @@ const headers = [
   { title: '提交时间', key: 'createdAt' },
   { title: '工作流', key: 'workflowName' },
   { title: '状态', key: 'status' },
+  { title: '输出', key: 'outputFiles', sortable: false },
   { title: '完成时间', key: 'completedAt' },
   { title: '操作', key: 'actions', sortable: false },
 ];
@@ -202,6 +342,15 @@ const selectedTask = ref<TaskLog | null>(null);
 const outputFiles = ref<OutputFile[]>([]);
 const outputFilesLoading = ref(false);
 const hasCompleted = ref(false);
+
+const previewDialog = ref(false);
+const previewFile = ref<OutputFile | null>(null);
+const previewError = ref(false);
+
+const listOutputDialog = ref(false);
+const listOutputTaskId = ref<string | null>(null);
+const listOutputFiles = ref<OutputFile[]>([]);
+const listOutputLoading = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -253,6 +402,39 @@ async function openDetail(item: TaskLog) {
       outputFilesLoading.value = false;
     }
   }
+}
+
+/** 解析 outputFiles JSON 并返回文件数量 */
+function countOutputFiles(outputFilesJson: string): number {
+  try {
+    const files = JSON.parse(outputFilesJson);
+    return Array.isArray(files) ? files.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** 点击列表中的输出文件指示器，获取文件列表并弹窗 */
+async function openListOutputFiles(task: TaskLog) {
+  listOutputTaskId.value = task.id;
+  listOutputDialog.value = true;
+  listOutputLoading.value = true;
+  listOutputFiles.value = [];
+  try {
+    const result = await fetchTaskOutputFiles(task.id);
+    listOutputFiles.value = result.files;
+  } catch {
+    listOutputFiles.value = [];
+  } finally {
+    listOutputLoading.value = false;
+  }
+}
+
+/** 打开文件预览弹窗 */
+function openPreview(file: OutputFile) {
+  previewFile.value = file;
+  previewError.value = false;
+  previewDialog.value = true;
 }
 
 /** Vuetify v-data-table 行点击事件处理：从事件数据中提取 item */
@@ -312,5 +494,26 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 0.8rem;
   line-height: 1.4;
+}
+
+.preview-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+  max-height: 80vh;
+  background: rgb(var(--v-theme-surface-light));
+}
+
+.preview-media {
+  max-width: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+}
+
+.preview-audio {
+  width: 100%;
+  max-width: 600px;
+  margin: 48px auto;
 }
 </style>

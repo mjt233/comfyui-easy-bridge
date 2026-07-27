@@ -10,6 +10,7 @@ export interface TaskLog {
   comfyuiUrl: string;
   comfyuiRequestBody: string | null;
   comfyuiResponse: string | null;
+  outputFiles: string | null;
   status: 'queued' | 'pending' | 'completed' | 'failed';
   errorMessage: string | null;
   progress: number | null;
