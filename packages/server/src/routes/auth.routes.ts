@@ -8,6 +8,7 @@ export function createAuthRoutes(db: BetterSQLite3Database<typeof schema>): Rout
   const controller = createAuthController(db);
 
   router.post('/login', controller.login);
+  router.get('/status', controller.status);
 
   return router;
 }

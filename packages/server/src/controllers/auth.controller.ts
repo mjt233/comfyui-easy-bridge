@@ -20,5 +20,9 @@ export function createAuthController(db: BetterSQLite3Database<typeof schema>) {
         res.status(401).json({ error: 'Invalid password', code: 'unauthorized' });
       }
     },
+
+    status(_req: Request, res: Response): void {
+      res.json({ authEnabled: authService.isAuthEnabled() });
+    },
   };
 }
