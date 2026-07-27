@@ -6,7 +6,7 @@ export async function uploadFileToComfyUI(
 ): Promise<string> {
   const endpoint = mediaType === 'image' ? '/upload/image' : `/upload/${mediaType}`;
   const formData = new FormData();
-  const blob = new Blob([file.buffer], { type: file.mimetype });
+  const blob = new Blob([new Uint8Array(file.buffer)], { type: file.mimetype });
   formData.append('image', blob, file.originalname);
   formData.append('type', 'input');
   formData.append('overwrite', 'true');

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { createWorkflowController } from '../controllers/workflow.controller';
@@ -8,8 +9,9 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   const router = Router();
   const controller = createWorkflowController(db);
   const auth = createAuthMiddleware(db);
+  const upload = multer({ storage: multer.memoryStorage() });
 
-  router.post('/:id/execute', controller.execute);
+  router.post('/:id/execute', upload.any(), controller.execute);
 
   router.get('/', auth, controller.list);
   router.post('/', auth, controller.create);
