@@ -10,44 +10,61 @@ import { TaskService } from '../services/task.service';
 
 describe('Task output files endpoints', () => {
   let app: express.Express;
+  let appUnreachable: express.Express;
   let taskId: string;
-  let taskService: TaskService;
-  let settingsService: SettingsService;
+  let taskIdNoOutput: string;
+  let unreachableTaskId: string;
 
   beforeAll(() => {
-    const sqlite = new Database(':memory:');
-    sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
-      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    `);
-    const db = drizzle(sqlite, { schema });
-    taskService = new TaskService(db);
-    settingsService = new SettingsService(db);
-    settingsService.set('comfyui_base_url', 'http://localhost:8188');
-    settingsService.set('output_download_mode', 'proxy');
-    settingsService.set('auth_enabled', '0');
+    function buildApp(baseUrl: string | null) {
+      const sqlite = new Database(':memory:');
+      sqlite.exec(`
+        CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      `);
+      const db = drizzle(sqlite, { schema });
+      const svc = new TaskService(db);
+      const s = new SettingsService(db);
+      if (baseUrl) s.set('comfyui_base_url', baseUrl);
+      s.set('auth_enabled', '0');
+      s.set('output_download_mode', 'proxy');
 
-    db.insert(schema.workflows).values({
-      id: 'wf1', name: 'test', rawJson: '{}',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    }).run();
+      db.insert(schema.workflows).values({
+        id: 'wf1', name: 'test', rawJson: '{}',
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      }).run();
 
-    const task = taskService.create({
-      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
-      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
-      comfyuiResponse: null, promptId: 'prompt-abc',
-    });
-    taskId = task.id;
+      const task = svc.create({
+        workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+        comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
+        comfyuiResponse: null, promptId: 'prompt-abc',
+      });
+      svc.updateStatus(task.id, { status: 'completed' });
+      svc.updateOutputFiles(task.id, [
+        { filename: 'output.png', subfolder: '', type: 'output', nodeId: '9', fileType: 'image' },
+      ]);
 
-    taskService.updateStatus(taskId, { status: 'completed' });
-    taskService.updateOutputFiles(taskId, [
-      { filename: 'output.png', subfolder: '', type: 'output', nodeId: '9', fileType: 'image' },
-    ]);
+      const noOutputTask = svc.create({
+        workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+        comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
+        comfyuiResponse: null, promptId: null,
+      });
 
-    app = express();
-    app.use(express.json());
-    app.use('/api/tasks', createTaskRoutes(db));
+      const routeApp = express();
+      routeApp.use(express.json());
+      routeApp.use('/api/tasks', createTaskRoutes(db));
+      return { app: routeApp, taskId: task.id, taskIdNoOutput: noOutputTask.id };
+    }
+
+    const main = buildApp('http://localhost:8188');
+    app = main.app;
+    taskId = main.taskId;
+    taskIdNoOutput = main.taskIdNoOutput;
+
+    const unreachable = buildApp(null);
+    appUnreachable = unreachable.app;
+    unreachableTaskId = unreachable.taskId;
   });
 
   it('GET /api/tasks/:taskId/output-files returns file list with proxy urls', async () => {
@@ -69,32 +86,23 @@ describe('Task output files endpoints', () => {
   });
 
   it('GET /api/tasks/:taskId/output-files returns empty list for task without output files', async () => {
-    const sqlite2 = new Database(':memory:');
-    sqlite2.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
-      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    `);
-    const db2 = drizzle(sqlite2, { schema });
-    const svc = new TaskService(db2);
-    new SettingsService(db2).set('auth_enabled', '0');
-    db2.insert(schema.workflows).values({
-      id: 'wf2', name: 'test', rawJson: '{}',
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    }).run();
-    const t = svc.create({
-      workflowId: 'wf2', workflowName: 'test', aliasValues: '{}',
-      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
-      comfyuiResponse: null, promptId: null,
-    });
-
-    const app2 = express();
-    app2.use(express.json());
-    app2.use('/api/tasks', createTaskRoutes(db2));
-
-    const res = await supertest(app2)
-      .get(`/api/tasks/${t.id}/output-files`);
+    const res = await supertest(app)
+      .get(`/api/tasks/${taskIdNoOutput}/output-files`);
     expect(res.status).toBe(200);
     expect(res.body.files).toEqual([]);
+  });
+
+  it('GET /api/tasks/:taskId/output-files/:filename returns 404 for non-existent task', async () => {
+    const res = await supertest(app)
+      .get('/api/tasks/nonexistent/output-files/test.png');
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('task_not_found');
+  });
+
+  it('GET /api/tasks/:taskId/output-files/:filename returns 502 when ComfyUI is unreachable', async () => {
+    const res = await supertest(appUnreachable)
+      .get(`/api/tasks/${unreachableTaskId}/output-files/output.png`);
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('comfyui_unreachable');
   });
 });

@@ -45,7 +45,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       let files: OutputFile[] = [];
       if (task.outputFiles) {
         try {
-          files = JSON.parse(task.outputFiles);
+          const parsed = JSON.parse(task.outputFiles);
+          files = Array.isArray(parsed) ? parsed : [];
         } catch {
           files = [];
         }
