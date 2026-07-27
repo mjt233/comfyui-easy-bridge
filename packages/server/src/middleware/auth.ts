@@ -7,6 +7,11 @@ export function createAuthMiddleware(db: BetterSQLite3Database<typeof schema>) {
   const authService = new AuthService(db);
 
   return function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+    if (!authService.isAuthEnabled()) {
+      next();
+      return;
+    }
+
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid token', code: 'unauthorized' });

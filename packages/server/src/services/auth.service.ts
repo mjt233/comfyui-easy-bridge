@@ -39,4 +39,9 @@ export class AuthService {
   verifyToken(token: string): { role: string } {
     return jwt.verify(token, JWT_SECRET) as { role: string };
   }
+
+  isAuthEnabled(): boolean {
+    const value = this.settings.get('auth_enabled');
+    return value !== '0'; // default to enabled
+  }
 }
