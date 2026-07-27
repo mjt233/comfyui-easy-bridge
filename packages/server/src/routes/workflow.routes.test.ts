@@ -13,9 +13,11 @@ describe('Workflow API', () => {
 
   beforeAll(() => {
     const sqlite = new Database(':memory:');
+    sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
       CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL UNIQUE, label TEXT, param_type TEXT NOT NULL DEFAULT 'text');
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     const db = drizzle(sqlite, { schema });
@@ -122,5 +124,51 @@ describe('Workflow API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ key: 'comfyui_base_url', value: 'http://localhost:8188' });
     expect(res.status).toBe(200);
+  });
+
+  it('PUT /api/workflows/:id with new ID updates workflow ID', async () => {
+    const loginRes = await supertest(app)
+      .post('/api/auth/login')
+      .send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'old-id', name: 'Test', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .put('/api/workflows/old-id')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'new-id', name: 'Updated' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe('new-id');
+    expect(res.body.name).toBe('Updated');
+  });
+
+  it('PUT /api/workflows/:id with conflicting ID returns 409', async () => {
+    const loginRes = await supertest(app)
+      .post('/api/auth/login')
+      .send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-a', name: 'A', rawJson: '{}' });
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-b', name: 'B', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .put('/api/workflows/wf-a')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-b' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('id_conflict');
   });
 });

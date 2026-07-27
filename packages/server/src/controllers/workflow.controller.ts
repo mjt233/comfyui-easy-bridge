@@ -44,8 +44,16 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const wf = workflowService.update(id, req.body);
-      res.json(wf);
+      try {
+        const wf = workflowService.update(id, req.body);
+        res.json(wf);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
+          res.status(409).json({ error: 'ID already exists', code: 'id_conflict' });
+          return;
+        }
+        throw err;
+      }
     },
 
     delete(req: Request, res: Response): void {
