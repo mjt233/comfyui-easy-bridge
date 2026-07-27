@@ -21,13 +21,11 @@
         <v-text-field
           v-model="form.id"
           label="工作流 ID"
-          hint="唯一标识，创建后不可修改"
+          hint="唯一标识，修改后会影响历史任务记录的关联"
           variant="outlined"
           class="mb-3"
-          :disabled="isEdit"
         />
         <v-btn
-          v-if="!isEdit"
           size="small"
           variant="text"
           class="mb-3"
@@ -93,8 +91,9 @@ const snackbar = ref({ show: false, text: '', color: 'success' });
 
 function generateId() {
   const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const length = 8 + Math.floor(Math.random() * 5); // 8, 9, 10, 11, 12
   let result = '';
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < length; i++) {
     result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   form.value.id = result;
@@ -119,10 +118,14 @@ async function handleSave() {
   saving.value = true;
   try {
     if (isEdit.value) {
-      await updateWorkflow(route.params.id as string, {
+      const payload: Record<string, string> = {
         name: form.value.name,
         rawJson: form.value.rawJson,
-      });
+      };
+      if (form.value.id !== route.params.id) {
+        payload.id = form.value.id;
+      }
+      await updateWorkflow(route.params.id as string, payload);
     } else {
       await createWorkflow(form.value);
     }
