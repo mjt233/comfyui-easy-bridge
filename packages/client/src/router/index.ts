@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router';
+import { authEnabled } from '@/api/auth-status';
 
 const router = createRouter({
   history: createWebHistory(),
@@ -46,6 +47,11 @@ const router = createRouter({
 });
 
 router.beforeEach((to) => {
+  // If auth status is still loading or auth is disabled, allow access
+  if (authEnabled.value === null || authEnabled.value === false) {
+    return;
+  }
+
   const token = localStorage.getItem('token');
   if (to.name !== 'Login' && !token) {
     return { name: 'Login' };
