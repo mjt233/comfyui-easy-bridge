@@ -149,4 +149,21 @@ describe('WorkflowService', () => {
     const wf = service.getById('new');
     expect(wf!.name).toBe('New Name');
   });
+
+  it('cascades ID update to task_logs', () => {
+    service.create({ id: 'old-id', name: 'WF', rawJson: '{}' });
+    // 直接插入 task_log 记录（模拟执行过的任务）
+    const now = new Date().toISOString();
+    sqlite.exec(`
+      INSERT INTO task_logs (id, workflow_id, workflow_name, alias_values, comfyui_url, status, created_at)
+      VALUES ('log-1', 'old-id', 'WF', '{}', 'http://localhost:8188', 'completed', '${now}')
+    `);
+
+    service.update('old-id', { id: 'new-id' });
+
+    // 验证 task_log 的 workflow_id 已级联更新
+    const rows = sqlite.prepare('SELECT workflow_id FROM task_logs WHERE id = ?').all('log-1') as { workflow_id: string }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workflow_id).toBe('new-id');
+  });
 });

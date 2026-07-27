@@ -56,12 +56,13 @@ export class WorkflowService {
     const now = new Date().toISOString();
 
     if (input.id && input.id !== id) {
-      // 预取旧值，在事务内用于 fallback（事务内不能执行 SELECT）
+      // 预取旧值，在事务内用于 fallback
       const existing = this.getById(id);
       if (!existing) throw new Error('Workflow not found');
 
       // 事务级联更新三张表
       // 策略：先 INSERT 新行（使新 ID 成为有效的 FK 目标），再更新子表 FK，最后删除旧行
+      // 不使用 UPDATE 主键是因为 SQLite FK 约束禁止在子行引用时修改父键
       this.db.transaction(() => {
         // ① 插入新 workflows 行（新 ID）
         this.db.insert(schema.workflows).values({
