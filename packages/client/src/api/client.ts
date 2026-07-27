@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { authEnabled } from './auth-status';
 
 const client = axios.create({
   baseURL: '/api',
@@ -15,8 +16,11 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (res) => res,
   (error) => {
-    // Don't intercept 401 on the login endpoint — it's a valid "wrong password" response
-    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
+    if (
+      error.response?.status === 401
+      && !error.config?.url?.includes('/auth/login')
+      && authEnabled.value !== false
+    ) {
       localStorage.removeItem('token');
       window.location.href = '/login';
     }
