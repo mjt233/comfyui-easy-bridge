@@ -2,7 +2,12 @@
   <v-app-bar color="primary">
     <v-app-bar-title>任务日志</v-app-bar-title>
     <template #append>
-      <v-btn variant="text" prepend-icon="mdi-delete-sweep" :disabled="!hasCompleted" @click="handleClear">
+      <v-btn
+        variant="text"
+        prepend-icon="mdi-delete-sweep"
+        :disabled="!hasCompleted"
+        @click="handleClear"
+      >
         清空已完成
       </v-btn>
       <v-btn icon to="/admin">
@@ -55,7 +60,12 @@
           >
             立即提交
           </v-btn>
-          <v-btn icon="mdi-information-outline" size="small" variant="text" @click.stop="openDetail(item)" />
+          <v-btn
+            icon="mdi-information-outline"
+            size="small"
+            variant="text"
+            @click.stop="openDetail(item)"
+          />
         </template>
       </v-data-table>
     </v-card>
@@ -67,7 +77,9 @@
           <v-list>
             <v-list-item>
               <v-list-item-subtitle>任务 ID</v-list-item-subtitle>
-              <v-list-item-title class="text-body-2">{{ selectedTask.id }}</v-list-item-title>
+              <v-list-item-title class="text-body-2">
+                {{ selectedTask.id }}
+              </v-list-item-title>
             </v-list-item>
             <v-list-item>
               <v-list-item-subtitle>工作流</v-list-item-subtitle>
@@ -91,11 +103,17 @@
             </v-list-item>
             <v-list-item v-if="selectedTask.promptId">
               <v-list-item-subtitle>ComfyUI Prompt ID</v-list-item-subtitle>
-              <v-list-item-title class="text-body-2">{{ selectedTask.promptId }}</v-list-item-title>
+              <v-list-item-title class="text-body-2">
+                {{ selectedTask.promptId }}
+              </v-list-item-title>
             </v-list-item>
             <v-list-item v-if="selectedTask.errorMessage">
-              <v-list-item-subtitle class="text-error">错误信息</v-list-item-subtitle>
-              <v-list-item-title class="text-error">{{ selectedTask.errorMessage }}</v-list-item-title>
+              <v-list-item-subtitle class="text-error">
+                错误信息
+              </v-list-item-subtitle>
+              <v-list-item-title class="text-error">
+                {{ selectedTask.errorMessage }}
+              </v-list-item-title>
             </v-list-item>
           </v-list>
 
@@ -124,7 +142,9 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="detailDialog = false">关闭</v-btn>
+          <v-btn variant="text" @click="detailDialog = false">
+            关闭
+          </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
