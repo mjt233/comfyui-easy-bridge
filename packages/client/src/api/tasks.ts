@@ -34,3 +34,19 @@ export async function submitTask(taskId: string): Promise<{ task_id: string; sta
   const res = await client.post<{ task_id: string; status: string }>(`/tasks/${taskId}/submit`);
   return res.data;
 }
+
+/** 输出文件信息 */
+export interface OutputFile {
+  filename: string;
+  subfolder: string;
+  type: string;
+  nodeId: string;
+  fileType: 'image' | 'video' | 'audio';
+  url: string;
+}
+
+/** 获取任务输出文件列表 */
+export async function fetchTaskOutputFiles(taskId: string): Promise<{ files: OutputFile[] }> {
+  const res = await client.get<{ files: OutputFile[] }>(`/tasks/${taskId}/output-files`);
+  return res.data;
+}
