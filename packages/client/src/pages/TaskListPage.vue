@@ -39,11 +39,7 @@
               color="primary"
               size="20"
               width="3"
-            >
-              <template #default>
-                <span class="text-caption font-weight-bold">{{ item.progress }}</span>
-              </template>
-            </v-progress-circular>
+            />
           </div>
         </template>
         <template #[`item.outputFiles`]="{ item, value }">

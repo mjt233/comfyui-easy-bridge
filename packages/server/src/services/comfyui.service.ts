@@ -5,7 +5,8 @@ import { TaskService, type OutputFile } from './task.service';
 import { SettingsService } from './settings.service';
 import { submitPrompt } from './executor.service';
 
-const FALLBACK_INTERVAL = 30000;
+const FALLBACK_INTERVAL = 10000;
+const COMPLETION_POLL_INTERVAL = 1000;
 const RECONNECT_DELAY = 5000;
 
 /** 解析 ComfyUI /history/{promptId} 响应中的输出文件 */
@@ -68,6 +69,7 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setInterval> | null = null;
+  let completionPollTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
 
   function getBaseUrl(): string | null {
@@ -126,6 +128,30 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
     }
   }
 
+  /** 将 pending 任务标记为已完成，提取输出文件并触发队列调度 */
+  async function completeTask(promptId: string): Promise<void> {
+    const task = taskService.getByPromptId(promptId);
+    if (!task || task.status !== 'pending') return;
+    taskService.updateStatus(task.id, { status: 'completed' });
+    const baseUrl = getBaseUrl();
+    if (baseUrl) {
+      fetchHistoryAndExtractOutputs(promptId, baseUrl, taskService)
+        .catch(err => console.error('[ComfyUIService] fetch outputs error', err));
+    }
+    drainQueue();
+  }
+
+  /** 将 pending 任务标记为失败并触发队列调度 */
+  function failTask(promptId: string, errorMessage?: string): void {
+    const task = taskService.getByPromptId(promptId);
+    if (!task || task.status !== 'pending') return;
+    taskService.updateStatus(task.id, {
+      status: 'failed',
+      errorMessage: errorMessage || 'Execution error',
+    });
+    drainQueue();
+  }
+
   async function fetchHistoryAndExtractOutputs(
     promptId: string,
     baseUrl: string,
@@ -171,35 +197,18 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
             const { value, max } = data;
             if (value != null && max > 0) {
               const pct = Math.round((value / max) * 100);
-              const tasks = taskService.listPending().filter(t => t.promptId === promptId);
-              for (const t of tasks) {
-                taskService.updateProgress(t.id, pct);
+              const task = taskService.getByPromptId(promptId);
+              if (task && task.status === 'pending') {
+                taskService.updateProgress(task.id, pct);
               }
             }
-          } else if (msg.type === 'execution_complete' || msg.type === 'execution_success') {
-            const tasks = taskService.listPending().filter(t => t.promptId === promptId);
-            if (tasks.length > 0) {
-              for (const t of tasks) {
-                taskService.updateStatus(t.id, { status: 'completed' });
-              }
-              const baseUrl = getBaseUrl();
-              if (baseUrl) {
-                fetchHistoryAndExtractOutputs(promptId, baseUrl, taskService)
-                  .catch(err => console.error('[ComfyUIService] fetch outputs error', err));
-              }
-              drainQueue();
-            }
+          } else if (msg.type === 'execution_success') {
+            completeTask(promptId);
+          } else if (msg.type === 'executing' && data.node == null) {
+            // executing 消息的 node 为 null 表示执行队列清空，prompt 已完成
+            completeTask(promptId);
           } else if (msg.type === 'execution_error') {
-            const tasks = taskService.listPending().filter(t => t.promptId === promptId);
-            if (tasks.length > 0) {
-              for (const t of tasks) {
-                taskService.updateStatus(t.id, {
-                  status: 'failed',
-                  errorMessage: data.exception_message || 'Execution error',
-                });
-              }
-              drainQueue();
-            }
+            failTask(promptId, data.exception_message);
           }
         } catch {
           // ignore parse errors
@@ -218,6 +227,43 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
     } catch {
       reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
     }
+  }
+
+  /** 快速轮询进度 100% 但尚未完成的 pending 任务，1 秒间隔补足 WebSocket 可能丢失的完成信号 */
+  function startCompletionPoll(): void {
+    completionPollTimer = setInterval(async () => {
+      try {
+        const pending = taskService.listPending();
+        const stuck = pending.filter(t => t.progress != null && t.progress >= 100);
+        if (stuck.length === 0) return;
+        const baseUrl = getBaseUrl();
+        if (!baseUrl) return;
+
+        for (const task of stuck) {
+          if (!task.promptId) continue;
+          try {
+            const res = await fetch(`${baseUrl}/history/${task.promptId}`);
+            if (!res.ok) continue;
+            const data = await res.json();
+            const promptData = (data as Record<string, unknown>)[task.promptId];
+            if (!promptData) continue;
+            const statusObj = (promptData as { status?: { completed?: boolean } }).status;
+            if (statusObj?.completed) {
+              taskService.updateStatus(task.id, { status: 'completed', comfyuiResponse: JSON.stringify(data) });
+              const files = parseHistoryOutputs(data, task.promptId);
+              if (files.length > 0) {
+                taskService.updateOutputFiles(task.id, files);
+              }
+              drainQueue();
+            }
+          } catch {
+            // retry next cycle
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, COMPLETION_POLL_INTERVAL);
   }
 
   /** 后备轮询 /history 补偿 WebSocket 可能丢失的消息 */
@@ -265,6 +311,7 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
 
   connect();
   startFallback();
+  startCompletionPoll();
 
   return {
     stop: () => {
@@ -272,6 +319,7 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
       if (ws) { ws.close(); ws = null; }
       if (reconnectTimer) { clearTimeout(reconnectTimer); }
       if (fallbackTimer) { clearInterval(fallbackTimer); }
+      if (completionPollTimer) { clearInterval(completionPollTimer); }
     },
   };
 }
