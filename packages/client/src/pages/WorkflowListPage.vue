@@ -152,12 +152,27 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="apiDialog" max-width="720">
+    <v-dialog v-model="apiDialog" max-width="800">
       <v-card>
-        <v-card-title>
-          API 调用说明：{{ apiTargetName }}
+        <v-card-title class="d-flex align-center">
+          <span>API 调用说明：{{ apiTargetName }}</span>
+          <v-spacer />
+          <v-chip v-if="apiHasMedia" size="small" color="warning" variant="tonal" class="mr-2">
+            含文件参数
+          </v-chip>
         </v-card-title>
         <v-card-text>
+          <v-btn-toggle
+            v-if="apiHasMedia"
+            v-model="apiFormat"
+            color="primary"
+            density="compact"
+            class="mb-3"
+            mandatory
+          >
+            <v-btn value="json" size="small">JSON</v-btn>
+            <v-btn value="multipart" size="small">Multipart 文件上传</v-btn>
+          </v-btn-toggle>
           <v-tabs v-model="apiTab" color="primary">
             <v-tab value="curl">curl</v-tab>
             <v-tab value="powershell">PowerShell</v-tab>
@@ -165,23 +180,27 @@
             <v-tab value="nodejs">Node.js</v-tab>
             <v-tab value="java">Java</v-tab>
           </v-tabs>
-          <v-window v-model="apiTab" class="mt-4">
-            <v-window-item value="curl">
-              <pre class="code-block">{{ apiCode.curl }}</pre>
-            </v-window-item>
-            <v-window-item value="powershell">
-              <pre class="code-block">{{ apiCode.powershell }}</pre>
-            </v-window-item>
-            <v-window-item value="python">
-              <pre class="code-block">{{ apiCode.python }}</pre>
-            </v-window-item>
-            <v-window-item value="nodejs">
-              <pre class="code-block">{{ apiCode.nodejs }}</pre>
-            </v-window-item>
-            <v-window-item value="java">
-              <pre class="code-block">{{ apiCode.java }}</pre>
-            </v-window-item>
-          </v-window>
+          <div class="api-code-block mt-4">
+            <div class="code-header d-flex align-center">
+              <v-spacer />
+              <v-tooltip text="复制代码" location="top">
+                <template #activator="{ props }">
+                  <v-btn
+                    v-bind="props"
+                    icon
+                    variant="text"
+                    density="compact"
+                    size="small"
+                    :color="apiCopying ? 'success' : undefined"
+                    @click="copyApiCode"
+                  >
+                    <v-icon>{{ apiCopying ? 'mdi-check' : 'mdi-content-copy' }}</v-icon>
+                  </v-btn>
+                </template>
+              </v-tooltip>
+            </div>
+            <pre><code v-html="highlightedApiCode()"></code></pre>
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -199,11 +218,23 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { listWorkflows, deleteWorkflow, getWorkflow, executeWorkflow } from '@/api/workflows';
-import type { Workflow } from '@/types';
+import type { Workflow, WorkflowParam } from '@/types';
 import { authEnabled } from '@/api/auth-status';
+import hljs from 'highlight.js/lib/core';
+import json from 'highlight.js/lib/languages/json';
+import bash from 'highlight.js/lib/languages/bash';
+import powershell from 'highlight.js/lib/languages/powershell';
+import python from 'highlight.js/lib/languages/python';
+import java from 'highlight.js/lib/languages/java';
+
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('powershell', powershell);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('java', java);
 
 interface ExecuteField {
   alias: string;
@@ -253,22 +284,98 @@ const apiDialog = ref(false);
 const apiTargetName = ref('');
 const apiTargetId = ref('');
 const apiTab = ref('curl');
+const apiFormat = ref('json');
+const apiParams = ref<WorkflowParam[]>([]);
+const apiHasMedia = computed(() => apiParams.value.some(p => p.paramType !== 'text'));
+const apiCodeRef = ref<Record<string, string>>({});
+const apiCopying = ref(false);
 
-const apiCode = computed(() => ({
-  curl: `curl -X POST http://localhost:10721/api/workflows/${apiTargetId.value}/execute \\
+function q(s: string): string {
+  return JSON.stringify(s);
+}
+
+function escDouble(s: string): string {
+  return s.replace(/"/g, '\\"');
+}
+
+function genJsonSnippet(id: string, params: WorkflowParam[]) {
+  const pairs = params.map(p => `    ${q(p.alias)}: "value"`).join(',\n');
+  const jsonBody = `{\n${pairs}\n}`;
+  return { jsonBody };
+}
+
+function genMultipartSnippet(id: string, params: WorkflowParam[]) {
+  const textParams = params.filter(p => p.paramType === 'text');
+  const mediaParams = params.filter(p => p.paramType !== 'text');
+  return { textParams, mediaParams };
+}
+
+function buildApiCode(id: string, params: WorkflowParam[]) {
+  const { jsonBody } = genJsonSnippet(id, params);
+  const { textParams, mediaParams } = genMultipartSnippet(id, params);
+
+  const textPairs = textParams.map(p => `${q(p.alias)}: "value"`).join(', ');
+  const textJsonObj = `{ ${textPairs} }`;
+
+  return {
+    curl: {
+      json: `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
   -H "Content-Type: application/json" \\
-  -d '{"param1":"value1","param2":"value2"}'`,
-  powershell: `$body = @{ param1 = "value1"; param2 = "value2" } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${apiTargetId.value}/execute" `
-    + `-Method Post -Body $body -ContentType "application/json"`,
-  python: `import requests
+  -d '${jsonBody}'`,
+      multipart: mediaParams.length > 0
+        ? `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
+  -F "params=${textJsonObj}" \\
+${mediaParams.map(p => `  -F "${p.alias}=@/path/to/${p.alias}.png"`).join(' \\\n')}`
+        : '',
+    },
+    powershell: {
+      json: `$body = @{
+${params.map(p => `  ${p.alias} = "value"`).join('\n')}
+} | ConvertTo-Json
 
-url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute"
-payload = {"param1": "value1", "param2": "value2"}
+Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
+        + `-Method Post -Body $body -ContentType "application/json"`,
+      multipart: mediaParams.length > 0
+        ? `$params = @{
+${textParams.map(p => `  ${p.alias} = "value"`).join('\n')}
+} | ConvertTo-Json
+
+$form = @{
+  params = $params
+${mediaParams.map(p => `  ${p.alias} = Get-Item -Path "C:\\path\\to\\${p.alias}.png"`).join('\n')}
+}
+
+Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
+        + `-Method Post -Form $form`
+        : '',
+    },
+    python: {
+      json: `import requests
+
+url = "http://localhost:10721/api/workflows/${id}/execute"
+payload = {
+${params.map(p => `    ${q(p.alias)}: "value",`).join('\n')}
+}
 resp = requests.post(url, json=payload)
 print(resp.json())`,
-  nodejs: `const url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute";
-const payload = { param1: "value1", param2: "value2" };
+      multipart: mediaParams.length > 0
+        ? `import requests
+import json
+
+url = "http://localhost:10721/api/workflows/${id}/execute"
+payload = ${textJsonObj}
+files = {
+${mediaParams.map(p => `    ${q(p.alias)}: open("/path/to/${p.alias}.png", "rb"),`).join('\n')}
+}
+resp = requests.post(url, data={"params": json.dumps(payload)}, files=files)
+print(resp.json())`
+        : '',
+    },
+    nodejs: {
+      json: `const url = "http://localhost:10721/api/workflows/${id}/execute";
+const payload = {
+${params.map(p => `  ${q(p.alias)}: "value",`).join('\n')}
+};
 
 const res = await fetch(url, {
   method: "POST",
@@ -277,13 +384,29 @@ const res = await fetch(url, {
 });
 const data = await res.json();
 console.log(data);`,
-  java: `import java.net.URI;
+      multipart: mediaParams.length > 0
+        ? `const url = "http://localhost:10721/api/workflows/${id}/execute";
+const payload = ${textJsonObj};
+const formData = new FormData();
+formData.append("params", JSON.stringify(payload));
+${mediaParams.map(p => `formData.append(${q(p.alias)}, fs.createReadStream("/path/to/${p.alias}.png"));`).join('\n')}
+
+const res = await fetch(url, {
+  method: "POST",
+  body: formData,
+});
+const data = await res.json();
+console.log(data);`
+        : '',
+    },
+    java: {
+      json: `import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
-String url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute";
-String json = "{\\"param1\\":\\"value1\\",\\"param2\\":\\"value2\\"}";
+String url = "http://localhost:10721/api/workflows/${id}/execute";
+String json = "${escDouble(jsonBody.replace(/\n    /g, '\\n    ').replace(/\n/g, '\\n'))}";
 
 HttpClient client = HttpClient.newHttpClient();
 HttpRequest request = HttpRequest.newBuilder()
@@ -294,13 +417,85 @@ HttpRequest request = HttpRequest.newBuilder()
 
 HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
 System.out.println(res.body());`,
-}));
+      multipart: mediaParams.length > 0
+        ? `import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
-function handleApiDocs(id: string, name: string) {
+String boundary = "----Boundary";
+String url = "http://localhost:10721/api/workflows/${id}/execute";
+String body = "--" + boundary + "\\r\\n"
+    + "Content-Disposition: form-data; name=\\"params\\"\\r\\n\\r\\n"
+    + "${escDouble(textJsonObj)}\\r\\n"
+${mediaParams.map(p => `    + "--" + boundary + "\\r\\n"
+    + "Content-Disposition: form-data; name=\\"${p.alias}\\"; filename=\\"${p.alias}.png\\"\\r\\n"
+    + "Content-Type: application/octet-stream\\r\\n\\r\\n"
+    + "<file-bytes>" + "\\r\\n"`).join('\n')}
+    + "--" + boundary + "--";
+
+HttpClient client = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create(url))
+    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+    .POST(HttpRequest.BodyPublishers.ofString(body))
+    .build();
+
+HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
+System.out.println(res.body());`
+        : '',
+    },
+  };
+}
+
+async function handleApiDocs(id: string, name: string) {
   apiTargetId.value = id;
   apiTargetName.value = name;
   apiTab.value = 'curl';
+  apiFormat.value = 'json';
   apiDialog.value = true;
+  try {
+    const detail = await getWorkflow(id);
+    apiParams.value = detail.params;
+    apiCodeRef.value = buildApiCode(id, detail.params);
+  } catch {
+    apiParams.value = [];
+    apiCodeRef.value = buildApiCode(id, []);
+  }
+  await nextTick();
+  document.querySelectorAll('.api-code-block pre code').forEach(el => {
+    hljs.highlightElement(el as HTMLElement);
+  });
+}
+
+function highlightedApiCode(): string {
+  const lang = apiTab.value;
+  const fmt = apiFormat.value;
+  const code = (apiCodeRef.value as Record<string, Record<string, string>>)?.[lang]?.[fmt];
+  if (!code) return '';
+  const langMap: Record<string, string> = {
+    curl: 'bash',
+    powershell: 'powershell',
+    python: 'python',
+    nodejs: 'json',
+    java: 'java',
+  };
+  const result = hljs.highlight(code, { language: langMap[lang] || 'plaintext' }).value;
+  return result;
+}
+
+async function copyApiCode() {
+  const lang = apiTab.value;
+  const fmt = apiFormat.value;
+  const code = (apiCodeRef.value as Record<string, Record<string, string>>)?.[lang]?.[fmt];
+  if (!code) return;
+  apiCopying.value = true;
+  try {
+    await navigator.clipboard.writeText(code);
+    setTimeout(() => { apiCopying.value = false; }, 1500);
+  } catch {
+    apiCopying.value = false;
+  }
 }
 
 async function load() {
@@ -400,16 +595,27 @@ onMounted(load);
 </script>
 
 <style scoped>
-.code-block {
+.api-code-block {
   background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 16px;
   border-radius: 4px;
+  overflow: hidden;
+}
+.code-header {
+  background: #2d2d2d;
+  padding: 4px 8px;
+  border-bottom: 1px solid #3c3c3c;
+}
+.api-code-block pre {
+  margin: 0;
+  padding: 16px;
   font-size: 13px;
   line-height: 1.5;
   overflow-x: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
   max-height: 400px;
+}
+.api-code-block code {
+  background: transparent !important;
+  color: #d4d4d4;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 }
 </style>
