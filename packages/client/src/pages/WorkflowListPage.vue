@@ -57,6 +57,15 @@
           >
             <v-icon>mdi-play</v-icon>
           </v-btn>
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            class="mr-2"
+            @click.stop="handleApiDocs(wf.id, wf.name)"
+          >
+            <v-icon>mdi-code-tags</v-icon>
+          </v-btn>
           <v-btn icon variant="text" @click.stop="handleDelete(wf.id)">
             <v-icon>mdi-delete</v-icon>
           </v-btn>
@@ -143,6 +152,46 @@
       </v-card>
     </v-dialog>
 
+    <v-dialog v-model="apiDialog" max-width="720">
+      <v-card>
+        <v-card-title>
+          API 调用说明：{{ apiTargetName }}
+        </v-card-title>
+        <v-card-text>
+          <v-tabs v-model="apiTab" color="primary">
+            <v-tab value="curl">curl</v-tab>
+            <v-tab value="powershell">PowerShell</v-tab>
+            <v-tab value="python">Python</v-tab>
+            <v-tab value="nodejs">Node.js</v-tab>
+            <v-tab value="java">Java</v-tab>
+          </v-tabs>
+          <v-window v-model="apiTab" class="mt-4">
+            <v-window-item value="curl">
+              <pre class="code-block">{{ apiCode.curl }}</pre>
+            </v-window-item>
+            <v-window-item value="powershell">
+              <pre class="code-block">{{ apiCode.powershell }}</pre>
+            </v-window-item>
+            <v-window-item value="python">
+              <pre class="code-block">{{ apiCode.python }}</pre>
+            </v-window-item>
+            <v-window-item value="nodejs">
+              <pre class="code-block">{{ apiCode.nodejs }}</pre>
+            </v-window-item>
+            <v-window-item value="java">
+              <pre class="code-block">{{ apiCode.java }}</pre>
+            </v-window-item>
+          </v-window>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="apiDialog = false">
+            关闭
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
     </v-snackbar>
@@ -150,7 +199,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { listWorkflows, deleteWorkflow, getWorkflow, executeWorkflow } from '@/api/workflows';
 import type { Workflow } from '@/types';
@@ -197,6 +246,61 @@ function acceptType(paramType: string): string {
     case 'audio': return 'audio/*';
     default: return '*/*';
   }
+}
+
+// API 调用说明对话框
+const apiDialog = ref(false);
+const apiTargetName = ref('');
+const apiTargetId = ref('');
+const apiTab = ref('curl');
+
+const apiCode = computed(() => ({
+  curl: `curl -X POST http://localhost:10721/api/workflows/${apiTargetId.value}/execute \\
+  -H "Content-Type: application/json" \\
+  -d '{"param1":"value1","param2":"value2"}'`,
+  powershell: `$body = @{ param1 = "value1"; param2 = "value2" } | ConvertTo-Json
+Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${apiTargetId.value}/execute" `
+    + `-Method Post -Body $body -ContentType "application/json"`,
+  python: `import requests
+
+url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute"
+payload = {"param1": "value1", "param2": "value2"}
+resp = requests.post(url, json=payload)
+print(resp.json())`,
+  nodejs: `const url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute";
+const payload = { param1: "value1", param2: "value2" };
+
+const res = await fetch(url, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload),
+});
+const data = await res.json();
+console.log(data);`,
+  java: `import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+String url = "http://localhost:10721/api/workflows/${apiTargetId.value}/execute";
+String json = "{\\"param1\\":\\"value1\\",\\"param2\\":\\"value2\\"}";
+
+HttpClient client = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create(url))
+    .header("Content-Type", "application/json")
+    .POST(HttpRequest.BodyPublishers.ofString(json))
+    .build();
+
+HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
+System.out.println(res.body());`,
+}));
+
+function handleApiDocs(id: string, name: string) {
+  apiTargetId.value = id;
+  apiTargetName.value = name;
+  apiTab.value = 'curl';
+  apiDialog.value = true;
 }
 
 async function load() {
@@ -294,3 +398,18 @@ function handleLogout() {
 
 onMounted(load);
 </script>
+
+<style scoped>
+.code-block {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+}
+</style>
