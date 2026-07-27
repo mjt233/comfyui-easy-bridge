@@ -138,6 +138,38 @@
                 <pre class="detail-pre">{{ selectedTask.comfyuiResponse ? formatJson(selectedTask.comfyuiResponse) : '-' }}</pre>
               </v-expansion-panel-text>
             </v-expansion-panel>
+            <v-expansion-panel title="输出文件">
+              <v-expansion-panel-text>
+                <div v-if="outputFilesLoading" class="text-center pa-4">
+                  <v-progress-circular indeterminate size="20" />
+                </div>
+                <div v-else-if="outputFiles.length === 0" class="text-body-2 text-grey">
+                  无输出文件
+                </div>
+                <v-list v-else density="compact">
+                  <v-list-item v-for="file in outputFiles" :key="file.filename">
+                    <template #prepend>
+                      <v-icon v-if="file.fileType === 'image'" color="primary">mdi-image</v-icon>
+                      <v-icon v-else-if="file.fileType === 'video'" color="purple">mdi-film</v-icon>
+                      <v-icon v-else color="orange">mdi-music</v-icon>
+                    </template>
+                    <v-list-item-title class="text-body-2">
+                      {{ file.filename }}
+                    </v-list-item-title>
+                    <template #append>
+                      <v-btn
+                        icon="mdi-download"
+                        size="small"
+                        variant="text"
+                        :href="file.url"
+                        target="_blank"
+                        @click.stop
+                      />
+                    </template>
+                  </v-list-item>
+                </v-list>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
           </v-expansion-panels>
         </v-card-text>
         <v-card-actions>
@@ -153,7 +185,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { listTasks, clearCompletedTasks, submitTask, type TaskLog } from '@/api/tasks';
+import { listTasks, clearCompletedTasks, submitTask, fetchTaskOutputFiles, type TaskLog, type OutputFile } from '@/api/tasks';
 
 const headers = [
   { title: '提交时间', key: 'createdAt' },
@@ -167,6 +199,8 @@ const tasks = ref<TaskLog[]>([]);
 const loading = ref(true);
 const detailDialog = ref(false);
 const selectedTask = ref<TaskLog | null>(null);
+const outputFiles = ref<OutputFile[]>([]);
+const outputFilesLoading = ref(false);
 const hasCompleted = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -204,9 +238,21 @@ function statusText(status: string): string {
   }
 }
 
-function openDetail(item: TaskLog) {
+async function openDetail(item: TaskLog) {
   selectedTask.value = item;
   detailDialog.value = true;
+  outputFiles.value = [];
+  if (item.status === 'completed') {
+    outputFilesLoading.value = true;
+    try {
+      const result = await fetchTaskOutputFiles(item.id);
+      outputFiles.value = result.files;
+    } catch {
+      outputFiles.value = [];
+    } finally {
+      outputFilesLoading.value = false;
+    }
+  }
 }
 
 /** Vuetify v-data-table 行点击事件处理：从事件数据中提取 item */
