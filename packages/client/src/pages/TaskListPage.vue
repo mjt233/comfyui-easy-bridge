@@ -20,10 +20,10 @@
         item-value="id"
         @click:row="handleRowClick"
       >
-        <template #item.createdAt="{ value }">
+        <template #[`item.createdAt`]="{ value }">
           {{ formatTime(value) }}
         </template>
-        <template #item.status="{ item }">
+        <template #[`item.status`]="{ item }">
           <div class="d-flex align-center ga-2">
             <v-chip :color="statusColor(item.status)" size="small">
               {{ statusText(item.status) }}
@@ -41,10 +41,10 @@
             </v-progress-circular>
           </div>
         </template>
-        <template #item.completedAt="{ value }">
+        <template #[`item.completedAt`]="{ value }">
           {{ value ? formatTime(value) : '-' }}
         </template>
-        <template #item.actions="{ item }">
+        <template #[`item.actions`]="{ item }">
           <v-btn
             v-if="item.status === 'queued'"
             color="primary"
