@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { createAuthRoutes } from './auth.routes';
+import { SettingsService } from '../services/settings.service';
 
 describe('POST /api/auth/login', () => {
   let app: express.Express;
@@ -39,5 +40,38 @@ describe('POST /api/auth/login', () => {
       .post('/api/auth/login')
       .send({});
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/auth/status', () => {
+  it('returns authEnabled: true by default', async () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    const db = drizzle(sqlite, { schema });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/auth', createAuthRoutes(db));
+
+    const res = await supertest(app).get('/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ authEnabled: true });
+  });
+
+  it('returns authEnabled: false when setting is 0', async () => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    const db = drizzle(sqlite, { schema });
+
+    const settings = new SettingsService(db);
+    settings.set('auth_enabled', '0');
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/auth', createAuthRoutes(db));
+
+    const res = await supertest(app).get('/api/auth/status');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ authEnabled: false });
   });
 });
