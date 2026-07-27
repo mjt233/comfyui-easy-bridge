@@ -13,6 +13,7 @@ export interface WorkflowParam {
   fieldName: string;
   alias: string;
   label: string | null;
+  paramType: string;
 }
 
 export interface WorkflowDetail extends Workflow {

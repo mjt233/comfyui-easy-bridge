@@ -45,7 +45,22 @@ export interface ExecuteResult {
   comfyui_response: unknown;
 }
 
-export async function executeWorkflow(workflowId: string, aliasValues: Record<string, string>): Promise<ExecuteResult> {
-  const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, aliasValues);
+export async function executeWorkflow(
+  workflowId: string,
+  aliasValues: Record<string, string>,
+  files?: Record<string, File>,
+): Promise<ExecuteResult> {
+  if (!files || Object.keys(files).length === 0) {
+    const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, aliasValues);
+    return res.data;
+  }
+  const formData = new FormData();
+  formData.append('params', JSON.stringify(aliasValues));
+  for (const [alias, file] of Object.entries(files)) {
+    formData.append(alias, file);
+  }
+  const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
   return res.data;
 }
