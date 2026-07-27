@@ -37,7 +37,7 @@ export function applyAliases(
     if (Array.isArray(currentValue)) continue;
 
     if (!(param.alias in aliasValues)) {
-      throw new Error(`Missing required parameter: ${param.alias}`);
+      continue; // 未传参时跳过，保留工作流模板中的默认值
     }
 
     node.inputs[param.fieldName] = aliasValues[param.alias];

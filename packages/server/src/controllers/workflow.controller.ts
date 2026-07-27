@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from '../services/workflow.service';
@@ -93,98 +93,102 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       res.status(204).send();
     },
 
-    async execute(req: Request, res: Response): Promise<void> {
-      const id = req.params.id as string;
-      const wf = workflowService.getById(id);
-      if (!wf) {
-        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
-        return;
-      }
-      const params = workflowService.getParams(id);
-      const baseUrl = settingsService.get('comfyui_base_url');
-      if (!baseUrl) {
-        res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
-        return;
-      }
-
-      // 解析 multipart 或 JSON 请求
-      const isMultipart = req.is('multipart/form-data');
-      let aliasValues: Record<string, string>;
-      let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>;
-
-      if (isMultipart) {
-        aliasValues = JSON.parse(req.body.params || '{}');
-        const multerFiles = (req.files as Express.Multer.File[]) || [];
-        uploadedFiles = {};
-        for (const f of multerFiles) {
-          if (!uploadedFiles[f.fieldname]) uploadedFiles[f.fieldname] = [];
-          uploadedFiles[f.fieldname].push({
-            buffer: f.buffer,
-            originalname: f.originalname,
-            mimetype: f.mimetype,
-          });
+    async execute(req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        const id = req.params.id as string;
+        const wf = workflowService.getById(id);
+        if (!wf) {
+          res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+          return;
         }
-      } else {
-        aliasValues = req.body as Record<string, string>;
-        uploadedFiles = {};
-      }
+        const params = workflowService.getParams(id);
+        const baseUrl = settingsService.get('comfyui_base_url');
+        if (!baseUrl) {
+          res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
+          return;
+        }
 
-      // 处理媒体文件上传
-      const finalAliasValues = await processMediaParams(params, aliasValues, uploadedFiles, baseUrl);
+        // 解析 multipart 或 JSON 请求
+        const isMultipart = req.is('multipart/form-data');
+        let aliasValues: Record<string, string>;
+        let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>;
 
-      // 验证参数（applyAliases 会检查缺失参数并抛异常）
-      const modifiedJson = applyAliases(wf.rawJson, params, finalAliasValues);
+        if (isMultipart) {
+          aliasValues = JSON.parse(req.body.params || '{}');
+          const multerFiles = (req.files as Express.Multer.File[]) || [];
+          uploadedFiles = {};
+          for (const f of multerFiles) {
+            if (!uploadedFiles[f.fieldname]) uploadedFiles[f.fieldname] = [];
+            uploadedFiles[f.fieldname].push({
+              buffer: f.buffer,
+              originalname: f.originalname,
+              mimetype: f.mimetype,
+            });
+          }
+        } else {
+          aliasValues = req.body as Record<string, string>;
+          uploadedFiles = {};
+        }
 
-      // 检查并发数
-      const concurrencyStr = settingsService.get('comfyui_concurrency');
-      const concurrency = concurrencyStr ? parseInt(concurrencyStr, 10) : 1;
-      const pendingCount = taskService.countByStatus('pending');
+        // 处理媒体文件上传
+        const finalAliasValues = await processMediaParams(params, aliasValues, uploadedFiles, baseUrl);
 
-      if (pendingCount >= concurrency) {
-        // 超过并发限制，进入排队
+        // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值）
+        const modifiedJson = applyAliases(wf.rawJson, params, finalAliasValues);
+
+        // 检查并发数
+        const concurrencyStr = settingsService.get('comfyui_concurrency');
+        const concurrency = concurrencyStr ? parseInt(concurrencyStr, 10) : 1;
+        const pendingCount = taskService.countByStatus('pending');
+
+        if (pendingCount >= concurrency) {
+          // 超过并发限制，进入排队
+          const task = taskService.create({
+            workflowId: wf.id,
+            workflowName: wf.name,
+            aliasValues: JSON.stringify(finalAliasValues),
+            comfyuiUrl: `${baseUrl}/prompt`,
+            comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
+            comfyuiResponse: null,
+            promptId: null,
+          });
+          // 覆盖为 queued 状态
+          taskService.updateStatus(task.id, { status: 'queued' });
+          res.json({
+            task_id: task.id,
+            status: 'queued',
+            comfyui_response: null,
+          });
+          return;
+        }
+
+        const result = await executeWorkflow(wf.rawJson, params, finalAliasValues, baseUrl);
+
         const task = taskService.create({
           workflowId: wf.id,
           workflowName: wf.name,
           aliasValues: JSON.stringify(finalAliasValues),
           comfyuiUrl: `${baseUrl}/prompt`,
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
-          comfyuiResponse: null,
-          promptId: null,
+          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
+          promptId: result.promptId,
         });
-        // 覆盖为 queued 状态
-        taskService.updateStatus(task.id, { status: 'queued' });
+
+        if (!result.success) {
+          taskService.updateStatus(task.id, {
+            status: 'failed',
+            errorMessage: result.errorMessage ?? 'Unknown error',
+          });
+        }
+
         res.json({
           task_id: task.id,
-          status: 'queued',
-          comfyui_response: null,
+          status: task.status,
+          comfyui_response: result.comfyuiResponse,
         });
-        return;
+      } catch (err) {
+        next(err);
       }
-
-      const result = await executeWorkflow(wf.rawJson, params, finalAliasValues, baseUrl);
-
-      const task = taskService.create({
-        workflowId: wf.id,
-        workflowName: wf.name,
-        aliasValues: JSON.stringify(finalAliasValues),
-        comfyuiUrl: `${baseUrl}/prompt`,
-        comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
-        comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
-        promptId: result.promptId,
-      });
-
-      if (!result.success) {
-        taskService.updateStatus(task.id, {
-          status: 'failed',
-          errorMessage: result.errorMessage ?? 'Unknown error',
-        });
-      }
-
-      res.json({
-        task_id: task.id,
-        status: task.status,
-        comfyui_response: result.comfyuiResponse,
-      });
     },
   };
 }

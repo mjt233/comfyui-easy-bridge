@@ -34,11 +34,13 @@ describe('executor.service', () => {
     expect(Array.isArray(parsed['29'].inputs.images)).toBe(true);
   });
 
-  it('applyAliases throws on missing alias value', () => {
+  it('applyAliases skips missing alias value and keeps original', () => {
     const params = [
       { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text' },
     ];
-    expect(() => applyAliases(sampleJson, params, {})).toThrow('Missing required parameter: img_desc');
+    const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('original prompt');
   });
 
   it('applyAliases ignores params for non-existent nodes', () => {
