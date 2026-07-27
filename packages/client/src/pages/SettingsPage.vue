@@ -7,7 +7,7 @@
   </v-app-bar>
 
   <v-container>
-    <v-card>
+    <v-card class="mb-4">
       <v-card-text>
         <v-alert
           v-if="error"
@@ -42,6 +42,20 @@
       </v-card-text>
     </v-card>
 
+    <v-card>
+      <v-card-title>安全设置</v-card-title>
+      <v-card-text>
+        <v-switch
+          v-model="authEnabledLocal"
+          label="需要身份验证"
+          hint="关闭后所有页面和接口无需登录即可访问"
+          persistent-hint
+          color="primary"
+          @update:model-value="handleAuthToggle"
+        />
+      </v-card-text>
+    </v-card>
+
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
     </v-snackbar>
@@ -51,9 +65,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { getSettings, updateSetting } from '@/api/settings';
+import { getAuthStatus } from '@/api/auth';
+import { authEnabled } from '@/api/auth-status';
 
 const comfyuiUrl = ref('');
 const concurrency = ref('1');
+const authEnabledLocal = ref(true);
 const error = ref('');
 const saving = ref(false);
 const snackbar = ref({ show: false, text: '', color: 'success' });
@@ -72,6 +89,17 @@ async function handleSave() {
   }
 }
 
+async function handleAuthToggle(val: boolean) {
+  try {
+    await updateSetting('auth_enabled', val ? '1' : '0');
+    authEnabled.value = val;
+    snackbar.value = { show: true, text: val ? '身份验证已开启' : '身份验证已关闭', color: 'success' };
+  } catch {
+    error.value = '保存身份验证设置失败';
+    authEnabledLocal.value = !val;
+  }
+}
+
 onMounted(async () => {
   try {
     const settings = await getSettings();
@@ -79,6 +107,13 @@ onMounted(async () => {
     concurrency.value = settings.comfyui_concurrency ?? '1';
   } catch {
     error.value = '加载设置失败';
+  }
+
+  try {
+    const status = await getAuthStatus();
+    authEnabledLocal.value = status.authEnabled;
+  } catch {
+    // keep default
   }
 });
 </script>
