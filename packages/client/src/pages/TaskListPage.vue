@@ -23,26 +23,23 @@
         <template #item.createdAt="{ value }">
           {{ formatTime(value) }}
         </template>
-        <template #item.status="{ value }">
-          <v-chip :color="statusColor(value)" size="small">
-            {{ statusText(value) }}
-          </v-chip>
-        </template>
-        <template #item.progress="{ item }">
-          <v-progress-linear
-            v-if="item.status === 'pending' && item.progress != null"
-            :model-value="item.progress"
-            color="primary"
-            height="6"
-            rounded
-            class="mt-2"
-          >
-            <template #default>
-              <span class="text-caption">{{ item.progress }}%</span>
-            </template>
-          </v-progress-linear>
-          <span v-else-if="item.status === 'pending'" class="text-caption text-grey">等待中</span>
-          <span v-else class="text-caption text-grey">-</span>
+        <template #item.status="{ item }">
+          <div class="d-flex align-center ga-2">
+            <v-chip :color="statusColor(item.status)" size="small">
+              {{ statusText(item.status) }}
+            </v-chip>
+            <v-progress-circular
+              v-if="item.status === 'pending' && item.progress != null"
+              :model-value="item.progress"
+              color="primary"
+              size="20"
+              width="3"
+            >
+              <template #default>
+                <span class="text-caption font-weight-bold">{{ item.progress }}</span>
+              </template>
+            </v-progress-circular>
+          </div>
         </template>
         <template #item.completedAt="{ value }">
           {{ value ? formatTime(value) : '-' }}
@@ -142,7 +139,6 @@ const headers = [
   { title: '提交时间', key: 'createdAt' },
   { title: '工作流', key: 'workflowName' },
   { title: '状态', key: 'status' },
-  { title: '进度', key: 'progress' },
   { title: '完成时间', key: 'completedAt' },
   { title: '操作', key: 'actions', sortable: false },
 ];
