@@ -1,3 +1,5 @@
+import { uploadFileToComfyUI } from './upload.service';
+
 export interface WorkflowParam {
   id: number;
   workflowId: string;
@@ -81,6 +83,30 @@ export async function submitPrompt(
       errorMessage: err instanceof Error ? err.message : 'Unknown error',
     };
   }
+}
+
+/** 处理媒体参数：将上传的文件发送到 ComfyUI，返回最终 aliasValues */
+export async function processMediaParams(
+  params: WorkflowParam[],
+  aliasValues: Record<string, string>,
+  files: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>,
+  comfyuiBaseUrl: string,
+): Promise<Record<string, string>> {
+  const result = { ...aliasValues };
+  for (const param of params) {
+    if (param.paramType === 'text') continue;
+    const fileList = files[param.alias];
+    const file = fileList?.[0];
+    if (file) {
+      const filename = await uploadFileToComfyUI(
+        file,
+        param.paramType as 'image' | 'video' | 'audio',
+        comfyuiBaseUrl,
+      );
+      result[param.alias] = filename;
+    }
+  }
+  return result;
 }
 
 /**

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { applyAliases } from './executor.service';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { applyAliases, processMediaParams } from './executor.service';
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -47,5 +47,51 @@ describe('executor.service', () => {
     ];
     const result = applyAliases(sampleJson, params, { x: 'val' });
     expect(result).toBe(sampleJson);
+  });
+});
+
+describe('processMediaParams', () => {
+  const mockFetch = vi.fn();
+  globalThis.fetch = mockFetch;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('uploads file for image params and overrides alias value', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ name: 'uploaded.png' }),
+    });
+
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image' },
+    ];
+    const files = {
+      img: [{ buffer: Buffer.from('data'), originalname: 'photo.png', mimetype: 'image/png' }],
+    };
+
+    const result = await processMediaParams(params, { img: 'old.png' }, files, 'http://localhost:8188');
+    expect(result.img).toBe('uploaded.png');
+  });
+
+  it('keeps alias value if no file uploaded for media param', async () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image' },
+    ];
+
+    const result = await processMediaParams(params, { img: 'existing.png' }, {}, 'http://localhost:8188');
+    expect(result.img).toBe('existing.png');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('skips text params', async () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'value', alias: 'txt', label: null, paramType: 'text' },
+    ];
+
+    const result = await processMediaParams(params, { txt: 'hello' }, {}, 'http://localhost:8188');
+    expect(result.txt).toBe('hello');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
