@@ -19,11 +19,13 @@ interface AddParamInput {
   fieldName: string;
   alias: string;
   label?: string;
+  paramType?: string;
 }
 
 interface UpdateParamInput {
   alias?: string;
   label?: string | null;
+  paramType?: string;
 }
 
 export class WorkflowService {
@@ -69,6 +71,7 @@ export class WorkflowService {
       fieldName: input.fieldName,
       alias: input.alias,
       label: input.label ?? null,
+      paramType: input.paramType ?? 'text',
     }).run();
     return this.db.select().from(schema.workflowParams)
       .where(eq(schema.workflowParams.alias, input.alias))

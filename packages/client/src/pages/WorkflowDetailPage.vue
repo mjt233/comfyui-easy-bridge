@@ -89,8 +89,9 @@
                     >
                       <span v-if="info.paramId && info.label">{{ info.alias }}</span>
                       <span v-else>{{ info.name }}</span>
-                      <template v-if="info.paramId" #append>
-                        <span class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
+                      <template #append>
+                        <span v-if="info.paramType !== 'text'" class="text-caption ml-1 opacity-70">{{ info.paramType }}</span>
+                        <span v-if="info.paramId" class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
                       </template>
                     </v-chip>
                   </div>
@@ -112,6 +113,7 @@
                   字段名
                 </th>
                 <th>默认值</th>
+                <th>类型</th>
                 <th style="min-width: 120px">
                   别名
                 </th>
@@ -129,6 +131,12 @@
                 <td>{{ item.name }}</td>
                 <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                   {{ item.value }}
+                </td>
+                <td>
+                  <v-chip v-if="item.paramType !== 'text'" size="x-small" color="primary" variant="tonal">
+                    {{ item.paramType }}
+                  </v-chip>
+                  <span v-else class="text-caption text-grey">text</span>
                 </td>
                 <td>
                   <v-chip
@@ -195,6 +203,15 @@
             density="compact"
             variant="outlined"
             hide-details
+            class="mb-3"
+          />
+          <v-select
+            v-model="dialog.paramType"
+            label="参数类型"
+            :items="['text', 'image', 'video', 'audio']"
+            density="compact"
+            variant="outlined"
+            hide-details
           />
         </v-card-text>
         <v-card-actions>
@@ -236,6 +253,7 @@ interface FieldInfo {
   alias: string;
   label: string;
   paramId: number | null;
+  paramType: string;
 }
 
 interface NodeField {
@@ -268,6 +286,7 @@ const dialog = ref({
   alias: '',
   label: '',
   paramId: null as number | null,
+  paramType: 'text',
   saving: false,
 });
 
@@ -295,6 +314,7 @@ function parseNodes(wf: WorkflowDetail) {
           alias: existing?.alias ?? '',
           label: existing?.label ?? '',
           paramId: existing?.id ?? null,
+          paramType: existing?.paramType ?? 'text',
         });
       }
 
@@ -322,6 +342,7 @@ function openDialog(node: NodeField, info: FieldInfo) {
     alias: info.alias,
     label: info.label,
     paramId: info.paramId,
+    paramType: info.paramType || 'text',
     saving: false,
   };
 }
@@ -333,13 +354,14 @@ async function saveDialog() {
     const node = dialog.value.node;
     const info = getNodeByField(node, dialog.value.fieldName);
     if (info?.paramId) {
-      await updateParam(workflow.value.id, info.paramId, { alias: dialog.value.alias, label: dialog.value.label });
+      await updateParam(workflow.value.id, info.paramId, { alias: dialog.value.alias, label: dialog.value.label, paramType: dialog.value.paramType });
     } else {
       await addParam(workflow.value.id, {
         nodeId: node.nodeId,
         fieldName: dialog.value.fieldName,
         alias: dialog.value.alias,
         label: dialog.value.label,
+        paramType: dialog.value.paramType,
       });
     }
     snackbar.value = { show: true, text: '保存成功', color: 'success' };

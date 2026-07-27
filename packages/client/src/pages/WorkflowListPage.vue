@@ -82,20 +82,38 @@
             color="primary"
             class="mb-3"
           />
-          <v-textarea
-            v-for="field in executeFields"
-            :key="field.alias"
-            v-model="executeForm[field.alias]"
-            :label="field.label || field.alias"
-            :hint="`节点: ${field.nodeTitle} · ${field.fieldName}`"
-            persistent-hint
-            variant="outlined"
-            density="compact"
-            class="mb-2"
-            :rows="1"
-            max-rows="6"
-            auto-grow
-          />
+          <template v-for="field in executeFields" :key="field.alias">
+            <v-textarea
+              v-if="field.paramType === 'text'"
+              v-model="executeForm[field.alias]"
+              :label="field.label || field.alias"
+              :hint="`节点: ${field.nodeTitle} · ${field.fieldName}`"
+              persistent-hint
+              variant="outlined"
+              density="compact"
+              class="mb-2"
+              :rows="1"
+              max-rows="6"
+              auto-grow
+            />
+            <v-file-input
+              v-else
+              :label="field.label || field.alias"
+              :hint="`节点: ${field.nodeTitle} · ${field.fieldName}`"
+              persistent-hint
+              variant="outlined"
+              density="compact"
+              class="mb-2"
+              :accept="acceptType(field.paramType)"
+              @update:model-value="(v: File | File[] | null) => {
+                if (v) {
+                  executeFiles[field.alias] = Array.isArray(v) ? v[0] : v;
+                } else {
+                  delete executeFiles[field.alias];
+                }
+              }"
+            />
+          </template>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -143,6 +161,7 @@ interface ExecuteField {
   label: string;
   fieldName: string;
   nodeTitle: string;
+  paramType: string;
 }
 
 const router = useRouter();
@@ -169,6 +188,16 @@ const executeLoading = ref(false);
 const submitting = ref(false);
 const executeFields = ref<ExecuteField[]>([]);
 const executeForm = reactive<Record<string, string>>({});
+const executeFiles = reactive<Record<string, File>>({});
+
+function acceptType(paramType: string): string {
+  switch (paramType) {
+    case 'image': return 'image/*';
+    case 'video': return 'video/*';
+    case 'audio': return 'audio/*';
+    default: return '*/*';
+  }
+}
 
 async function load() {
   try {
@@ -224,6 +253,7 @@ async function handleExecute(id: string) {
         label: param.label || param.alias,
         fieldName: param.fieldName,
         nodeTitle,
+        paramType: param.paramType || 'text',
       });
       // 设置默认值（转为字符串）
       executeForm[param.alias] = String(currentValue ?? '');
@@ -242,12 +272,12 @@ async function confirmExecute() {
   if (!executeTarget.value) return;
   submitting.value = true;
   try {
-    // 只提取有别名字段的表单值
     const aliasValues: Record<string, string> = {};
     for (const field of executeFields.value) {
       aliasValues[field.alias] = executeForm[field.alias];
     }
-    const result = await executeWorkflow(executeTarget.value, aliasValues);
+    const files = Object.keys(executeFiles).length > 0 ? { ...executeFiles } : undefined;
+    const result = await executeWorkflow(executeTarget.value, aliasValues, files);
     snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
   } catch {

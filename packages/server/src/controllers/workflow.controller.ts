@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from '../services/workflow.service';
-import { executeWorkflow, applyAliases } from '../services/executor.service';
+import { executeWorkflow, applyAliases, processMediaParams } from '../services/executor.service';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
@@ -66,13 +66,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const { nodeId, fieldName, alias, label } = req.body;
+      const { nodeId, fieldName, alias, label, paramType } = req.body;
       if (!nodeId || !fieldName || !alias) {
         res.status(400).json({ error: 'nodeId, fieldName, and alias are required', code: 'missing_parameter' });
         return;
       }
       try {
-        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label });
+        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label, paramType });
         res.status(201).json(param);
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
@@ -106,10 +106,34 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
         return;
       }
-      const aliasValues = req.body as Record<string, string>;
 
-      // 先验证参数（applyAliases 会检查缺失参数并抛异常）
-      const modifiedJson = applyAliases(wf.rawJson, params, aliasValues);
+      // 解析 multipart 或 JSON 请求
+      const isMultipart = req.is('multipart/form-data');
+      let aliasValues: Record<string, string>;
+      let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>;
+
+      if (isMultipart) {
+        aliasValues = JSON.parse(req.body.params || '{}');
+        const multerFiles = (req.files as Express.Multer.File[]) || [];
+        uploadedFiles = {};
+        for (const f of multerFiles) {
+          if (!uploadedFiles[f.fieldname]) uploadedFiles[f.fieldname] = [];
+          uploadedFiles[f.fieldname].push({
+            buffer: f.buffer,
+            originalname: f.originalname,
+            mimetype: f.mimetype,
+          });
+        }
+      } else {
+        aliasValues = req.body as Record<string, string>;
+        uploadedFiles = {};
+      }
+
+      // 处理媒体文件上传
+      const finalAliasValues = await processMediaParams(params, aliasValues, uploadedFiles, baseUrl);
+
+      // 验证参数（applyAliases 会检查缺失参数并抛异常）
+      const modifiedJson = applyAliases(wf.rawJson, params, finalAliasValues);
 
       // 检查并发数
       const concurrencyStr = settingsService.get('comfyui_concurrency');
@@ -121,7 +145,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const task = taskService.create({
           workflowId: wf.id,
           workflowName: wf.name,
-          aliasValues: JSON.stringify(aliasValues),
+          aliasValues: JSON.stringify(finalAliasValues),
           comfyuiUrl: `${baseUrl}/prompt`,
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
           comfyuiResponse: null,
@@ -137,12 +161,12 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
 
-      const result = await executeWorkflow(wf.rawJson, params, aliasValues, baseUrl);
+      const result = await executeWorkflow(wf.rawJson, params, finalAliasValues, baseUrl);
 
       const task = taskService.create({
         workflowId: wf.id,
         workflowName: wf.name,
-        aliasValues: JSON.stringify(aliasValues),
+        aliasValues: JSON.stringify(finalAliasValues),
         comfyuiUrl: `${baseUrl}/prompt`,
         comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
         comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,

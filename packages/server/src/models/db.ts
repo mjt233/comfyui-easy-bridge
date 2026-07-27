@@ -32,7 +32,8 @@ db.run(`
     node_id TEXT NOT NULL,
     field_name TEXT NOT NULL,
     alias TEXT NOT NULL UNIQUE,
-    label TEXT
+    label TEXT,
+    param_type TEXT NOT NULL DEFAULT 'text'
   )
 `);
 db.run(`
