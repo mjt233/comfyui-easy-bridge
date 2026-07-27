@@ -53,6 +53,7 @@ db.run(`
     comfyui_url TEXT NOT NULL,
     comfyui_request_body TEXT,
     comfyui_response TEXT,
+    output_files TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT,
     progress INTEGER,

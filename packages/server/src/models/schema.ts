@@ -29,6 +29,7 @@ export const taskLogs = sqliteTable('task_logs', {
   comfyuiUrl: text('comfyui_url').notNull(),
   comfyuiRequestBody: text('comfyui_request_body'),
   comfyuiResponse: text('comfyui_response'),
+  outputFiles: text('output_files'),
   status: text('status').notNull().default('pending'),
   errorMessage: text('error_message'),
   progress: integer('progress'),
