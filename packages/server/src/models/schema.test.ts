@@ -11,7 +11,7 @@ describe('schema', () => {
     sqlite = new Database(':memory:');
     sqlite.exec(`
       CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL UNIQUE, label TEXT, param_type TEXT NOT NULL DEFAULT 'text');
+      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL, label TEXT, param_type TEXT NOT NULL DEFAULT 'text', UNIQUE(workflow_id, alias));
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
   });
@@ -56,7 +56,7 @@ describe('schema', () => {
     expect(params).toHaveLength(0);
   });
 
-  it('enforces unique alias constraint', () => {
+  it('enforces unique alias within same workflow', () => {
     const db = drizzle(sqlite, { schema });
     db.insert(schema.workflows).values({
       id: 'wf1', name: 'WF1', rawJson: '{}',
@@ -71,5 +71,27 @@ describe('schema', () => {
         workflowId: 'wf1', nodeId: '2', fieldName: 'v', alias: 'dup',
       }).run();
     }).toThrow();
+  });
+
+  it('allows same alias across different workflows', () => {
+    const db = drizzle(sqlite, { schema });
+    db.insert(schema.workflows).values({
+      id: 'wf1', name: 'WF1', rawJson: '{}',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }).run();
+    db.insert(schema.workflows).values({
+      id: 'wf2', name: 'WF2', rawJson: '{}',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }).run();
+    db.insert(schema.workflowParams).values({
+      workflowId: 'wf1', nodeId: '1', fieldName: 'v', alias: 'shared',
+    }).run();
+    expect(() => {
+      db.insert(schema.workflowParams).values({
+        workflowId: 'wf2', nodeId: '1', fieldName: 'v', alias: 'shared',
+      }).run();
+    }).not.toThrow();
   });
 });

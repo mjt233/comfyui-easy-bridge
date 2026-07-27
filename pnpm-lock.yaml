@@ -32,6 +32,9 @@ importers:
       axios:
         specifier: ^1.7.0
         version: 1.18.1(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
+      highlight.js:
+        specifier: ^11.11.1
+        version: 11.11.1
       vue:
         specifier: ^3.5.0
         version: 3.5.40(typescript@5.9.3)
@@ -1936,6 +1939,10 @@ packages:
   helmet@8.3.0:
     resolution: {integrity: sha512-Qgpiaws3Sm30Av8Eah6sjMCZZwjlBu+E68rhpCWBshY1lb09HtLwj5GviX0OyQIn+ulUS0iX0AxN5n3tLZzz1w==}
     engines: {node: '>=18.0.0'}
+
+  highlight.js@11.11.1:
+    resolution: {integrity: sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w==}
+    engines: {node: '>=12.0.0'}
 
   http-errors@2.0.1:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
@@ -4194,6 +4201,8 @@ snapshots:
   he@1.2.0: {}
 
   helmet@8.3.0: {}
+
+  highlight.js@11.11.1: {}
 
   http-errors@2.0.1:
     dependencies:

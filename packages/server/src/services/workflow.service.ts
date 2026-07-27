@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 
@@ -74,7 +74,10 @@ export class WorkflowService {
       paramType: input.paramType ?? 'text',
     }).run();
     return this.db.select().from(schema.workflowParams)
-      .where(eq(schema.workflowParams.alias, input.alias))
+      .where(and(
+        eq(schema.workflowParams.workflowId, input.workflowId),
+        eq(schema.workflowParams.alias, input.alias),
+      ))
       .get()!;
   }
 

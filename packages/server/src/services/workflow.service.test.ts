@@ -12,7 +12,7 @@ describe('WorkflowService', () => {
     sqlite = new Database(':memory:');
     sqlite.exec(`
       CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL UNIQUE, label TEXT, param_type TEXT NOT NULL DEFAULT 'text');
+      CREATE TABLE workflow_params (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, node_id TEXT NOT NULL, field_name TEXT NOT NULL, alias TEXT NOT NULL, label TEXT, param_type TEXT NOT NULL DEFAULT 'text', UNIQUE(workflow_id, alias));
     `);
     const db = drizzle(sqlite, { schema });
     service = new WorkflowService(db);
@@ -75,10 +75,17 @@ describe('WorkflowService', () => {
     expect(params).toHaveLength(0);
   });
 
-  it('throws on duplicate alias', () => {
+  it('throws on duplicate alias within same workflow', () => {
     service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
     service.addParam({ workflowId: 'wf', nodeId: '1', fieldName: 'v', alias: 'dup' });
     expect(() => service.addParam({ workflowId: 'wf', nodeId: '2', fieldName: 'v', alias: 'dup' })).toThrow();
+  });
+
+  it('allows same alias across different workflows', () => {
+    service.create({ id: 'wf1', name: 'WF1', rawJson: '{}' });
+    service.create({ id: 'wf2', name: 'WF2', rawJson: '{}' });
+    service.addParam({ workflowId: 'wf1', nodeId: '1', fieldName: 'v', alias: 'shared' });
+    expect(() => service.addParam({ workflowId: 'wf2', nodeId: '1', fieldName: 'v', alias: 'shared' })).not.toThrow();
   });
 
   it('deletes a param', () => {

@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const workflows = sqliteTable('workflows', {
   id: text('id').primaryKey(),
@@ -13,10 +13,12 @@ export const workflowParams = sqliteTable('workflow_params', {
   workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
   nodeId: text('node_id').notNull(),
   fieldName: text('field_name').notNull(),
-  alias: text('alias').notNull().unique(),
+  alias: text('alias').notNull(),
   label: text('label'),
   paramType: text('param_type').notNull().default('text'),
-});
+}, (table) => ({
+  uniqueAliasPerWorkflow: uniqueIndex('idx_unique_alias_per_workflow').on(table.workflowId, table.alias),
+}));
 
 export const taskLogs = sqliteTable('task_logs', {
   id: text('id').primaryKey(),

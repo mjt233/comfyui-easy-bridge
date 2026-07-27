@@ -31,17 +31,12 @@ db.run(`
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
     node_id TEXT NOT NULL,
     field_name TEXT NOT NULL,
-    alias TEXT NOT NULL UNIQUE,
+    alias TEXT NOT NULL,
     label TEXT,
-    param_type TEXT NOT NULL DEFAULT 'text'
+    param_type TEXT NOT NULL DEFAULT 'text',
+    UNIQUE(workflow_id, alias)
   )
 `);
-// 迁移：对已有数据库添加 param_type 列（CREATE TABLE IF NOT EXISTS 不会修改已有表）
-try {
-  sqlite.exec(`ALTER TABLE workflow_params ADD COLUMN param_type TEXT NOT NULL DEFAULT 'text'`);
-} catch {
-  // 列已存在则忽略
-}
 db.run(`
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
