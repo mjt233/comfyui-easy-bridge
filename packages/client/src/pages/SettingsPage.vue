@@ -89,7 +89,8 @@ async function handleSave() {
   }
 }
 
-async function handleAuthToggle(val: boolean) {
+async function handleAuthToggle(val: boolean | null) {
+  if (val === null) return;
   try {
     await updateSetting('auth_enabled', val ? '1' : '0');
     authEnabled.value = val;
