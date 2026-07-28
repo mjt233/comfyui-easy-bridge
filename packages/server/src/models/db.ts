@@ -31,9 +31,10 @@ db.run(`
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
     node_id TEXT NOT NULL,
     field_name TEXT NOT NULL,
-    alias TEXT NOT NULL,
+    alias TEXT,
     label TEXT,
     param_type TEXT NOT NULL DEFAULT 'text',
+    default_value TEXT,
     UNIQUE(workflow_id, alias)
   )
 `);

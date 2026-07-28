@@ -13,9 +13,12 @@ export const workflowParams = sqliteTable('workflow_params', {
   workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
   nodeId: text('node_id').notNull(),
   fieldName: text('field_name').notNull(),
-  alias: text('alias').notNull(),
+  /** 对外参数别名；null 表示不暴露为可传参字段 */
+  alias: text('alias'),
   label: text('label'),
   paramType: text('param_type').notNull().default('text'),
+  /** 默认值覆盖；null 表示使用 rawJson 原值 */
+  defaultValue: text('default_value'),
 }, (table) => ({
   uniqueAliasPerWorkflow: uniqueIndex('idx_unique_alias_per_workflow').on(table.workflowId, table.alias),
 }));
