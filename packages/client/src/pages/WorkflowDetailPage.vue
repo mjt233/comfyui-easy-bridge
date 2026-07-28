@@ -29,6 +29,78 @@
       </v-card-actions>
     </v-card>
 
+    <!-- rawJson 变更后仍残留在 DB 中的参数配置，优先展示在参数配置前 -->
+    <v-card v-if="orphanedParams.length > 0" class="mb-4">
+      <v-card-title class="d-flex align-center flex-wrap ga-2">
+        <span>失效配置</span>
+        <v-chip size="small" color="warning" variant="tonal">
+          {{ orphanedParams.length }}
+        </v-chip>
+        <v-spacer />
+        <v-btn
+          color="error"
+          variant="tonal"
+          size="small"
+          :loading="clearingOrphans"
+          @click="clearAllOrphans"
+        >
+          全部删除
+        </v-btn>
+      </v-card-title>
+      <v-card-text>
+        <p class="text-body-2 text-grey mb-4">
+          以下参数对应的节点或字段已不在当前工作流 JSON 中，无法再编辑，但仍占用别名。请删除后重新配置。
+        </p>
+        <v-table>
+          <thead>
+            <tr>
+              <th>节点 ID</th>
+              <th>字段名</th>
+              <th>别名</th>
+              <th>类型</th>
+              <th>默认值覆盖</th>
+              <th style="width: 100px">
+                操作
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in orphanedParams" :key="p.id">
+              <td>{{ p.nodeId }}</td>
+              <td>{{ p.fieldName }}</td>
+              <td>
+                <v-chip
+                  v-if="p.alias"
+                  size="small"
+                  color="warning"
+                  variant="flat"
+                >
+                  {{ p.alias }}
+                </v-chip>
+                <span v-else class="text-caption text-grey">仅默认值</span>
+              </td>
+              <td>
+                <span class="text-caption">{{ p.paramType }}</span>
+              </td>
+              <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                {{ p.defaultValue ?? '-' }}
+              </td>
+              <td>
+                <v-btn
+                  icon="mdi-delete"
+                  size="small"
+                  variant="text"
+                  color="error"
+                  :loading="deletingOrphanId === p.id"
+                  @click="deleteOrphan(p.id)"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+      </v-card-text>
+    </v-card>
+
     <v-card>
       <v-card-title>
         参数别名配置
@@ -134,7 +206,12 @@
                   {{ item.value }}
                 </td>
                 <td>
-                  <v-chip v-if="item.paramType !== 'text'" size="x-small" color="primary" variant="tonal">
+                  <v-chip
+                    v-if="item.paramType !== 'text'"
+                    size="x-small"
+                    color="primary"
+                    variant="tonal"
+                  >
                     {{ item.paramType }}
                   </v-chip>
                   <span v-else class="text-caption text-grey">text</span>
@@ -162,73 +239,6 @@
         <p v-else class="text-grey text-center py-4">
           无法解析工作流 JSON，请检查原始数据
         </p>
-      </v-card-text>
-    </v-card>
-
-    <!-- rawJson 变更后仍残留在 DB 中的参数配置 -->
-    <v-card v-if="orphanedParams.length > 0" class="mt-4">
-      <v-card-title class="d-flex align-center flex-wrap ga-2">
-        <span>失效配置</span>
-        <v-chip size="small" color="warning" variant="tonal">
-          {{ orphanedParams.length }}
-        </v-chip>
-        <v-spacer />
-        <v-btn
-          color="error"
-          variant="tonal"
-          size="small"
-          :loading="clearingOrphans"
-          @click="clearAllOrphans"
-        >
-          全部删除
-        </v-btn>
-      </v-card-title>
-      <v-card-text>
-        <p class="text-body-2 text-grey mb-4">
-          以下参数对应的节点或字段已不在当前工作流 JSON 中，无法再编辑，但仍占用别名。请删除后重新配置。
-        </p>
-        <v-table>
-          <thead>
-            <tr>
-              <th>节点 ID</th>
-              <th>字段名</th>
-              <th>别名</th>
-              <th>类型</th>
-              <th>默认值覆盖</th>
-              <th style="width: 100px">
-                操作
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in orphanedParams" :key="p.id">
-              <td>{{ p.nodeId }}</td>
-              <td>{{ p.fieldName }}</td>
-              <td>
-                <v-chip v-if="p.alias" size="small" color="warning" variant="flat">
-                  {{ p.alias }}
-                </v-chip>
-                <span v-else class="text-caption text-grey">仅默认值</span>
-              </td>
-              <td>
-                <span class="text-caption">{{ p.paramType }}</span>
-              </td>
-              <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                {{ p.defaultValue ?? '-' }}
-              </td>
-              <td>
-                <v-btn
-                  icon="mdi-delete"
-                  size="small"
-                  variant="text"
-                  color="error"
-                  :loading="deletingOrphanId === p.id"
-                  @click="deleteOrphan(p.id)"
-                />
-              </td>
-            </tr>
-          </tbody>
-        </v-table>
       </v-card-text>
     </v-card>
 
