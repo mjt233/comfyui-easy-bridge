@@ -96,4 +96,34 @@ describe('processMediaParams', () => {
     expect(result.txt).toBe('hello');
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('maps duplicate originalnames to distinct ComfyUI filenames', async () => {
+    // 模拟 ComfyUI 原样返回上传时使用的文件名
+    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
+      const formData = options.body;
+      const file = formData.get('image') as File;
+      return {
+        ok: true,
+        json: async () => ({ name: file.name }),
+      };
+    });
+
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img1', label: null, paramType: 'image' },
+      { id: 2, workflowId: 'test', nodeId: '2', fieldName: 'image', alias: 'img2', label: null, paramType: 'image' },
+    ];
+    const files = {
+      img1: [{ buffer: Buffer.from('data1'), originalname: 'photo.png', mimetype: 'image/png' }],
+      img2: [{ buffer: Buffer.from('data2'), originalname: 'photo.png', mimetype: 'image/png' }],
+    };
+
+    const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
+
+    // 两个参数最终引用的文件名必须不同，否则节点会加载到同一份被覆盖的资源
+    expect(result.img1).toBeDefined();
+    expect(result.img2).toBeDefined();
+    expect(result.img1).not.toBe(result.img2);
+    expect(result.img1).toMatch(/\.png$/i);
+    expect(result.img2).toMatch(/\.png$/i);
+  });
 });

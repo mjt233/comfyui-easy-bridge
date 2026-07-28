@@ -55,4 +55,36 @@ describe('upload.service', () => {
       uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188'),
     ).rejects.toThrow('ComfyUI upload failed (400): Invalid file');
   });
+
+  it('uploads with a unique filename derived from the original name', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ name: 'unique.png' }),
+    });
+
+    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
+
+    const formData = mockFetch.mock.calls[0][1].body as FormData;
+    const uploaded = formData.get('image') as File;
+    // 不能直接使用原始文件名，否则同名文件会互相覆盖
+    expect(uploaded.name).not.toBe('test.png');
+    // 保留扩展名，便于 ComfyUI 识别类型
+    expect(uploaded.name).toMatch(/\.png$/i);
+    // 仍包含原始文件名主体，便于排查
+    expect(uploaded.name).toContain('test');
+  });
+
+  it('generates different filenames for two uploads with the same originalname', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ name: 'ignored.png' }),
+    });
+
+    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
+    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
+
+    const first = (mockFetch.mock.calls[0][1].body as FormData).get('image') as File;
+    const second = (mockFetch.mock.calls[1][1].body as FormData).get('image') as File;
+    expect(first.name).not.toBe(second.name);
+  });
 });
