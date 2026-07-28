@@ -176,4 +176,69 @@ describe('WorkflowService', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].workflow_id).toBe('new-id');
   });
+
+  it('adds param with only defaultValue and null alias', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      defaultValue: 'hello',
+    });
+    expect(param.alias).toBeNull();
+    expect(param.defaultValue).toBe('hello');
+    expect(param.paramType).toBe('text');
+  });
+
+  it('allows multiple null aliases in same workflow', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    service.addParam({ workflowId: 'wf', nodeId: '1', fieldName: 'a', defaultValue: '1' });
+    expect(() => service.addParam({ workflowId: 'wf', nodeId: '2', fieldName: 'b', defaultValue: '2' })).not.toThrow();
+  });
+
+  it('throws when both alias and defaultValue are empty', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    expect(() => service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+    })).toThrow(/alias|defaultValue|required/i);
+  });
+
+  it('forces paramType to text when alias is null', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      defaultValue: 'x',
+      paramType: 'image',
+    });
+    expect(param.paramType).toBe('text');
+  });
+
+  it('clears defaultValue to null on update', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const p = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'a',
+      defaultValue: 'old',
+    });
+    const updated = service.updateParam(p.id, { defaultValue: null });
+    expect(updated.defaultValue).toBeNull();
+  });
+
+  it('throws when update removes both alias and defaultValue', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const p = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'a',
+      defaultValue: 'x',
+    });
+    expect(() => service.updateParam(p.id, { alias: null, defaultValue: null })).toThrow(/alias|defaultValue|required/i);
+  });
 });
