@@ -22,7 +22,7 @@ export interface WorkflowParam {
   alias: string | null;
   /** 展示标签 */
   label: string | null;
-  /** 参数类型 */
+  /** 参数类型 text/boolean/number/image/video/audio */
   paramType: string;
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: string | null;

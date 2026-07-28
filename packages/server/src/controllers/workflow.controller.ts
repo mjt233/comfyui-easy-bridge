@@ -157,13 +157,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
 
-        // 解析 multipart 或 JSON 请求
+        // 解析 multipart 或 JSON 请求（值可能是 string/number/boolean）
         const isMultipart = req.is('multipart/form-data');
-        let aliasValues: Record<string, string>;
+        let aliasValues: Record<string, unknown>;
         let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>;
 
         if (isMultipart) {
-          aliasValues = JSON.parse(req.body.params || '{}');
+          aliasValues = JSON.parse(req.body.params || '{}') as Record<string, unknown>;
           const multerFiles = (req.files as Express.Multer.File[]) || [];
           uploadedFiles = {};
           for (const f of multerFiles) {
@@ -175,7 +175,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             });
           }
         } else {
-          aliasValues = req.body as Record<string, string>;
+          aliasValues = req.body as Record<string, unknown>;
           uploadedFiles = {};
         }
 

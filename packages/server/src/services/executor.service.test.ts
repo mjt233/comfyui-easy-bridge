@@ -86,6 +86,51 @@ describe('executor.service', () => {
     const parsed = JSON.parse(result);
     expect(parsed['30:19'].inputs.value).toBe('original prompt');
   });
+
+  it('applyAliases coerces string "false" to boolean false', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'flag', label: null, paramType: 'boolean', defaultValue: null },
+    ];
+    const result = applyAliases(sampleJson, params, { flag: 'false' });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe(false);
+  });
+
+  it('applyAliases coerces string number to number', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'n', label: null, paramType: 'number', defaultValue: null },
+    ];
+    const result = applyAliases(sampleJson, params, { n: '3.14' });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe(3.14);
+  });
+
+  it('applyAliases keeps invalid number as string', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'n', label: null, paramType: 'number', defaultValue: null },
+    ];
+    const result = applyAliases(sampleJson, params, { n: 'abc' });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('abc');
+  });
+
+  it('applyAliases coerces defaultValue boolean without alias', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: null, label: null, paramType: 'boolean', defaultValue: 'true' },
+    ];
+    const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe(true);
+  });
+
+  it('applyAliases keeps native boolean request value', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'flag', label: null, paramType: 'boolean', defaultValue: null },
+    ];
+    const result = applyAliases(sampleJson, params, { flag: false });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe(false);
+  });
 });
 
 describe('processMediaParams', () => {

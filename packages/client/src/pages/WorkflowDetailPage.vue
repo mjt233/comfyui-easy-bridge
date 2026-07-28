@@ -209,11 +209,10 @@
           <v-select
             v-model="dialog.paramType"
             label="参数类型"
-            :items="['text', 'image', 'video', 'audio']"
+            :items="paramTypeItems"
             density="compact"
             variant="outlined"
             hide-details
-            :disabled="!dialog.alias.trim()"
           />
         </v-card-text>
         <v-card-actions>
@@ -338,11 +337,24 @@ const dialog = ref({
   saving: false,
 });
 
-// 无别名时强制参数类型为 text
+/** 媒体类型（无别名时不可选） */
+const MEDIA_PARAM_TYPES = ['image', 'video', 'audio'] as const;
+
+/**
+ * 参数类型下拉选项：无别名时仅 text/boolean/number
+ */
+const paramTypeItems = computed(() => {
+  if (dialog.value.alias.trim()) {
+    return ['text', 'boolean', 'number', 'image', 'video', 'audio'];
+  }
+  return ['text', 'boolean', 'number'];
+});
+
+// 无别名时若当前为媒体类型，回退为 text
 watch(
   () => dialog.value.alias,
   (alias) => {
-    if (!alias.trim()) {
+    if (!alias.trim() && (MEDIA_PARAM_TYPES as readonly string[]).includes(dialog.value.paramType)) {
       dialog.value.paramType = 'text';
     }
   },
@@ -436,7 +448,11 @@ async function saveDialog() {
   const defaultValue = dialog.value.fieldValue === dialog.value.rawValue
     ? null
     : dialog.value.fieldValue;
-  const paramType = alias ? dialog.value.paramType : 'text';
+  // 无别名时禁止媒体类型，允许 text/boolean/number
+  let paramType = dialog.value.paramType || 'text';
+  if (!alias && (MEDIA_PARAM_TYPES as readonly string[]).includes(paramType)) {
+    paramType = 'text';
+  }
 
   // 无有效配置：已有行则删除，新建则忽略
   if (alias == null && defaultValue == null) {

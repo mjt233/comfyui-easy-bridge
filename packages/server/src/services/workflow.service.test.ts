@@ -205,7 +205,7 @@ describe('WorkflowService', () => {
     })).toThrow(/alias|defaultValue|required/i);
   });
 
-  it('forces paramType to text when alias is null', () => {
+  it('forces media paramType to text when alias is null', () => {
     service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
     const param = service.addParam({
       workflowId: 'wf',
@@ -215,6 +215,31 @@ describe('WorkflowService', () => {
       paramType: 'image',
     });
     expect(param.paramType).toBe('text');
+  });
+
+  it('allows boolean paramType without alias', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      defaultValue: 'true',
+      paramType: 'boolean',
+    });
+    expect(param.paramType).toBe('boolean');
+    expect(param.alias).toBeNull();
+  });
+
+  it('allows number paramType without alias', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      defaultValue: '1.5',
+      paramType: 'number',
+    });
+    expect(param.paramType).toBe('number');
   });
 
   it('clears defaultValue to null on update', () => {

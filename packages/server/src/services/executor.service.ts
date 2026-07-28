@@ -24,7 +24,7 @@ export interface WorkflowParam {
   alias: string | null;
   /** 展示标签 */
   label: string | null;
-  /** 参数类型 text/image/video/audio */
+  /** 参数类型 text/boolean/number/image/video/audio */
   paramType: string;
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: string | null;
@@ -43,18 +43,61 @@ export interface ExecutionResult {
 }
 
 /**
+ * 按 paramType 将原始值转换为写入 prompt 的类型。
+ * 转换失败时降级为字符串原样写入（不拒绝执行）。
+ * @param paramType 参数类型
+ * @param raw 请求值或 defaultValue
+ * @returns 转换后的值
+ */
+export function coerceParamValue(paramType: string, raw: unknown): unknown {
+  // boolean：已是布尔则直接使用
+  if (paramType === 'boolean') {
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'number') {
+      if (raw === 1) return true;
+      if (raw === 0) return false;
+      return String(raw);
+    }
+    const s = String(raw).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'off'].includes(s)) return false;
+    return String(raw);
+  }
+
+  // number：有限数字才转换
+  if (paramType === 'number') {
+    if (typeof raw === 'number') {
+      return Number.isFinite(raw) ? raw : String(raw);
+    }
+    if (typeof raw === 'boolean') {
+      return raw ? 1 : 0;
+    }
+    const s = String(raw).trim();
+    if (s === '') return String(raw);
+    const n = Number(s);
+    if (Number.isFinite(n)) return n;
+    return String(raw);
+  }
+
+  // text / media 等：统一字符串
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw;
+  return String(raw);
+}
+
+/**
  * 将别名请求值与默认值覆盖注入工作流 JSON。
  * 优先级：请求别名值 > defaultValue > rawJson 原值。
- * 不修改入参 rawJson 字符串本身以外的持久化数据；返回新的 JSON 字符串。
+ * 写入前按 paramType 做类型转换。
  * @param rawJson 原始工作流 API JSON 字符串
  * @param params 参数配置列表
- * @param aliasValues 请求传入的别名值
+ * @param aliasValues 请求传入的别名值（可为 string/number/boolean）
  * @returns 注入后的工作流 JSON 字符串
  */
 export function applyAliases(
   rawJson: string,
   params: WorkflowParam[],
-  aliasValues: Record<string, string>,
+  aliasValues: Record<string, unknown>,
 ): string {
   const workflow = JSON.parse(rawJson);
 
@@ -69,13 +112,13 @@ export function applyAliases(
 
     // 1) 请求值优先（仅当 alias 非空且出现在请求中）
     if (param.alias != null && param.alias !== '' && Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
-      node.inputs[param.fieldName] = aliasValues[param.alias];
+      node.inputs[param.fieldName] = coerceParamValue(param.paramType, aliasValues[param.alias]);
       continue;
     }
 
-    // 2) 默认值覆盖
+    // 2) 默认值覆盖（同样按类型转换）
     if (param.defaultValue != null) {
-      node.inputs[param.fieldName] = param.defaultValue;
+      node.inputs[param.fieldName] = coerceParamValue(param.paramType, param.defaultValue);
       continue;
     }
 
@@ -165,13 +208,14 @@ export async function submitPrompt(
  */
 export async function processMediaParams(
   params: WorkflowParam[],
-  aliasValues: Record<string, string>,
+  aliasValues: Record<string, unknown>,
   files: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>,
   comfyuiBaseUrl: string,
-): Promise<Record<string, string>> {
-  const result = { ...aliasValues };
+): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = { ...aliasValues };
   for (const param of params) {
-    if (param.paramType === 'text') continue;
+    // 仅处理媒体类型；boolean/number/text 不走上传
+    if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
     // 无别名的参数不参与对外媒体上传
     if (param.alias == null || param.alias === '') continue;
     const fileList = files[param.alias];
@@ -205,7 +249,7 @@ export async function interruptPrompt(comfyuiBaseUrl: string): Promise<boolean> 
 export async function executeWorkflow(
   rawJson: string,
   params: WorkflowParam[],
-  aliasValues: Record<string, string>,
+  aliasValues: Record<string, unknown>,
   comfyuiBaseUrl: string,
 ): Promise<ExecutionResult> {
   try {

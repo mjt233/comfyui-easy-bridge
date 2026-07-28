@@ -93,10 +93,10 @@
           />
           <template v-for="field in executeFields" :key="field.alias">
             <v-textarea
-              v-if="field.paramType === 'text'"
+              v-if="isTextLikeParam(field.paramType)"
               v-model="executeForm[field.alias]"
               :label="field.label || field.alias"
-              :hint="`节点: ${field.nodeTitle} · ${field.fieldName}`"
+              :hint="`节点: ${field.nodeTitle} · ${field.fieldName} · ${field.paramType}`"
               persistent-hint
               variant="outlined"
               density="compact"
@@ -271,6 +271,18 @@ const executeFields = ref<ExecuteField[]>([]);
 const executeForm = reactive<Record<string, string>>({});
 const executeFiles = reactive<Record<string, File>>({});
 
+/**
+ * 是否为文本类参数（非媒体上传）
+ * @param paramType 参数类型
+ */
+function isTextLikeParam(paramType: string): boolean {
+  return !['image', 'video', 'audio'].includes(paramType);
+}
+
+/**
+ * 媒体文件 accept 类型
+ * @param paramType 参数类型
+ */
 function acceptType(paramType: string): string {
   switch (paramType) {
     case 'image': return 'image/*';
@@ -287,7 +299,7 @@ const apiTargetId = ref('');
 const apiTab = ref('curl');
 const apiFormat = ref('json');
 const apiParams = ref<Array<WorkflowParam & { alias: string }>>([]);
-const apiHasMedia = computed(() => apiParams.value.some(p => p.paramType !== 'text'));
+const apiHasMedia = computed(() => apiParams.value.some(p => !isTextLikeParam(p.paramType)));
 /** 各语言 / 格式的 API 示例代码 */
 const apiCodeRef = ref<Record<string, Record<string, string>>>({});
 const apiCopying = ref(false);
@@ -325,8 +337,9 @@ function genJsonSnippet(id: string, params: Array<WorkflowParam & { alias: strin
  * @param params 已配置别名的参数列表
  */
 function genMultipartSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
-  const textParams = params.filter(p => p.paramType === 'text');
-  const mediaParams = params.filter(p => p.paramType !== 'text');
+  // boolean/number 与 text 一样走 JSON 字段，不走文件上传
+  const textParams = params.filter(p => isTextLikeParam(p.paramType));
+  const mediaParams = params.filter(p => !isTextLikeParam(p.paramType));
   return { textParams, mediaParams };
 }
 

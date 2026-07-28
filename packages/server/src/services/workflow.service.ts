@@ -71,15 +71,23 @@ function normalizeAlias(alias: string | null | undefined): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+/** 需要 alias 的媒体类型 */
+const MEDIA_PARAM_TYPES = new Set(['image', 'video', 'audio']);
+
 /**
- * 解析最终 paramType：无 alias 时强制 text
+ * 解析最终 paramType。
+ * 无 alias 时允许 text/boolean/number；媒体类型强制回退 text。
  * @param alias 规范化别名
  * @param paramType 请求类型
  * @returns 最终类型
  */
 function resolveParamType(alias: string | null, paramType?: string): string {
-  if (alias == null) return 'text';
-  return paramType ?? 'text';
+  const type = paramType ?? 'text';
+  // 无别名时禁止媒体类型
+  if (alias == null && MEDIA_PARAM_TYPES.has(type)) {
+    return 'text';
+  }
+  return type;
 }
 
 /**
