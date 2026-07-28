@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { applyAliases, processMediaParams } from './executor.service';
+import { applyAliases, processMediaParams, submitPrompt, COMFYUI_CLIENT_ID } from './executor.service';
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -90,9 +90,10 @@ describe('executor.service', () => {
 
 describe('processMediaParams', () => {
   const mockFetch = vi.fn();
-  globalThis.fetch = mockFetch;
 
   beforeEach(() => {
+    // 每个用例重新挂载本 suite 的 fetch mock，避免与其他 describe 互相覆盖
+    globalThis.fetch = mockFetch;
     mockFetch.mockReset();
   });
 
@@ -173,5 +174,50 @@ describe('processMediaParams', () => {
     const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
     expect(mockFetch).not.toHaveBeenCalled();
     expect(result).toEqual({});
+  });
+});
+
+/**
+ * submitPrompt 应自动注入稳定 client_id，以便 ComfyUI 将 execution_error 推送到本服务 WebSocket。
+ */
+describe('submitPrompt client_id', () => {
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    // 每个用例重新挂载本 suite 的 fetch mock，避免与其他 describe 互相覆盖
+    globalThis.fetch = mockFetch;
+    mockFetch.mockReset();
+  });
+
+  it('injects COMFYUI_CLIENT_ID into prompt request body', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ prompt_id: 'p1' }),
+    });
+
+    await submitPrompt(JSON.stringify({ prompt: { '1': {} } }), 'http://localhost:8188');
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, options] = mockFetch.mock.calls[0] as [string, { body: string }];
+    const body = JSON.parse(options.body) as { prompt: unknown; client_id?: string };
+    expect(body.client_id).toBe(COMFYUI_CLIENT_ID);
+    expect(typeof body.client_id).toBe('string');
+    expect(body.client_id!.length).toBeGreaterThan(0);
+  });
+
+  it('preserves existing client_id if already present', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ prompt_id: 'p1' }),
+    });
+
+    await submitPrompt(
+      JSON.stringify({ prompt: { '1': {} }, client_id: 'custom-client' }),
+      'http://localhost:8188',
+    );
+
+    const [, options] = mockFetch.mock.calls[0] as [string, { body: string }];
+    const body = JSON.parse(options.body) as { client_id?: string };
+    expect(body.client_id).toBe('custom-client');
   });
 });

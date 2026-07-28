@@ -1,4 +1,12 @@
+import { randomUUID } from 'crypto';
 import { uploadFileToComfyUI } from './upload.service';
+
+/**
+ * 本服务连接 ComfyUI 时使用的稳定 client_id。
+ * 提交 /prompt 与 WebSocket `?clientId=` 必须一致，
+ * 否则 execution_error 等非广播事件无法送达。
+ */
+export const COMFYUI_CLIENT_ID: string = randomUUID();
 
 /**
  * 工作流参数配置（别名映射 + 可选默认值覆盖）
@@ -77,16 +85,46 @@ export function applyAliases(
   return JSON.stringify(workflow);
 }
 
-/** 提交 prompt JSON 到 ComfyUI 并返回结果 */
+/**
+ * 确保请求体 JSON 中包含 client_id（已有则保留）。
+ * @param body 原始请求体字符串
+ * @returns 注入 client_id 后的请求体字符串；无法解析为对象时原样返回
+ */
+function ensureClientIdInBody(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    // 仅对对象请求体注入 client_id
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return body;
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (typeof obj.client_id === 'string' && obj.client_id.trim() !== '') {
+      return body;
+    }
+    obj.client_id = COMFYUI_CLIENT_ID;
+    return JSON.stringify(obj);
+  } catch {
+    return body;
+  }
+}
+
+/**
+ * 提交 prompt JSON 到 ComfyUI 并返回结果。
+ * 自动注入 COMFYUI_CLIENT_ID，使 execution_error 等事件可经 WebSocket 送达。
+ * @param body 请求体 JSON 字符串（通常含 prompt）
+ * @param comfyuiBaseUrl ComfyUI 基础 URL
+ */
 export async function submitPrompt(
   body: string,
   comfyuiBaseUrl: string,
 ): Promise<ExecutionResult> {
   try {
+    // 注入稳定 client_id，与 WebSocket 连接保持一致
+    const requestBody = ensureClientIdInBody(body);
     const response = await fetch(`${comfyuiBaseUrl}/prompt`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body,
+      body: requestBody,
     });
     const text = await response.text();
     let responseBody: unknown;
