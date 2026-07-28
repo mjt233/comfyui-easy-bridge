@@ -48,8 +48,8 @@ export async function uploadFileToComfyUI(
   mediaType: 'image' | 'video' | 'audio',
   comfyuiBaseUrl: string,
 ): Promise<string> {
-  // image 端点路径与 video/audio 略有不同
-  const endpoint = mediaType === 'image' ? '/upload/image' : `/upload/${mediaType}`;
+  // 统一使用 '/upload/image'
+  const endpoint = '/upload/image';
 
   // 生成唯一文件名，避免同名覆盖导致工作流节点引用错乱
   const uniqueName = buildUniqueUploadFilename(file.originalname);
