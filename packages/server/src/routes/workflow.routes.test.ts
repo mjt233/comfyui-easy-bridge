@@ -181,4 +181,42 @@ describe('Workflow API', () => {
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('id_conflict');
   });
+
+  it('POST /params with only defaultValue succeeds', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-default', name: 'D', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-default/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'value', defaultValue: 'hello' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.alias).toBeNull();
+    expect(res.body.defaultValue).toBe('hello');
+    expect(res.body.paramType).toBe('text');
+  });
+
+  it('POST /params without alias and defaultValue returns 400', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-empty-param', name: 'E', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-empty-param/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'value' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('missing_parameter');
+  });
 });

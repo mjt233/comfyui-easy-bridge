@@ -74,17 +74,36 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const { nodeId, fieldName, alias, label, paramType } = req.body;
-      if (!nodeId || !fieldName || !alias) {
-        res.status(400).json({ error: 'nodeId, fieldName, and alias are required', code: 'missing_parameter' });
+      const { nodeId, fieldName, alias, label, paramType, defaultValue } = req.body;
+      if (!nodeId || !fieldName) {
+        res.status(400).json({ error: 'nodeId and fieldName are required', code: 'missing_parameter' });
+        return;
+      }
+      // 空字符串 alias 视为未提供
+      const normalizedAlias = typeof alias === 'string' && alias.trim() === '' ? null : alias ?? null;
+      const hasDefault = defaultValue !== undefined && defaultValue !== null;
+      if (normalizedAlias == null && !hasDefault) {
+        res.status(400).json({ error: 'alias or defaultValue is required', code: 'missing_parameter' });
         return;
       }
       try {
-        const param = workflowService.addParam({ workflowId: id, nodeId, fieldName, alias, label, paramType });
+        const param = workflowService.addParam({
+          workflowId: id,
+          nodeId,
+          fieldName,
+          alias: normalizedAlias,
+          label,
+          paramType,
+          defaultValue: defaultValue === undefined ? null : defaultValue,
+        });
         res.status(201).json(param);
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
           res.status(409).json({ error: 'Alias already exists', code: 'alias_conflict' });
+          return;
+        }
+        if (err instanceof Error && /alias|defaultValue|required/i.test(err.message)) {
+          res.status(400).json({ error: err.message, code: 'missing_parameter' });
           return;
         }
         throw err;
@@ -92,8 +111,30 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
     },
 
     updateParam(req: Request, res: Response): void {
-      const param = workflowService.updateParam(Number(req.params.paramId), req.body);
-      res.json(param);
+      try {
+        const body = { ...req.body } as {
+          alias?: string | null;
+          label?: string | null;
+          paramType?: string;
+          defaultValue?: string | null;
+        };
+        // 空字符串 alias 视为清除别名
+        if (typeof body.alias === 'string' && body.alias.trim() === '') {
+          body.alias = null;
+        }
+        const param = workflowService.updateParam(Number(req.params.paramId), body);
+        res.json(param);
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
+          res.status(409).json({ error: 'Alias already exists', code: 'alias_conflict' });
+          return;
+        }
+        if (err instanceof Error && /alias|defaultValue|required|not found/i.test(err.message)) {
+          res.status(400).json({ error: err.message, code: 'missing_parameter' });
+          return;
+        }
+        throw err;
+      }
     },
 
     deleteParam(req: Request, res: Response): void {
