@@ -45,11 +45,15 @@ export function buildUniqueUploadFilename(originalname: string): string {
  */
 export async function uploadFileToComfyUI(
   file: { buffer: Buffer; originalname: string; mimetype: string },
-  mediaType: 'image' | 'video' | 'audio',
+  /**
+   * 媒体类型（保留参数以兼容调用方；ComfyUI 统一走 /upload/image）
+   */
+  _mediaType: 'image' | 'video' | 'audio',
   comfyuiBaseUrl: string,
 ): Promise<string> {
-  // 统一使用 '/upload/image'
+  // ComfyUI 当前统一使用 '/upload/image' 端点
   const endpoint = '/upload/image';
+  void _mediaType;
 
   // 生成唯一文件名，避免同名覆盖导致工作流节点引用错乱
   const uniqueName = buildUniqueUploadFilename(file.originalname);

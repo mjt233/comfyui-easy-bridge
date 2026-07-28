@@ -39,8 +39,9 @@ describe('upload.service', () => {
       'http://localhost:8188',
     );
     expect(result).toBe('video.mp4');
+    // ComfyUI 统一走 /upload/image，与 mediaType 无关
     expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:8188/upload/video',
+      'http://localhost:8188/upload/image',
       expect.objectContaining({ method: 'POST' }),
     );
   });
