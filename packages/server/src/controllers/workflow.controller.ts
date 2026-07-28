@@ -2,7 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from '../services/workflow.service';
-import { executeWorkflow, applyAliases, processMediaParams } from '../services/executor.service';
+import {
+  executeWorkflow,
+  applyAliases,
+  processMediaParams,
+  resolveSubmittedAliasValues,
+} from '../services/executor.service';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
@@ -185,6 +190,10 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值）
         const modifiedJson = applyAliases(wf.rawJson, params, finalAliasValues);
 
+        // 任务日志记录转换后、实际提交到 ComfyUI 的别名参数
+        const submittedAliasValues = resolveSubmittedAliasValues(params, finalAliasValues);
+        const submittedAliasValuesJson = JSON.stringify(submittedAliasValues);
+
         // 检查并发数
         const concurrencyStr = settingsService.get('comfyui_concurrency');
         const concurrency = concurrencyStr ? parseInt(concurrencyStr, 10) : 1;
@@ -195,7 +204,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           const task = taskService.create({
             workflowId: wf.id,
             workflowName: wf.name,
-            aliasValues: JSON.stringify(finalAliasValues),
+            aliasValues: submittedAliasValuesJson,
             comfyuiUrl: `${baseUrl}/prompt`,
             comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
             comfyuiResponse: null,
@@ -216,7 +225,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const task = taskService.create({
           workflowId: wf.id,
           workflowName: wf.name,
-          aliasValues: JSON.stringify(finalAliasValues),
+          aliasValues: submittedAliasValuesJson,
           comfyuiUrl: `${baseUrl}/prompt`,
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,

@@ -129,6 +129,40 @@ export function applyAliases(
 }
 
 /**
+ * 解析实际会提交到 ComfyUI 的别名参数值（含类型转换与 defaultValue 回退）。
+ * 仅包含有非空 alias 的参数；值语义与 applyAliases 写入 prompt 时一致。
+ * @param params 参数配置列表
+ * @param aliasValues 请求/媒体处理后的别名值
+ * @returns 转换后的别名 → 值映射（用于任务日志）
+ */
+export function resolveSubmittedAliasValues(
+  params: WorkflowParam[],
+  aliasValues: Record<string, unknown>,
+): Record<string, unknown> {
+  const submitted: Record<string, unknown> = {};
+
+  for (const param of params) {
+    // 无别名的参数不对外传参，不记入提交参数日志
+    if (param.alias == null || param.alias === '') continue;
+
+    // 1) 请求中带了该别名 → 转换后记录
+    if (Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
+      submitted[param.alias] = coerceParamValue(param.paramType, aliasValues[param.alias]);
+      continue;
+    }
+
+    // 2) 未传参但有默认值覆盖 → 转换后记录（与 applyAliases 一致）
+    if (param.defaultValue != null) {
+      submitted[param.alias] = coerceParamValue(param.paramType, param.defaultValue);
+    }
+
+    // 3) 否则依赖 rawJson 原值，日志中不出现该别名
+  }
+
+  return submitted;
+}
+
+/**
  * 确保请求体 JSON 中包含 client_id（已有则保留）。
  * @param body 原始请求体字符串
  * @returns 注入 client_id 后的请求体字符串；无法解析为对象时原样返回

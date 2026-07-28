@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { applyAliases, processMediaParams, submitPrompt, COMFYUI_CLIENT_ID } from './executor.service';
+import {
+  applyAliases,
+  processMediaParams,
+  resolveSubmittedAliasValues,
+  submitPrompt,
+  COMFYUI_CLIENT_ID,
+} from './executor.service';
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -130,6 +136,40 @@ describe('executor.service', () => {
     const result = applyAliases(sampleJson, params, { flag: false });
     const parsed = JSON.parse(result);
     expect(parsed['30:19'].inputs.value).toBe(false);
+  });
+
+  it('resolveSubmittedAliasValues coerces boolean and number for logs', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'a', alias: 'flag', label: null, paramType: 'boolean', defaultValue: null },
+      { id: 2, workflowId: 'test', nodeId: '2', fieldName: 'b', alias: 'n', label: null, paramType: 'number', defaultValue: null },
+      { id: 3, workflowId: 'test', nodeId: '3', fieldName: 'c', alias: 'txt', label: null, paramType: 'text', defaultValue: null },
+    ];
+    const result = resolveSubmittedAliasValues(params, {
+      flag: 'false',
+      n: '3.14',
+      txt: 'hello',
+    });
+    expect(result).toEqual({
+      flag: false,
+      n: 3.14,
+      txt: 'hello',
+    });
+  });
+
+  it('resolveSubmittedAliasValues uses coerced defaultValue when request omits alias', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'a', alias: 'flag', label: null, paramType: 'boolean', defaultValue: 'true' },
+    ];
+    const result = resolveSubmittedAliasValues(params, {});
+    expect(result).toEqual({ flag: true });
+  });
+
+  it('resolveSubmittedAliasValues skips params without alias', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'a', alias: null, label: null, paramType: 'boolean', defaultValue: 'true' },
+    ];
+    const result = resolveSubmittedAliasValues(params, {});
+    expect(result).toEqual({});
   });
 });
 
