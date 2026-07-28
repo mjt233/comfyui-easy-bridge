@@ -1,13 +1,25 @@
 import { uploadFileToComfyUI } from './upload.service';
 
+/**
+ * 工作流参数配置（别名映射 + 可选默认值覆盖）
+ */
 export interface WorkflowParam {
+  /** 参数行 ID */
   id: number;
+  /** 所属工作流 ID */
   workflowId: string;
+  /** 节点 ID */
   nodeId: string;
+  /** 节点 inputs 字段名 */
   fieldName: string;
-  alias: string;
+  /** 对外别名；null 表示不暴露为可传参字段 */
+  alias: string | null;
+  /** 展示标签 */
   label: string | null;
+  /** 参数类型 text/image/video/audio */
   paramType: string;
+  /** 默认值覆盖；null 表示使用 rawJson 原值 */
+  defaultValue: string | null;
 }
 
 /** 执行工作流的结果 */
@@ -22,6 +34,15 @@ export interface ExecutionResult {
   errorMessage: string | null;
 }
 
+/**
+ * 将别名请求值与默认值覆盖注入工作流 JSON。
+ * 优先级：请求别名值 > defaultValue > rawJson 原值。
+ * 不修改入参 rawJson 字符串本身以外的持久化数据；返回新的 JSON 字符串。
+ * @param rawJson 原始工作流 API JSON 字符串
+ * @param params 参数配置列表
+ * @param aliasValues 请求传入的别名值
+ * @returns 注入后的工作流 JSON 字符串
+ */
 export function applyAliases(
   rawJson: string,
   params: WorkflowParam[],
@@ -30,17 +51,27 @@ export function applyAliases(
   const workflow = JSON.parse(rawJson);
 
   for (const param of params) {
+    // 定位节点
     const node = workflow[param.nodeId];
     if (!node) continue;
 
+    // 跳过节点连接（数组）
     const currentValue = node.inputs?.[param.fieldName];
     if (Array.isArray(currentValue)) continue;
 
-    if (!(param.alias in aliasValues)) {
-      continue; // 未传参时跳过，保留工作流模板中的默认值
+    // 1) 请求值优先（仅当 alias 非空且出现在请求中）
+    if (param.alias != null && param.alias !== '' && Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
+      node.inputs[param.fieldName] = aliasValues[param.alias];
+      continue;
     }
 
-    node.inputs[param.fieldName] = aliasValues[param.alias];
+    // 2) 默认值覆盖
+    if (param.defaultValue != null) {
+      node.inputs[param.fieldName] = param.defaultValue;
+      continue;
+    }
+
+    // 3) 保留 rawJson 原值
   }
 
   return JSON.stringify(workflow);
@@ -85,7 +116,15 @@ export async function submitPrompt(
   }
 }
 
-/** 处理媒体参数：将上传的文件发送到 ComfyUI，返回最终 aliasValues */
+/**
+ * 处理媒体参数：将上传的文件发送到 ComfyUI，返回最终 aliasValues。
+ * 无别名的参数不参与对外媒体上传。
+ * @param params 参数配置列表
+ * @param aliasValues 请求传入的别名值
+ * @param files 按别名分组的上传文件
+ * @param comfyuiBaseUrl ComfyUI 服务地址
+ * @returns 合并上传结果后的别名值
+ */
 export async function processMediaParams(
   params: WorkflowParam[],
   aliasValues: Record<string, string>,
@@ -95,6 +134,8 @@ export async function processMediaParams(
   const result = { ...aliasValues };
   for (const param of params) {
     if (param.paramType === 'text') continue;
+    // 无别名的参数不参与对外媒体上传
+    if (param.alias == null || param.alias === '') continue;
     const fileList = files[param.alias];
     const file = fileList?.[0];
     if (file) {

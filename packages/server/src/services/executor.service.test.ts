@@ -17,7 +17,7 @@ describe('executor.service', () => {
 
   it('applyAliases replaces primitive values', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text' },
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: null },
     ];
     const result = applyAliases(sampleJson, params, { img_desc: 'a cute cat' });
     const parsed = JSON.parse(result);
@@ -26,7 +26,7 @@ describe('executor.service', () => {
 
   it('applyAliases does not modify node connections (arrays)', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '29', fieldName: 'images', alias: 'img_alias', label: null, paramType: 'text' },
+      { id: 1, workflowId: 'test', nodeId: '29', fieldName: 'images', alias: 'img_alias', label: null, paramType: 'text', defaultValue: null },
     ];
     const result = applyAliases(sampleJson, params, { img_alias: 'something' });
     const parsed = JSON.parse(result);
@@ -36,7 +36,7 @@ describe('executor.service', () => {
 
   it('applyAliases skips missing alias value and keeps original', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text' },
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: null },
     ];
     const result = applyAliases(sampleJson, params, {});
     const parsed = JSON.parse(result);
@@ -45,10 +45,46 @@ describe('executor.service', () => {
 
   it('applyAliases ignores params for non-existent nodes', () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: 'nonexistent', fieldName: 'value', alias: 'x', label: null, paramType: 'text' },
+      { id: 1, workflowId: 'test', nodeId: 'nonexistent', fieldName: 'value', alias: 'x', label: null, paramType: 'text', defaultValue: null },
     ];
     const result = applyAliases(sampleJson, params, { x: 'val' });
     expect(result).toBe(sampleJson);
+  });
+
+  it('applyAliases uses defaultValue when alias missing from request', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: 'from-default' },
+    ];
+    const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('from-default');
+  });
+
+  it('applyAliases prefers request value over defaultValue', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: 'from-default' },
+    ];
+    const result = applyAliases(sampleJson, params, { img_desc: 'from-request' });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('from-request');
+  });
+
+  it('applyAliases applies defaultValue without alias', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: null, label: null, paramType: 'text', defaultValue: 'only-default' },
+    ];
+    const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('only-default');
+  });
+
+  it('applyAliases keeps rawJson when defaultValue is null and no request value', () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: null },
+    ];
+    const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('original prompt');
   });
 });
 
@@ -67,7 +103,7 @@ describe('processMediaParams', () => {
     });
 
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image' },
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
     ];
     const files = {
       img: [{ buffer: Buffer.from('data'), originalname: 'photo.png', mimetype: 'image/png' }],
@@ -79,7 +115,7 @@ describe('processMediaParams', () => {
 
   it('keeps alias value if no file uploaded for media param', async () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image' },
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
     ];
 
     const result = await processMediaParams(params, { img: 'existing.png' }, {}, 'http://localhost:8188');
@@ -89,7 +125,7 @@ describe('processMediaParams', () => {
 
   it('skips text params', async () => {
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'value', alias: 'txt', label: null, paramType: 'text' },
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'value', alias: 'txt', label: null, paramType: 'text', defaultValue: null },
     ];
 
     const result = await processMediaParams(params, { txt: 'hello' }, {}, 'http://localhost:8188');
@@ -109,8 +145,8 @@ describe('processMediaParams', () => {
     });
 
     const params = [
-      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img1', label: null, paramType: 'image' },
-      { id: 2, workflowId: 'test', nodeId: '2', fieldName: 'image', alias: 'img2', label: null, paramType: 'image' },
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img1', label: null, paramType: 'image', defaultValue: null },
+      { id: 2, workflowId: 'test', nodeId: '2', fieldName: 'image', alias: 'img2', label: null, paramType: 'image', defaultValue: null },
     ];
     const files = {
       img1: [{ buffer: Buffer.from('data1'), originalname: 'photo.png', mimetype: 'image/png' }],
@@ -125,5 +161,17 @@ describe('processMediaParams', () => {
     expect(result.img1).not.toBe(result.img2);
     expect(result.img1).toMatch(/\.png$/i);
     expect(result.img2).toMatch(/\.png$/i);
+  });
+
+  it('skips media params without alias', async () => {
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: null, label: null, paramType: 'image', defaultValue: null },
+    ];
+    const files = {
+      img: [{ buffer: Buffer.from('data'), originalname: 'photo.png', mimetype: 'image/png' }],
+    };
+    const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result).toEqual({});
   });
 });
