@@ -165,6 +165,73 @@
       </v-card-text>
     </v-card>
 
+    <!-- rawJson 变更后仍残留在 DB 中的参数配置 -->
+    <v-card v-if="orphanedParams.length > 0" class="mt-4">
+      <v-card-title class="d-flex align-center flex-wrap ga-2">
+        <span>失效配置</span>
+        <v-chip size="small" color="warning" variant="tonal">
+          {{ orphanedParams.length }}
+        </v-chip>
+        <v-spacer />
+        <v-btn
+          color="error"
+          variant="tonal"
+          size="small"
+          :loading="clearingOrphans"
+          @click="clearAllOrphans"
+        >
+          全部删除
+        </v-btn>
+      </v-card-title>
+      <v-card-text>
+        <p class="text-body-2 text-grey mb-4">
+          以下参数对应的节点或字段已不在当前工作流 JSON 中，无法再编辑，但仍占用别名。请删除后重新配置。
+        </p>
+        <v-table>
+          <thead>
+            <tr>
+              <th>节点 ID</th>
+              <th>字段名</th>
+              <th>别名</th>
+              <th>类型</th>
+              <th>默认值覆盖</th>
+              <th style="width: 100px">
+                操作
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in orphanedParams" :key="p.id">
+              <td>{{ p.nodeId }}</td>
+              <td>{{ p.fieldName }}</td>
+              <td>
+                <v-chip v-if="p.alias" size="small" color="warning" variant="flat">
+                  {{ p.alias }}
+                </v-chip>
+                <span v-else class="text-caption text-grey">仅默认值</span>
+              </td>
+              <td>
+                <span class="text-caption">{{ p.paramType }}</span>
+              </td>
+              <td class="text-caption text-grey" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                {{ p.defaultValue ?? '-' }}
+              </td>
+              <td>
+                <v-btn
+                  icon="mdi-delete"
+                  size="small"
+                  variant="text"
+                  color="error"
+                  :loading="deletingOrphanId === p.id"
+                  @click="deleteOrphan(p.id)"
+                />
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+      </v-card-text>
+    </v-card>
+
     <v-dialog v-model="dialog.show" max-width="500">
       <v-card>
         <v-card-title>编辑参数</v-card-title>
@@ -285,8 +352,16 @@ interface NodeField {
 const route = useRoute();
 const workflow = ref<WorkflowDetail | null>(null);
 const nodes = ref<NodeField[]>([]);
+/**
+ * 当前 rawJson 中已不存在对应节点/字段的参数配置
+ */
+const orphanedParams = ref<WorkflowParam[]>([]);
 const error = ref('');
 const snackbar = ref({ show: false, text: '', color: 'success' });
+/** 正在删除的失效参数 ID */
+const deletingOrphanId = ref<number | null>(null);
+/** 是否正在批量清理失效参数 */
+const clearingOrphans = ref(false);
 
 const viewMode = ref<'chip' | 'list'>('chip');
 
@@ -361,7 +436,7 @@ watch(
 );
 
 /**
- * 解析工作流 JSON 与已保存参数，生成节点字段列表
+ * 解析工作流 JSON 与已保存参数，生成节点字段列表，并收集失效配置
  * @param wf 工作流详情
  */
 function parseNodes(wf: WorkflowDetail) {
@@ -370,6 +445,9 @@ function parseNodes(wf: WorkflowDetail) {
   for (const p of wf.params) {
     paramMap.set(`${p.nodeId}:${p.fieldName}`, p);
   }
+
+  /** 当前 JSON 中仍存在的可配置字段键 */
+  const liveFieldKeys = new Set<string>();
 
   try {
     const json = JSON.parse(wf.rawJson);
@@ -382,8 +460,10 @@ function parseNodes(wf: WorkflowDetail) {
       for (const [fieldName, fieldVal] of Object.entries(inputs)) {
         // 跳过数组连接字段
         if (Array.isArray(fieldVal)) continue;
+        const key = `${nodeId}:${fieldName}`;
+        liveFieldKeys.add(key);
         const rawValue = String(fieldVal);
-        const existing = paramMap.get(`${nodeId}:${fieldName}`);
+        const existing = paramMap.get(key);
         const override = existing?.defaultValue ?? null;
         fields.push({
           name: fieldName,
@@ -405,7 +485,52 @@ function parseNodes(wf: WorkflowDetail) {
     // JSON parse failed
   }
 
+  // 已保存但 JSON 中已无对应字段的参数 → 失效配置
+  orphanedParams.value = wf.params.filter(
+    (p) => !liveFieldKeys.has(`${p.nodeId}:${p.fieldName}`),
+  );
+
   nodes.value = result;
+}
+
+/**
+ * 删除单条失效参数配置
+ * @param paramId 参数行 ID
+ */
+async function deleteOrphan(paramId: number) {
+  if (!workflow.value) return;
+  deletingOrphanId.value = paramId;
+  try {
+    await deleteParam(workflow.value.id, paramId);
+    snackbar.value = { show: true, text: '已删除失效配置', color: 'success' };
+    await load();
+  } catch {
+    snackbar.value = { show: true, text: '删除失败', color: 'error' };
+  } finally {
+    deletingOrphanId.value = null;
+  }
+}
+
+/**
+ * 批量删除全部失效参数配置
+ */
+async function clearAllOrphans() {
+  if (!workflow.value || orphanedParams.value.length === 0) return;
+  clearingOrphans.value = true;
+  try {
+    const id = workflow.value.id;
+    // 逐条删除；任一条失败则中断并提示
+    for (const p of orphanedParams.value) {
+      await deleteParam(id, p.id);
+    }
+    snackbar.value = { show: true, text: '已清理全部失效配置', color: 'success' };
+    await load();
+  } catch {
+    snackbar.value = { show: true, text: '清理失败，请重试', color: 'error' };
+    await load();
+  } finally {
+    clearingOrphans.value = false;
+  }
 }
 
 /**
