@@ -8,7 +8,12 @@
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
       设置
     </v-btn>
-    <v-btn v-if="authEnabled !== false" variant="text" prepend-icon="mdi-logout" @click="handleLogout">
+    <v-btn
+      v-if="authEnabled !== false"
+      variant="text"
+      prepend-icon="mdi-logout"
+      @click="handleLogout"
+    >
       退出
     </v-btn>
   </v-app-bar>
@@ -157,7 +162,13 @@
         <v-card-title class="d-flex align-center">
           <span>API 调用说明：{{ apiTargetName }}</span>
           <v-spacer />
-          <v-chip v-if="apiHasMedia" size="small" color="warning" variant="tonal" class="mr-2">
+          <v-chip
+            v-if="apiHasMedia"
+            size="small"
+            color="warning"
+            variant="tonal"
+            class="mr-2"
+          >
             含文件参数
           </v-chip>
         </v-card-title>
@@ -170,15 +181,29 @@
             class="mb-3"
             mandatory
           >
-            <v-btn value="json" size="small">JSON</v-btn>
-            <v-btn value="multipart" size="small">Multipart 文件上传</v-btn>
+            <v-btn value="json" size="small">
+              JSON
+            </v-btn>
+            <v-btn value="multipart" size="small">
+              Multipart 文件上传
+            </v-btn>
           </v-btn-toggle>
           <v-tabs v-model="apiTab" color="primary">
-            <v-tab value="curl">curl</v-tab>
-            <v-tab value="powershell">PowerShell</v-tab>
-            <v-tab value="python">Python</v-tab>
-            <v-tab value="nodejs">Node.js</v-tab>
-            <v-tab value="java">Java</v-tab>
+            <v-tab value="curl">
+              curl
+            </v-tab>
+            <v-tab value="powershell">
+              PowerShell
+            </v-tab>
+            <v-tab value="python">
+              Python
+            </v-tab>
+            <v-tab value="nodejs">
+              Node.js
+            </v-tab>
+            <v-tab value="java">
+              Java
+            </v-tab>
           </v-tabs>
           <div class="api-code-block mt-4">
             <div class="code-header d-flex align-center">
@@ -199,7 +224,7 @@
                 </template>
               </v-tooltip>
             </div>
-            <pre><code v-html="highlightedApiCode()"></code></pre>
+            <pre><code v-html="highlightedApiCode()" /></pre>
           </div>
         </v-card-text>
         <v-card-actions>
@@ -372,7 +397,7 @@ ${params.map(p => `  ${p.alias} = "value"`).join('\n')}
 } | ConvertTo-Json
 
 Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
-        + `-Method Post -Body $body -ContentType "application/json"`,
+        + '-Method Post -Body $body -ContentType "application/json"',
       multipart: mediaParams.length > 0
         ? `$params = @{
 ${textParams.map(p => `  ${p.alias} = "value"`).join('\n')}
@@ -384,7 +409,7 @@ ${mediaParams.map(p => `  ${p.alias} = Get-Item -Path "C:\\path\\to\\${p.alias}.
 }
 
 Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
-        + `-Method Post -Form $form`
+        + '-Method Post -Form $form'
         : '',
     },
     python: {
@@ -444,7 +469,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
 String url = "http://localhost:10721/api/workflows/${id}/execute";
-String json = "${escDouble(jsonBody.replace(/\n    /g, '\\n    ').replace(/\n/g, '\\n'))}";
+String json = "${escDouble(jsonBody.replace(/\n {4}/g, '\\n    ').replace(/\n/g, '\\n'))}";
 
 HttpClient client = HttpClient.newHttpClient();
 HttpRequest request = HttpRequest.newBuilder()
