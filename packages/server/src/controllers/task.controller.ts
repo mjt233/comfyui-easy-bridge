@@ -4,7 +4,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
-import { submitPrompt } from '../services/executor.service';
+import { submitPrompt, interruptPrompt } from '../services/executor.service';
 
 /** 任务日志控制器 */
 export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
@@ -148,6 +148,41 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         });
         res.json({ task_id: task.id, status: 'failed', error_message: result.errorMessage });
       }
+    },
+
+    /** 中断任务执行 */
+    async cancel(req: Request, res: Response): Promise<void> {
+      const task = taskService.getById(req.params.taskId as string);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
+        return;
+      }
+      // queued 任务直接标记为失败，无需通知 ComfyUI
+      if (task.status === 'queued') {
+        taskService.updateStatus(task.id, {
+          status: 'failed',
+          errorMessage: 'Cancelled by user',
+        });
+        res.json({ task_id: task.id, status: 'failed' });
+        return;
+      }
+      if (task.status !== 'pending') {
+        res.status(400).json({
+          error: 'Only queued or pending tasks can be cancelled',
+          code: 'invalid_status',
+        });
+        return;
+      }
+      // pending 任务：向 ComfyUI 发送中断请求，再标记为失败
+      const baseUrl = settingsService.get('comfyui_base_url');
+      if (baseUrl) {
+        await interruptPrompt(baseUrl);
+      }
+      taskService.updateStatus(task.id, {
+        status: 'failed',
+        errorMessage: 'Cancelled by user',
+      });
+      res.json({ task_id: task.id, status: 'failed' });
     },
   };
 }

@@ -109,6 +109,16 @@ export async function processMediaParams(
   return result;
 }
 
+/** 中断 ComfyUI 当前正在执行的 prompt */
+export async function interruptPrompt(comfyuiBaseUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${comfyuiBaseUrl}/interrupt`, { method: 'POST' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 提交工作流到 ComfyUI 执行
  * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回

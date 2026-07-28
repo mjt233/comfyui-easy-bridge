@@ -106,3 +106,112 @@ describe('Task output files endpoints', () => {
     expect(res.body.code).toBe('comfyui_unreachable');
   });
 });
+
+describe('Task cancel endpoint', () => {
+  let app: express.Express;
+  let queuedTaskId: string;
+  let pendingTaskId: string;
+  let completedTaskId: string;
+  let failedTaskId: string;
+
+  beforeAll(() => {
+    const sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    `);
+    const db = drizzle(sqlite, { schema });
+    const svc = new TaskService(db);
+    const s = new SettingsService(db);
+    s.set('comfyui_base_url', 'http://localhost:8188');
+    s.set('auth_enabled', '0');
+
+    db.insert(schema.workflows).values({
+      id: 'wf-cancel', name: 'test', rawJson: '{}',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }).run();
+
+    // 创建 queued 任务
+    const queued = svc.create({
+      workflowId: 'wf-cancel', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: null,
+    });
+    // 手动设为 queued（create 默认设为 failed 当 promptId 为 null）
+    svc.updateStatus(queued.id, { status: 'queued' });
+    queuedTaskId = queued.id;
+
+    // 创建 pending 任务
+    const pending = svc.create({
+      workflowId: 'wf-cancel', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: '{}',
+      comfyuiResponse: null, promptId: 'prompt-cancel',
+    });
+    pendingTaskId = pending.id;
+
+    // 创建 completed 任务
+    const completed = svc.create({
+      workflowId: 'wf-cancel', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: 'prompt-completed',
+    });
+    svc.updateStatus(completed.id, { status: 'completed' });
+    completedTaskId = completed.id;
+
+    // 创建 failed 任务
+    const failed = svc.create({
+      workflowId: 'wf-cancel', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: null,
+    });
+    failedTaskId = failed.id;
+
+    const routeApp = express();
+    routeApp.use(express.json());
+    routeApp.use('/api/tasks', createTaskRoutes(db));
+    app = routeApp;
+  });
+
+  it('POST /api/tasks/:taskId/cancel cancels a queued task', async () => {
+    const res = await supertest(app)
+      .post(`/api/tasks/${queuedTaskId}/cancel`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('failed');
+    // 验证任务已被标记为失败
+    const detail = await supertest(app).get(`/api/tasks/${queuedTaskId}`);
+    expect(detail.body.status).toBe('failed');
+    expect(detail.body.errorMessage).toBe('Cancelled by user');
+  });
+
+  it('POST /api/tasks/:taskId/cancel cancels a pending task', async () => {
+    const res = await supertest(app)
+      .post(`/api/tasks/${pendingTaskId}/cancel`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('failed');
+    const detail = await supertest(app).get(`/api/tasks/${pendingTaskId}`);
+    expect(detail.body.status).toBe('failed');
+    expect(detail.body.errorMessage).toBe('Cancelled by user');
+  });
+
+  it('POST /api/tasks/:taskId/cancel returns 400 for completed task', async () => {
+    const res = await supertest(app)
+      .post(`/api/tasks/${completedTaskId}/cancel`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_status');
+  });
+
+  it('POST /api/tasks/:taskId/cancel returns 400 for failed task', async () => {
+    const res = await supertest(app)
+      .post(`/api/tasks/${failedTaskId}/cancel`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('invalid_status');
+  });
+
+  it('POST /api/tasks/:taskId/cancel returns 404 for non-existent task', async () => {
+    const res = await supertest(app)
+      .post('/api/tasks/nonexistent/cancel');
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('task_not_found');
+  });
+});

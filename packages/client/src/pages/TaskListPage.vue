@@ -73,6 +73,16 @@
             立即提交
           </v-btn>
           <v-btn
+            v-if="item.status === 'pending'"
+            color="error"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            @click.stop="handleCancelTask(item.id)"
+          >
+            中断
+          </v-btn>
+          <v-btn
             icon="mdi-information-outline"
             size="small"
             variant="text"
@@ -197,6 +207,14 @@
           </v-expansion-panels>
         </v-card-text>
         <v-card-actions>
+          <v-btn
+            v-if="selectedTask?.status === 'pending'"
+            color="error"
+            variant="tonal"
+            @click="handleCancelTask(selectedTask!.id); detailDialog = false"
+          >
+            中断任务
+          </v-btn>
           <v-spacer />
           <v-btn variant="text" @click="detailDialog = false">
             关闭
@@ -332,7 +350,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue';
-import { listTasks, clearCompletedTasks, submitTask, fetchTaskOutputFiles, type TaskLog, type OutputFile } from '@/api/tasks';
+import { listTasks, clearCompletedTasks, submitTask, cancelTask, fetchTaskOutputFiles, type TaskLog, type OutputFile } from '@/api/tasks';
 
 const headers = [
   { title: '提交时间', key: 'createdAt' },
@@ -473,6 +491,15 @@ async function handleClear() {
 async function handleSubmitTask(taskId: string) {
   try {
     await submitTask(taskId);
+    await fetchTasks();
+  } catch {
+    // ignore
+  }
+}
+
+async function handleCancelTask(taskId: string) {
+  try {
+    await cancelTask(taskId);
     await fetchTasks();
   } catch {
     // ignore

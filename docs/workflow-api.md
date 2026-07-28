@@ -1,6 +1,6 @@
 # 工作流相关 API 文档
 
-本文档覆盖三个核心 API：提交工作流执行、查看任务状态、下载输出文件。
+本文档覆盖四个核心 API：提交工作流执行、查看任务状态、中断任务、下载输出文件。
 
 **基础路径**: `/api`
 
@@ -126,6 +126,34 @@ GET /api/tasks/:taskId
 
 `progress` 字段（0–100）表示进度百分比。
 
+### 中断任务执行
+
+```
+POST /api/tasks/:taskId/cancel
+```
+
+需认证 (`Authorization: Bearer <token>`)。
+
+中断正在执行（`pending`）或排队中（`queued`）的任务。
+- `queued` 任务：直接标记为失败，无需通知 ComfyUI。
+- `pending` 任务：向 ComfyUI 发送 `/interrupt` 请求，再标记为失败。
+
+**响应** `200`:
+
+```json
+{
+  "task_id": "uuid-string",
+  "status": "failed"
+}
+```
+
+**错误响应**:
+
+| 状态码 | code | 说明 |
+|--------|------|------|
+| `400` | `invalid_status` | 任务状态不是 `queued` 或 `pending`（如已完成或已失败） |
+| `404` | `task_not_found` | 任务不存在 |
+
 ---
 
 ## 3. 下载工作流输出文件
@@ -229,6 +257,7 @@ curl -O "http://localhost:10721/api/tasks/$TASK_ID/output-files/output_001.png" 
 | code | HTTP 状态码 | 场景 |
 |------|------------|------|
 | `missing_parameter` | 400 | 必填参数缺失 / ComfyUI URL 未配置 |
+| `invalid_status` | 400 | 任务状态不允许当前操作（如取消已完成的任务） |
 | `unauthorized` | 401 | Token 无效或过期 |
 | `workflow_not_found` | 404 | 工作流不存在 |
 | `task_not_found` | 404 | 任务不存在 |

@@ -36,6 +36,12 @@ export async function submitTask(taskId: string): Promise<{ task_id: string; sta
   return res.data;
 }
 
+/** 中断任务执行（支持 queued 和 pending 状态） */
+export async function cancelTask(taskId: string): Promise<{ task_id: string; status: string }> {
+  const res = await client.post<{ task_id: string; status: string }>(`/tasks/${taskId}/cancel`);
+  return res.data;
+}
+
 /** 输出文件信息 */
 export interface OutputFile {
   filename: string;
