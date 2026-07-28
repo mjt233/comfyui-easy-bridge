@@ -97,8 +97,19 @@
             class="mb-3"
           />
           <template v-for="field in executeFields" :key="field.alias">
+            <v-switch
+              v-if="field.paramType === 'boolean'"
+              v-model="executeForm[field.alias]"
+              :label="field.label || field.alias"
+              :hint="`节点: ${field.nodeTitle} · ${field.fieldName} · boolean`"
+              persistent-hint
+              color="primary"
+              density="compact"
+              class="mb-2"
+              hide-details="auto"
+            />
             <v-textarea
-              v-if="isTextLikeParam(field.paramType)"
+              v-else-if="isTextLikeParam(field.paramType)"
               v-model="executeForm[field.alias]"
               :label="field.label || field.alias"
               :hint="`节点: ${field.nodeTitle} · ${field.fieldName} · ${field.paramType}`"
@@ -293,15 +304,30 @@ const executeTarget = ref<string | null>(null);
 const executeLoading = ref(false);
 const submitting = ref(false);
 const executeFields = ref<ExecuteField[]>([]);
-const executeForm = reactive<Record<string, string>>({});
+/** 执行表单值：boolean 为布尔，其余为字符串 */
+const executeForm = reactive<Record<string, string | boolean>>({});
 const executeFiles = reactive<Record<string, File>>({});
 
 /**
- * 是否为文本类参数（非媒体上传）
+ * 是否为文本类参数（非媒体上传、非 boolean 开关）
  * @param paramType 参数类型
  */
 function isTextLikeParam(paramType: string): boolean {
-  return !['image', 'video', 'audio'].includes(paramType);
+  return !['image', 'video', 'audio', 'boolean'].includes(paramType);
+}
+
+/**
+ * 将默认值解析为 boolean（用于 v-switch）
+ * @param raw 原始默认值
+ * @returns 布尔值；无法识别时默认 false
+ */
+function parseBooleanDefault(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'number') return raw === 1;
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'off', ''].includes(s)) return false;
+  return false;
 }
 
 /**
@@ -636,11 +662,15 @@ async function handleExecute(id: string) {
         nodeTitle,
         paramType: param.paramType || 'text',
       });
-      // 设置默认值：覆盖优先，否则 rawJson 原值
+      // 设置默认值：覆盖优先，否则 rawJson 原值；boolean 用开关布尔值
       const effectiveDefault = param.defaultValue != null
         ? param.defaultValue
-        : String(currentValue ?? '');
-      executeForm[param.alias] = effectiveDefault;
+        : currentValue;
+      if ((param.paramType || 'text') === 'boolean') {
+        executeForm[param.alias] = parseBooleanDefault(effectiveDefault);
+      } else {
+        executeForm[param.alias] = String(effectiveDefault ?? '');
+      }
     }
 
     executeFields.value = fields;
@@ -656,9 +686,18 @@ async function confirmExecute() {
   if (!executeTarget.value) return;
   submitting.value = true;
   try {
-    const aliasValues: Record<string, string> = {};
+    const aliasValues: Record<string, string | boolean> = {};
     for (const field of executeFields.value) {
-      aliasValues[field.alias] = executeForm[field.alias];
+      // 媒体参数由 files 承载；表单中可能无对应文本值
+      if (field.paramType === 'image' || field.paramType === 'video' || field.paramType === 'audio') {
+        continue;
+      }
+      const val = executeForm[field.alias];
+      if (field.paramType === 'boolean') {
+        aliasValues[field.alias] = Boolean(val);
+      } else {
+        aliasValues[field.alias] = String(val ?? '');
+      }
     }
     const files = Object.keys(executeFiles).length > 0 ? { ...executeFiles } : undefined;
     const result = await executeWorkflow(executeTarget.value, aliasValues, files);

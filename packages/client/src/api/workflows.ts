@@ -77,7 +77,8 @@ export interface ExecuteResult {
 
 export async function executeWorkflow(
   workflowId: string,
-  aliasValues: Record<string, string>,
+  /** 别名参数值；boolean 可传真正布尔，后端会按类型转换 */
+  aliasValues: Record<string, string | number | boolean>,
   files?: Record<string, File>,
 ): Promise<ExecuteResult> {
   if (!files || Object.keys(files).length === 0) {
