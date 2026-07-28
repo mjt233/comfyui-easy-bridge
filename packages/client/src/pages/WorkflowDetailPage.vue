@@ -87,11 +87,12 @@
                       size="small"
                       @click="openDialog(node, info)"
                     >
-                      <span v-if="info.paramId && info.label">{{ info.alias }}</span>
+                      <span v-if="info.paramId && info.label">{{ info.alias || info.name }}</span>
+                      <span v-else-if="info.paramId && !info.alias">{{ info.name }}</span>
                       <span v-else>{{ info.name }}</span>
                       <template #append>
                         <span v-if="info.paramType !== 'text'" class="text-caption ml-1 opacity-70">{{ info.paramType }}</span>
-                        <span v-if="info.paramId" class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias }}</span>
+                        <span v-if="info.paramId" class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias || '仅默认值' }}</span>
                       </template>
                     </v-chip>
                   </div>
@@ -145,10 +146,10 @@
                     color="primary"
                     variant="flat"
                   >
-                    {{ item.alias }}
+                    {{ item.alias || '仅默认值' }}
                     <template v-if="item.paramId" #append>
                       <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
-                        {{ item.label || item.alias }}
+                        {{ item.label || item.alias || '仅默认值' }}
                       </span>
                     </template>
                   </v-chip>
@@ -178,20 +179,20 @@
             readonly
           />
           <v-textarea
-            :model-value="dialog.fieldValue"
+            v-model="dialog.fieldValue"
             label="默认值"
             density="compact"
             variant="outlined"
-            hide-details
             class="mb-3"
-            readonly
             max-rows="3"
             :rows="1"
             auto-grow
+            hint="与原始值相同则清除覆盖"
+            persistent-hint
           />
           <v-text-field
             v-model="dialog.alias"
-            label="接口字段别名"
+            label="接口字段别名（可选）"
             density="compact"
             variant="outlined"
             hide-details
@@ -212,6 +213,7 @@
             density="compact"
             variant="outlined"
             hide-details
+            :disabled="!dialog.alias.trim()"
           />
         </v-card-text>
         <v-card-actions>
@@ -225,7 +227,7 @@
           <v-btn
             color="primary"
             variant="flat"
-            :disabled="!dialog.fieldName || !dialog.alias || dialog.saving"
+            :disabled="!dialog.fieldName || dialog.saving || !canSaveDialog"
             :loading="dialog.saving"
             @click="saveDialog"
           >
@@ -242,23 +244,42 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 
+/**
+ * 节点字段展示信息
+ */
 interface FieldInfo {
+  /** 字段名 */
   name: string;
+  /** rawJson 中的原始默认值（字符串化） */
+  rawValue: string;
+  /** 当前生效展示值（覆盖优先） */
   value: string;
+  /** 别名 */
   alias: string;
+  /** 标签 */
   label: string;
+  /** 已保存参数 ID */
   paramId: number | null;
+  /** 参数类型 */
   paramType: string;
+  /** 已保存的默认值覆盖 */
+  defaultValue: string | null;
 }
 
+/**
+ * 节点及其可配置字段
+ */
 interface NodeField {
+  /** 节点 ID */
   nodeId: string;
+  /** 节点标题 */
   title: string;
+  /** 字段列表 */
   fields: FieldInfo[];
 }
 
@@ -270,10 +291,34 @@ const snackbar = ref({ show: false, text: '', color: 'success' });
 
 const viewMode = ref<'chip' | 'list'>('chip');
 
+/**
+ * 将节点字段平铺为列表视图数据
+ */
 const flatFields = computed(() => {
   return nodes.value.flatMap(n => n.fields.map(f => ({ ...f, nodeId: n.nodeId, title: n.title })));
 });
 
+/**
+ * 是否允许保存当前对话框
+ */
+const canSaveDialog = computed(() => {
+  const alias = dialog.value.alias.trim();
+  // 与原始值相同则视为清除覆盖
+  const defaultValue = dialog.value.fieldValue === dialog.value.rawValue
+    ? null
+    : dialog.value.fieldValue;
+  // 新建：至少 alias 或有效覆盖
+  if (!dialog.value.paramId) {
+    return alias !== '' || defaultValue != null;
+  }
+  // 已有配置：允许保存（若两者皆空则走删除提示）
+  return true;
+});
+
+/**
+ * 按节点 ID 查找节点
+ * @param nodeId 节点 ID
+ */
 function getNode(nodeId: string): NodeField | undefined {
   return nodes.value.find(n => n.nodeId === nodeId);
 }
@@ -282,7 +327,10 @@ const dialog = ref({
   show: false,
   node: null as NodeField | null,
   fieldName: '',
+  /** 可编辑的默认值输入 */
   fieldValue: '',
+  /** rawJson 原始值，用于比较是否清除覆盖 */
+  rawValue: '',
   alias: '',
   label: '',
   paramId: null as number | null,
@@ -290,6 +338,20 @@ const dialog = ref({
   saving: false,
 });
 
+// 无别名时强制参数类型为 text
+watch(
+  () => dialog.value.alias,
+  (alias) => {
+    if (!alias.trim()) {
+      dialog.value.paramType = 'text';
+    }
+  },
+);
+
+/**
+ * 解析工作流 JSON 与已保存参数，生成节点字段列表
+ * @param wf 工作流详情
+ */
 function parseNodes(wf: WorkflowDetail) {
   const result: NodeField[] = [];
   const paramMap = new Map<string, WorkflowParam>();
@@ -306,15 +368,20 @@ function parseNodes(wf: WorkflowDetail) {
       const fields: FieldInfo[] = [];
 
       for (const [fieldName, fieldVal] of Object.entries(inputs)) {
+        // 跳过数组连接字段
         if (Array.isArray(fieldVal)) continue;
+        const rawValue = String(fieldVal);
         const existing = paramMap.get(`${nodeId}:${fieldName}`);
+        const override = existing?.defaultValue ?? null;
         fields.push({
           name: fieldName,
-          value: String(fieldVal),
+          rawValue,
+          value: override != null ? override : rawValue,
           alias: existing?.alias ?? '',
           label: existing?.label ?? '',
           paramId: existing?.id ?? null,
           paramType: existing?.paramType ?? 'text',
+          defaultValue: override,
         });
       }
 
@@ -329,16 +396,27 @@ function parseNodes(wf: WorkflowDetail) {
   nodes.value = result;
 }
 
+/**
+ * 在节点中按字段名查找字段信息
+ * @param node 节点
+ * @param fieldName 字段名
+ */
 function getNodeByField(node: NodeField, fieldName: string): FieldInfo | undefined {
   return node.fields.find(f => f.name === fieldName);
 }
 
+/**
+ * 打开参数编辑对话框
+ * @param node 节点
+ * @param info 字段信息
+ */
 function openDialog(node: NodeField, info: FieldInfo) {
   dialog.value = {
     show: true,
     node,
     fieldName: info.name,
     fieldValue: info.value,
+    rawValue: info.rawValue,
     alias: info.alias,
     label: info.label,
     paramId: info.paramId,
@@ -347,21 +425,48 @@ function openDialog(node: NodeField, info: FieldInfo) {
   };
 }
 
+/**
+ * 保存对话框中的参数配置
+ */
 async function saveDialog() {
-  if (!workflow.value || !dialog.value.node || !dialog.value.fieldName || !dialog.value.alias) return;
+  if (!workflow.value || !dialog.value.node || !dialog.value.fieldName) return;
+
+  // 空别名存 null；与原始值相同则清除覆盖
+  const alias = dialog.value.alias.trim() || null;
+  const defaultValue = dialog.value.fieldValue === dialog.value.rawValue
+    ? null
+    : dialog.value.fieldValue;
+  const paramType = alias ? dialog.value.paramType : 'text';
+
+  // 无有效配置：已有行则删除，新建则忽略
+  if (alias == null && defaultValue == null) {
+    if (dialog.value.paramId) {
+      await deleteFromDialog();
+      return;
+    }
+    snackbar.value = { show: true, text: '请填写别名或修改默认值', color: 'error' };
+    return;
+  }
+
   dialog.value.saving = true;
   try {
     const node = dialog.value.node;
     const info = getNodeByField(node, dialog.value.fieldName);
     if (info?.paramId) {
-      await updateParam(workflow.value.id, info.paramId, { alias: dialog.value.alias, label: dialog.value.label, paramType: dialog.value.paramType });
+      await updateParam(workflow.value.id, info.paramId, {
+        alias,
+        label: dialog.value.label,
+        paramType,
+        defaultValue,
+      });
     } else {
       await addParam(workflow.value.id, {
         nodeId: node.nodeId,
         fieldName: dialog.value.fieldName,
-        alias: dialog.value.alias,
+        alias,
         label: dialog.value.label,
-        paramType: dialog.value.paramType,
+        paramType,
+        defaultValue,
       });
     }
     snackbar.value = { show: true, text: '保存成功', color: 'success' };

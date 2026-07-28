@@ -286,9 +286,10 @@ const apiTargetName = ref('');
 const apiTargetId = ref('');
 const apiTab = ref('curl');
 const apiFormat = ref('json');
-const apiParams = ref<WorkflowParam[]>([]);
+const apiParams = ref<Array<WorkflowParam & { alias: string }>>([]);
 const apiHasMedia = computed(() => apiParams.value.some(p => p.paramType !== 'text'));
-const apiCodeRef = ref<Record<string, string>>({});
+/** 各语言 / 格式的 API 示例代码 */
+const apiCodeRef = ref<Record<string, Record<string, string>>>({});
 const apiCopying = ref(false);
 
 function q(s: string): string {
@@ -299,19 +300,42 @@ function escDouble(s: string): string {
   return s.replace(/"/g, '\\"');
 }
 
-function genJsonSnippet(id: string, params: WorkflowParam[]) {
+/**
+ * 判断参数是否配置了非空别名（可对外调用）
+ * @param p 工作流参数
+ */
+function hasAlias(p: WorkflowParam): p is WorkflowParam & { alias: string } {
+  return p.alias != null && p.alias !== '';
+}
+
+/**
+ * 生成 JSON 请求体示例
+ * @param id 工作流 ID
+ * @param params 已配置别名的参数列表
+ */
+function genJsonSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
   const pairs = params.map(p => `    ${q(p.alias)}: "value"`).join(',\n');
   const jsonBody = `{\n${pairs}\n}`;
   return { jsonBody };
 }
 
-function genMultipartSnippet(id: string, params: WorkflowParam[]) {
+/**
+ * 拆分文本与媒体参数
+ * @param id 工作流 ID
+ * @param params 已配置别名的参数列表
+ */
+function genMultipartSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
   const textParams = params.filter(p => p.paramType === 'text');
   const mediaParams = params.filter(p => p.paramType !== 'text');
   return { textParams, mediaParams };
 }
 
-function buildApiCode(id: string, params: WorkflowParam[]) {
+/**
+ * 构建各语言 API 调用示例代码
+ * @param id 工作流 ID
+ * @param params 已配置别名的参数列表
+ */
+function buildApiCode(id: string, params: Array<WorkflowParam & { alias: string }>) {
   const { jsonBody } = genJsonSnippet(id, params);
   const { textParams, mediaParams } = genMultipartSnippet(id, params);
 
@@ -449,6 +473,11 @@ System.out.println(res.body());`
   };
 }
 
+/**
+ * 打开 API 调用说明对话框
+ * @param id 工作流 ID
+ * @param name 工作流名称
+ */
 async function handleApiDocs(id: string, name: string) {
   apiTargetId.value = id;
   apiTargetName.value = name;
@@ -457,8 +486,10 @@ async function handleApiDocs(id: string, name: string) {
   apiDialog.value = true;
   try {
     const detail = await getWorkflow(id);
-    apiParams.value = detail.params;
-    apiCodeRef.value = buildApiCode(id, detail.params);
+    // 仅展示可调用的非空别名参数
+    const callableParams = (detail.params ?? []).filter(hasAlias);
+    apiParams.value = callableParams;
+    apiCodeRef.value = buildApiCode(id, callableParams);
   } catch {
     apiParams.value = [];
     apiCodeRef.value = buildApiCode(id, []);
@@ -469,10 +500,13 @@ async function handleApiDocs(id: string, name: string) {
   });
 }
 
+/**
+ * 高亮当前选中的 API 示例代码
+ */
 function highlightedApiCode(): string {
   const lang = apiTab.value;
   const fmt = apiFormat.value;
-  const code = (apiCodeRef.value as Record<string, Record<string, string>>)?.[lang]?.[fmt];
+  const code = apiCodeRef.value?.[lang]?.[fmt];
   if (!code) return '';
   const langMap: Record<string, string> = {
     curl: 'bash',
@@ -485,10 +519,13 @@ function highlightedApiCode(): string {
   return result;
 }
 
+/**
+ * 复制当前 API 示例代码到剪贴板
+ */
 async function copyApiCode() {
   const lang = apiTab.value;
   const fmt = apiFormat.value;
-  const code = (apiCodeRef.value as Record<string, Record<string, string>>)?.[lang]?.[fmt];
+  const code = apiCodeRef.value?.[lang]?.[fmt];
   if (!code) return;
   apiCopying.value = true;
   try {
@@ -526,6 +563,10 @@ async function confirmDelete() {
   }
 }
 
+/**
+ * 打开执行工作流对话框
+ * @param id 工作流 ID
+ */
 async function handleExecute(id: string) {
   executeTarget.value = id;
   executeDialog.value = true;
@@ -533,14 +574,16 @@ async function handleExecute(id: string) {
   executeFields.value = [];
   // 清空旧表单数据
   Object.keys(executeForm).forEach(k => delete executeForm[k]);
+  Object.keys(executeFiles).forEach(k => delete executeFiles[k]);
 
   try {
     const detail = await getWorkflow(id);
     const workflow = JSON.parse(detail.rawJson);
 
     const fields: ExecuteField[] = [];
-    for (const param of detail.params) {
-      // 从原始 JSON 中提取默认值
+    // 仅展示可调用的非空别名参数（仅默认值覆盖不可传参）
+    for (const param of (detail.params ?? []).filter(hasAlias)) {
+      // 从原始 JSON 中提取默认值（覆盖优先）
       const node = workflow[param.nodeId];
       if (!node) continue;
       const currentValue = node.inputs?.[param.fieldName];
@@ -555,8 +598,11 @@ async function handleExecute(id: string) {
         nodeTitle,
         paramType: param.paramType || 'text',
       });
-      // 设置默认值（转为字符串）
-      executeForm[param.alias] = String(currentValue ?? '');
+      // 设置默认值：覆盖优先，否则 rawJson 原值
+      const effectiveDefault = param.defaultValue != null
+        ? param.defaultValue
+        : String(currentValue ?? '');
+      executeForm[param.alias] = effectiveDefault;
     }
 
     executeFields.value = fields;
