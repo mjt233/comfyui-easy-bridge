@@ -5,6 +5,48 @@ import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { submitPrompt, interruptPrompt } from '../services/executor.service';
+import { parseHistoryOutputs } from '../services/comfyui.service';
+
+/**
+ * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
+ * 测试可覆盖 `retryDelayMs`，避免路由测试真实等待 2s。
+ */
+export const outputHistoryBackfillConfig = {
+  /**
+   * 首次回源为空后的重试间隔（毫秒）。
+   * 生产默认 2000；覆盖 history 瞬时未就绪的竞态。
+   */
+  retryDelayMs: 2000,
+};
+
+/**
+ * 延迟指定毫秒数。
+ * @param ms 等待时长（毫秒）
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * 从 ComfyUI /history/{promptId} 拉取并解析输出文件列表。
+ * 网络错误或非 2xx 时返回空数组（软失败，不抛错）。
+ * @param baseUrl ComfyUI 基础 URL
+ * @param promptId ComfyUI prompt_id
+ * @returns 解析到的输出文件；失败或无输出时为 []
+ */
+async function fetchOutputsFromHistory(baseUrl: string, promptId: string): Promise<OutputFile[]> {
+  try {
+    // 回源 ComfyUI history，供 completed 任务本地尚未回填时补全
+    const res = await fetch(`${baseUrl}/history/${promptId}`);
+    if (!res.ok) return [];
+    const data: unknown = await res.json();
+    return parseHistoryOutputs(data, promptId);
+  } catch {
+    return [];
+  }
+}
 
 /** 任务日志控制器 */
 export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
@@ -33,7 +75,11 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       res.json({ deleted: count });
     },
 
-    /** 获取任务的输出文件列表 */
+    /**
+     * 获取任务的输出文件列表。
+     * 当任务已 completed 但本地 outputFiles 仍为空时，向 ComfyUI /history 回源补全；
+     * 首次为空则阻塞 2s 再重试一次，成功后回填 DB。
+     */
     async listOutputFiles(req: Request, res: Response): Promise<void> {
       const task = taskService.getById(req.params.taskId as string);
       if (!task) {
@@ -43,12 +89,33 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       const baseUrl = settingsService.get('comfyui_base_url');
       const mode = settingsService.get('output_download_mode') || 'proxy';
       let files: OutputFile[] = [];
+      // 优先使用本地已持久化的输出列表
       if (task.outputFiles) {
         try {
           const parsed = JSON.parse(task.outputFiles);
           files = Array.isArray(parsed) ? parsed : [];
         } catch {
           files = [];
+        }
+      }
+
+      // 读路径兜底：completed 且本地为空时，从 ComfyUI history 补全（最多 2 次）
+      if (
+        files.length === 0
+        && task.status === 'completed'
+        && task.promptId
+        && baseUrl
+      ) {
+        // 第 1 次回源
+        files = await fetchOutputsFromHistory(baseUrl, task.promptId);
+        // 首次为空则阻塞后重试一次，覆盖 history 瞬时未就绪
+        if (files.length === 0) {
+          await sleep(outputHistoryBackfillConfig.retryDelayMs);
+          files = await fetchOutputsFromHistory(baseUrl, task.promptId);
+        }
+        // 回填 DB，供后续请求与任务日志直接读取
+        if (files.length > 0) {
+          taskService.updateOutputFiles(task.id, files);
         }
       }
 

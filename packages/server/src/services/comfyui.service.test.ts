@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveHistoryOutcome } from './comfyui.service';
+import { parseHistoryOutputs, resolveHistoryOutcome } from './comfyui.service';
 
 /**
  * resolveHistoryOutcome 单元测试：
@@ -89,5 +89,109 @@ describe('resolveHistoryOutcome', () => {
     if (result.kind === 'failed') {
       expect(result.errorMessage.toLowerCase()).toContain('interrupt');
     }
+  });
+});
+
+/**
+ * parseHistoryOutputs 单元测试：
+ * 覆盖 history 中 images/videos/audio 输出解析与空结果场景。
+ */
+describe('parseHistoryOutputs', () => {
+  /** 测试用 prompt_id */
+  const promptId = 'prompt-1';
+
+  it('returns empty array when history has no prompt entry', () => {
+    expect(parseHistoryOutputs({}, promptId)).toEqual([]);
+  });
+
+  it('returns empty array when historyData is null', () => {
+    expect(parseHistoryOutputs(null, promptId)).toEqual([]);
+  });
+
+  it('returns empty array when outputs is missing', () => {
+    const history = {
+      [promptId]: {
+        status: { status_str: 'success', completed: true },
+      },
+    };
+    expect(parseHistoryOutputs(history, promptId)).toEqual([]);
+  });
+
+  it('parses image outputs from a single node', () => {
+    const history = {
+      [promptId]: {
+        status: { status_str: 'success', completed: true },
+        outputs: {
+          '9': {
+            images: [
+              { filename: 'out.png', subfolder: '', type: 'output' },
+            ],
+          },
+        },
+      },
+    };
+    expect(parseHistoryOutputs(history, promptId)).toEqual([
+      {
+        filename: 'out.png',
+        subfolder: '',
+        type: 'output',
+        nodeId: '9',
+        fileType: 'image',
+      },
+    ]);
+  });
+
+  it('parses multi-node multi-file outputs including video and audio', () => {
+    const history = {
+      [promptId]: {
+        status: { status_str: 'success', completed: true },
+        outputs: {
+          '9': {
+            images: [
+              { filename: 'a.png', subfolder: 'sub', type: 'output' },
+              { filename: 'b.png', subfolder: '', type: 'output' },
+            ],
+          },
+          '12': {
+            videos: [
+              { filename: 'clip.mp4', subfolder: 'v', type: 'output' },
+            ],
+            audio: [
+              { filename: 'sound.wav', subfolder: '', type: 'output' },
+            ],
+          },
+        },
+      },
+    };
+    expect(parseHistoryOutputs(history, promptId)).toEqual([
+      {
+        filename: 'a.png',
+        subfolder: 'sub',
+        type: 'output',
+        nodeId: '9',
+        fileType: 'image',
+      },
+      {
+        filename: 'b.png',
+        subfolder: '',
+        type: 'output',
+        nodeId: '9',
+        fileType: 'image',
+      },
+      {
+        filename: 'clip.mp4',
+        subfolder: 'v',
+        type: 'output',
+        nodeId: '12',
+        fileType: 'video',
+      },
+      {
+        filename: 'sound.wav',
+        subfolder: '',
+        type: 'output',
+        nodeId: '12',
+        fileType: 'audio',
+      },
+    ]);
   });
 });

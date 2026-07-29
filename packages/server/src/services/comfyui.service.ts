@@ -125,8 +125,14 @@ function toErrorMessage(value: unknown, fallback: string): string {
   }
 }
 
-/** 解析 ComfyUI /history/{promptId} 响应中的输出文件 */
-function parseHistoryOutputs(historyData: unknown, promptId: string): OutputFile[] {
+/**
+ * 解析 ComfyUI /history/{promptId} 响应中的输出文件。
+ * 供 WebSocket 完成路径与任务输出列表读路径兜底复用。
+ * @param historyData /history 或 /history/{id} 的 JSON 响应
+ * @param promptId ComfyUI prompt_id
+ * @returns 输出文件列表；无有效 outputs 时返回空数组
+ */
+export function parseHistoryOutputs(historyData: unknown, promptId: string): OutputFile[] {
   const result: OutputFile[] = [];
   if (!historyData || typeof historyData !== 'object') return result;
   const promptEntry = (historyData as Record<string, unknown>)[promptId];

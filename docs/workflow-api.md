@@ -166,6 +166,11 @@ GET /api/tasks/:taskId/output-files
 
 需认证 (`Authorization: Bearer <token>`)。
 
+当任务状态为 `completed` 但本地尚未写入输出列表时，接口会向 ComfyUI `GET /history/{prompt_id}` 实时补全并回填数据库。  
+首次补全为空时会**阻塞约 2 秒再重试一次**，然后返回结果。  
+工作流本身无输出时仍返回空数组（最坏约 2 秒延迟）。  
+建议外部调用在 `status=completed` 后使用本接口获取文件列表，而不是仅依赖任务详情中的 `outputFiles` 字段。
+
 **响应** `200`:
 
 ```json
