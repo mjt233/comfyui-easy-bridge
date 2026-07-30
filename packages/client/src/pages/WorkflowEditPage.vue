@@ -51,7 +51,6 @@
         />
 
         <v-file-input
-          v-if="!isEdit"
           label="或上传 JSON 文件"
           variant="outlined"
           accept=".json"

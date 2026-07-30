@@ -168,84 +168,11 @@
       </v-card>
     </v-dialog>
 
-    <v-dialog v-model="apiDialog" max-width="800">
-      <v-card>
-        <v-card-title class="d-flex align-center">
-          <span>API 调用说明：{{ apiTargetName }}</span>
-          <v-spacer />
-          <v-chip
-            v-if="apiHasMedia"
-            size="small"
-            color="warning"
-            variant="tonal"
-            class="mr-2"
-          >
-            含文件参数
-          </v-chip>
-        </v-card-title>
-        <v-card-text>
-          <v-btn-toggle
-            v-if="apiHasMedia"
-            v-model="apiFormat"
-            color="primary"
-            density="compact"
-            class="mb-3"
-            mandatory
-          >
-            <v-btn value="json" size="small">
-              JSON
-            </v-btn>
-            <v-btn value="multipart" size="small">
-              Multipart 文件上传
-            </v-btn>
-          </v-btn-toggle>
-          <v-tabs v-model="apiTab" color="primary">
-            <v-tab value="curl">
-              curl
-            </v-tab>
-            <v-tab value="powershell">
-              PowerShell
-            </v-tab>
-            <v-tab value="python">
-              Python
-            </v-tab>
-            <v-tab value="nodejs">
-              Node.js
-            </v-tab>
-            <v-tab value="java">
-              Java
-            </v-tab>
-          </v-tabs>
-          <div class="api-code-block mt-4">
-            <div class="code-header d-flex align-center">
-              <v-spacer />
-              <v-tooltip text="复制代码" location="top">
-                <template #activator="{ props }">
-                  <v-btn
-                    v-bind="props"
-                    icon
-                    variant="text"
-                    density="compact"
-                    size="small"
-                    :color="apiCopying ? 'success' : undefined"
-                    @click="copyApiCode"
-                  >
-                    <v-icon>{{ apiCopying ? 'mdi-check' : 'mdi-content-copy' }}</v-icon>
-                  </v-btn>
-                </template>
-              </v-tooltip>
-            </div>
-            <pre><code v-html="highlightedApiCode()" /></pre>
-          </div>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="text" @click="apiDialog = false">
-            关闭
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <api-docs-dialog
+      v-model="apiDialog"
+      :workflow-id="apiTargetId"
+      :workflow-name="apiTargetName"
+    />
 
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
@@ -254,24 +181,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, nextTick } from 'vue';
+import { ref, reactive, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { listWorkflows, deleteWorkflow, getWorkflow, executeWorkflow } from '@/api/workflows';
 import type { Workflow, WorkflowParam } from '@/types';
 import { authEnabled } from '@/api/auth-status';
-import hljs from 'highlight.js/lib/core';
-import json from 'highlight.js/lib/languages/json';
-import bash from 'highlight.js/lib/languages/bash';
-import powershell from 'highlight.js/lib/languages/powershell';
-import python from 'highlight.js/lib/languages/python';
-import java from 'highlight.js/lib/languages/java';
-import 'highlight.js/styles/atom-one-dark.css';
-
-hljs.registerLanguage('json', json);
-hljs.registerLanguage('bash', bash);
-hljs.registerLanguage('powershell', powershell);
-hljs.registerLanguage('python', python);
-hljs.registerLanguage('java', java);
+import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
 
 interface ExecuteField {
   alias: string;
@@ -347,22 +262,6 @@ function acceptType(paramType: string): string {
 const apiDialog = ref(false);
 const apiTargetName = ref('');
 const apiTargetId = ref('');
-const apiTab = ref('curl');
-const apiFormat = ref('json');
-const apiParams = ref<Array<WorkflowParam & { alias: string }>>([]);
-const apiHasMedia = computed(() => apiParams.value.some(p => !isTextLikeParam(p.paramType)));
-/** 各语言 / 格式的 API 示例代码 */
-const apiCodeRef = ref<Record<string, Record<string, string>>>({});
-const apiCopying = ref(false);
-
-function q(s: string): string {
-  return JSON.stringify(s);
-}
-
-function escDouble(s: string): string {
-  return s.replace(/"/g, '\\"');
-}
-
 /**
  * 判断参数是否配置了非空别名（可对外调用）
  * @param p 工作流参数
@@ -372,232 +271,14 @@ function hasAlias(p: WorkflowParam): p is WorkflowParam & { alias: string } {
 }
 
 /**
- * 生成 JSON 请求体示例
- * @param id 工作流 ID
- * @param params 已配置别名的参数列表
- */
-function genJsonSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
-  const pairs = params.map(p => `    ${q(p.alias)}: "value"`).join(',\n');
-  const jsonBody = `{\n${pairs}\n}`;
-  return { jsonBody };
-}
-
-/**
- * 拆分文本与媒体参数
- * @param id 工作流 ID
- * @param params 已配置别名的参数列表
- */
-function genMultipartSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
-  // boolean/number 与 text 一样走 JSON 字段，不走文件上传
-  const textParams = params.filter(p => isTextLikeParam(p.paramType));
-  const mediaParams = params.filter(p => !isTextLikeParam(p.paramType));
-  return { textParams, mediaParams };
-}
-
-/**
- * 构建各语言 API 调用示例代码
- * @param id 工作流 ID
- * @param params 已配置别名的参数列表
- */
-function buildApiCode(id: string, params: Array<WorkflowParam & { alias: string }>) {
-  const { jsonBody } = genJsonSnippet(id, params);
-  const { textParams, mediaParams } = genMultipartSnippet(id, params);
-
-  const textPairs = textParams.map(p => `${q(p.alias)}: "value"`).join(', ');
-  const textJsonObj = `{ ${textPairs} }`;
-
-  return {
-    curl: {
-      json: `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
-  -H "Content-Type: application/json" \\
-  -d '${jsonBody}'`,
-      multipart: mediaParams.length > 0
-        ? `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
-  -F "params=${textJsonObj}" \\
-${mediaParams.map(p => `  -F "${p.alias}=@/path/to/${p.alias}.png"`).join(' \\\n')}`
-        : '',
-    },
-    powershell: {
-      json: `$body = @{
-${params.map(p => `  ${p.alias} = "value"`).join('\n')}
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
-        + '-Method Post -Body $body -ContentType "application/json"',
-      multipart: mediaParams.length > 0
-        ? `$params = @{
-${textParams.map(p => `  ${p.alias} = "value"`).join('\n')}
-} | ConvertTo-Json
-
-$form = @{
-  params = $params
-${mediaParams.map(p => `  ${p.alias} = Get-Item -Path "C:\\path\\to\\${p.alias}.png"`).join('\n')}
-}
-
-Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
-        + '-Method Post -Form $form'
-        : '',
-    },
-    python: {
-      json: `import requests
-
-url = "http://localhost:10721/api/workflows/${id}/execute"
-payload = {
-${params.map(p => `    ${q(p.alias)}: "value",`).join('\n')}
-}
-resp = requests.post(url, json=payload)
-print(resp.json())`,
-      multipart: mediaParams.length > 0
-        ? `import requests
-import json
-
-url = "http://localhost:10721/api/workflows/${id}/execute"
-payload = ${textJsonObj}
-files = {
-${mediaParams.map(p => `    ${q(p.alias)}: open("/path/to/${p.alias}.png", "rb"),`).join('\n')}
-}
-resp = requests.post(url, data={"params": json.dumps(payload)}, files=files)
-print(resp.json())`
-        : '',
-    },
-    nodejs: {
-      json: `const url = "http://localhost:10721/api/workflows/${id}/execute";
-const payload = {
-${params.map(p => `  ${q(p.alias)}: "value",`).join('\n')}
-};
-
-const res = await fetch(url, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(payload),
-});
-const data = await res.json();
-console.log(data);`,
-      multipart: mediaParams.length > 0
-        ? `const url = "http://localhost:10721/api/workflows/${id}/execute";
-const payload = ${textJsonObj};
-const formData = new FormData();
-formData.append("params", JSON.stringify(payload));
-${mediaParams.map(p => `formData.append(${q(p.alias)}, fs.createReadStream("/path/to/${p.alias}.png"));`).join('\n')}
-
-const res = await fetch(url, {
-  method: "POST",
-  body: formData,
-});
-const data = await res.json();
-console.log(data);`
-        : '',
-    },
-    java: {
-      json: `import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-
-String url = "http://localhost:10721/api/workflows/${id}/execute";
-String json = "${escDouble(jsonBody.replace(/\n {4}/g, '\\n    ').replace(/\n/g, '\\n'))}";
-
-HttpClient client = HttpClient.newHttpClient();
-HttpRequest request = HttpRequest.newBuilder()
-    .uri(URI.create(url))
-    .header("Content-Type", "application/json")
-    .POST(HttpRequest.BodyPublishers.ofString(json))
-    .build();
-
-HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
-System.out.println(res.body());`,
-      multipart: mediaParams.length > 0
-        ? `import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-
-String boundary = "----Boundary";
-String url = "http://localhost:10721/api/workflows/${id}/execute";
-String body = "--" + boundary + "\\r\\n"
-    + "Content-Disposition: form-data; name=\\"params\\"\\r\\n\\r\\n"
-    + "${escDouble(textJsonObj)}\\r\\n"
-${mediaParams.map(p => `    + "--" + boundary + "\\r\\n"
-    + "Content-Disposition: form-data; name=\\"${p.alias}\\"; filename=\\"${p.alias}.png\\"\\r\\n"
-    + "Content-Type: application/octet-stream\\r\\n\\r\\n"
-    + "<file-bytes>" + "\\r\\n"`).join('\n')}
-    + "--" + boundary + "--";
-
-HttpClient client = HttpClient.newHttpClient();
-HttpRequest request = HttpRequest.newBuilder()
-    .uri(URI.create(url))
-    .header("Content-Type", "multipart/form-data; boundary=" + boundary)
-    .POST(HttpRequest.BodyPublishers.ofString(body))
-    .build();
-
-HttpResponse<String> res = client.send(request, HttpResponse.BodyHandlers.ofString());
-System.out.println(res.body());`
-        : '',
-    },
-  };
-}
-
-/**
  * 打开 API 调用说明对话框
  * @param id 工作流 ID
  * @param name 工作流名称
  */
-async function handleApiDocs(id: string, name: string) {
+function handleApiDocs(id: string, name: string) {
   apiTargetId.value = id;
   apiTargetName.value = name;
-  apiTab.value = 'curl';
-  apiFormat.value = 'json';
   apiDialog.value = true;
-  try {
-    const detail = await getWorkflow(id);
-    // 仅展示可调用的非空别名参数
-    const callableParams = (detail.params ?? []).filter(hasAlias);
-    apiParams.value = callableParams;
-    apiCodeRef.value = buildApiCode(id, callableParams);
-  } catch {
-    apiParams.value = [];
-    apiCodeRef.value = buildApiCode(id, []);
-  }
-  await nextTick();
-  document.querySelectorAll('.api-code-block pre code').forEach(el => {
-    hljs.highlightElement(el as HTMLElement);
-  });
-}
-
-/**
- * 高亮当前选中的 API 示例代码
- */
-function highlightedApiCode(): string {
-  const lang = apiTab.value;
-  const fmt = apiFormat.value;
-  const code = apiCodeRef.value?.[lang]?.[fmt];
-  if (!code) return '';
-  const langMap: Record<string, string> = {
-    curl: 'bash',
-    powershell: 'powershell',
-    python: 'python',
-    nodejs: 'json',
-    java: 'java',
-  };
-  const result = hljs.highlight(code, { language: langMap[lang] || 'plaintext' }).value;
-  return result;
-}
-
-/**
- * 复制当前 API 示例代码到剪贴板
- */
-async function copyApiCode() {
-  const lang = apiTab.value;
-  const fmt = apiFormat.value;
-  const code = apiCodeRef.value?.[lang]?.[fmt];
-  if (!code) return;
-  apiCopying.value = true;
-  try {
-    await navigator.clipboard.writeText(code);
-    setTimeout(() => { apiCopying.value = false; }, 1500);
-  } catch {
-    apiCopying.value = false;
-  }
 }
 
 async function load() {
@@ -719,27 +400,4 @@ onMounted(load);
 </script>
 
 <style scoped>
-.api-code-block {
-  background: #1e1e1e;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.code-header {
-  background: #2d2d2d;
-  padding: 4px 8px;
-  border-bottom: 1px solid #3c3c3c;
-}
-.api-code-block pre {
-  margin: 0;
-  padding: 16px;
-  font-size: 13px;
-  line-height: 1.5;
-  overflow-x: auto;
-  max-height: 400px;
-}
-.api-code-block code {
-  background: transparent !important;
-  color: #d4d4d4;
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-}
 </style>
