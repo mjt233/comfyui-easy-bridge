@@ -39,6 +39,17 @@ db.run(`
   )
 `);
 db.run(`
+  CREATE TABLE IF NOT EXISTS workflow_attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL,
+    stored_name TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mimetype TEXT,
+    created_at TEXT NOT NULL
+  )
+`);
+db.run(`
   CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult } from '@/types';
 
 export async function listWorkflows(): Promise<Workflow[]> {
   const res = await client.get<Workflow[]>('/workflows');
@@ -91,6 +91,98 @@ export async function executeWorkflow(
     formData.append(alias, file);
   }
   const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+}
+
+/**
+ * 触发浏览器下载 Blob
+ * @param blob 文件内容
+ * @param filename 下载文件名
+ */
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * 列出工作流附件
+ * @param workflowId 工作流 ID
+ * @returns 附件记录列表
+ */
+export async function listAttachments(workflowId: string): Promise<WorkflowAttachment[]> {
+  const res = await client.get<WorkflowAttachment[]>(`/workflows/${workflowId}/attachments`);
+  return res.data;
+}
+
+/**
+ * 上传工作流附件
+ * @param workflowId 工作流 ID
+ * @param file 待上传文件
+ * @returns 新建的附件记录
+ */
+export async function uploadAttachment(workflowId: string, file: File): Promise<WorkflowAttachment> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await client.post<WorkflowAttachment>(
+    `/workflows/${workflowId}/attachments`,
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  );
+  return res.data;
+}
+
+/**
+ * 下载工作流附件（触发浏览器保存）
+ * @param workflowId 工作流 ID
+ * @param attachment 附件记录
+ */
+export async function downloadAttachment(workflowId: string, attachment: WorkflowAttachment): Promise<void> {
+  const res = await client.get<Blob>(
+    `/workflows/${workflowId}/attachments/${attachment.id}/download`,
+    { responseType: 'blob' },
+  );
+  triggerDownload(res.data, attachment.filename);
+}
+
+/**
+ * 删除工作流附件
+ * @param workflowId 工作流 ID
+ * @param attachmentId 附件行 ID
+ */
+export async function deleteAttachment(workflowId: string, attachmentId: number): Promise<void> {
+  await client.delete(`/workflows/${workflowId}/attachments/${attachmentId}`);
+}
+
+/**
+ * 多选导出工作流为 ZIP（含参数与附件），触发浏览器下载
+ * @param ids 选中的工作流 ID 列表
+ */
+export async function exportWorkflows(ids: string[]): Promise<void> {
+  const res = await client.post<Blob>(
+    '/workflows/export',
+    { ids },
+    { responseType: 'blob' },
+  );
+  triggerDownload(res.data, `workflows-export-${Date.now()}.zip`);
+}
+
+/**
+ * 批量导入工作流 ZIP
+ * @param file 导出的 ZIP 文件
+ * @returns 导入结果摘要
+ */
+export async function importWorkflows(file: File): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await client.post<ImportResult>('/workflows/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
   return res.data;

@@ -32,6 +32,38 @@ export interface WorkflowDetail extends Workflow {
   params: WorkflowParam[];
 }
 
+/**
+ * 工作流附件记录
+ */
+export interface WorkflowAttachment {
+  /** 附件行 ID */
+  id: number;
+  /** 所属工作流 ID */
+  workflowId: string;
+  /** 用户上传的原始文件名 */
+  filename: string;
+  /** 服务端磁盘存储名 */
+  storedName: string;
+  /** 文件字节数 */
+  size: number;
+  /** MIME 类型；可空 */
+  mimetype: string | null;
+  /** 创建时间 */
+  createdAt: string;
+}
+
+/**
+ * 批量导入结果摘要
+ */
+export interface ImportResult {
+  /** 成功导入的工作流数量 */
+  imported: number;
+  /** 因 ID 冲突被改名的工作流映射 */
+  renamed: Array<{ old: string; new: string }>;
+  /** 导入失败的工作流 */
+  failed: Array<{ id: string; reason: string }>;
+}
+
 export interface Settings {
   [key: string]: string;
 }

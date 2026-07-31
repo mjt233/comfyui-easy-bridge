@@ -1,12 +1,20 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import supertest from 'supertest';
 import express from 'express';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import JSZip from 'jszip';
 import * as schema from '../models/schema';
 import { createWorkflowRoutes } from './workflow.routes';
 import { createAuthRoutes } from './auth.routes';
 import { createSettingsRoutes } from './settings.routes';
+
+// 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
+const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
+process.env.DATA_DIR = tempDataDir;
 
 describe('Workflow API', () => {
   let app: express.Express;
@@ -27,6 +35,15 @@ describe('Workflow API', () => {
         default_value TEXT,
         UNIQUE(workflow_id, alias)
       );
+      CREATE TABLE workflow_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        filename TEXT NOT NULL,
+        stored_name TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        mimetype TEXT,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
@@ -37,6 +54,11 @@ describe('Workflow API', () => {
     app.use('/api/auth', createAuthRoutes(db));
     app.use('/api/workflows', createWorkflowRoutes(db));
     app.use('/api/settings', createSettingsRoutes(db));
+  });
+
+  afterAll(() => {
+    // 清理临时数据目录
+    fs.rmSync(tempDataDir, { recursive: true, force: true });
   });
 
   it('POST /api/workflows with auth creates a workflow', async () => {
@@ -215,6 +237,174 @@ describe('Workflow API', () => {
       .post('/api/workflows/wf-empty-param/params')
       .set('Authorization', `Bearer ${token}`)
       .send({ nodeId: '1', fieldName: 'value' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('missing_parameter');
+  });
+
+  it('POST /api/workflows/:id/attachments uploads attachment', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-att', name: 'Att', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-att/attachments')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('attachment content'), '说明.txt');
+
+    expect(res.status).toBe(201);
+    expect(res.body.filename).toBe('说明.txt');
+    expect(res.body.size).toBe('attachment content'.length);
+    expect(res.body.workflowId).toBe('wf-att');
+  });
+
+  it('GET /api/workflows/:id/attachments lists attachments', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const res = await supertest(app)
+      .get('/api/workflows/wf-att/attachments')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].filename).toBe('说明.txt');
+  });
+
+  it('GET /api/workflows/:id/attachments/:id/download downloads attachment', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const listRes = await supertest(app)
+      .get('/api/workflows/wf-att/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    const attachmentId = listRes.body[0].id as number;
+
+    const res = await supertest(app)
+      .get(`/api/workflows/wf-att/attachments/${attachmentId}/download`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    // Content-Disposition 应包含原始文件名（RFC 5987 编码）
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['content-disposition']).toContain('filename');
+    // 附件内容为 text/plain，supertest 解析到 res.text
+    expect(res.text).toBe('attachment content');
+  });
+
+  it('DELETE /api/workflows/:id/attachments/:id deletes attachment', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const listRes = await supertest(app)
+      .get('/api/workflows/wf-att/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    const attachmentId = listRes.body[0].id as number;
+
+    const res = await supertest(app)
+      .delete(`/api/workflows/wf-att/attachments/${attachmentId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(204);
+
+    const after = await supertest(app)
+      .get('/api/workflows/wf-att/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    expect(after.body).toHaveLength(0);
+  });
+
+  it('POST /api/workflows/export returns a ZIP with selected workflows', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const res = await supertest(app)
+      .post('/api/workflows/export')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ids: ['wf-att'] })
+      // 二进制响应：自定义解析得到原始 Buffer
+      .buffer(true)
+      .parse((res, cb) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => cb(null, Buffer.concat(chunks)));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/zip');
+
+    // 解析 ZIP 校验 manifest
+    const zip = await JSZip.loadAsync(res.body as Buffer);
+    const manifestFile = zip.file('manifest.json');
+    expect(manifestFile).toBeDefined();
+    const manifest = JSON.parse(await manifestFile!.async('string')) as {
+      workflows: Array<{ id: string }>;
+    };
+    expect(manifest.workflows).toHaveLength(1);
+    expect(manifest.workflows[0].id).toBe('wf-att');
+  });
+
+  it('POST /api/workflows/import imports workflows from ZIP', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 构造一个含附件的工作流 ZIP
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workflows: [{
+        id: 'imported-flow',
+        name: 'Imported',
+        rawJson: '{}',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        params: [{ nodeId: '1', fieldName: 'v', alias: 'alias1', label: null, paramType: 'text', defaultValue: null }],
+        attachments: [{ filename: 'data.bin', storedName: 'abc.bin', size: 4, mimetype: 'application/octet-stream' }],
+      }],
+    }));
+    zip.file('attachments/abc.bin', Buffer.from('DATA'));
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', zipBuffer, 'export.zip');
+
+    expect(res.status).toBe(200);
+    expect(res.body.imported).toBe(1);
+    expect(res.body.renamed).toHaveLength(0);
+
+    // 导入后可通过 API 查询到工作流与附件
+    const detail = await supertest(app)
+      .get('/api/workflows/imported-flow')
+      .set('Authorization', `Bearer ${token}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.params).toHaveLength(1);
+
+    const atts = await supertest(app)
+      .get('/api/workflows/imported-flow/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    expect(atts.body).toHaveLength(1);
+    expect(atts.body[0].filename).toBe('data.bin');
+  });
+
+  it('POST /api/workflows/import with invalid ZIP returns 400', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const zip = new JSZip();
+    zip.file('random.txt', 'not a manifest');
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', zipBuffer, 'bad.zip');
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('missing_parameter');

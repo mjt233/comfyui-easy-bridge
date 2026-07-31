@@ -11,6 +11,10 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   const auth = createAuthMiddleware(db);
   const upload = multer({ storage: multer.memoryStorage() });
 
+  // 静态路径（export/import）需在 :id 动态路由之前注册
+  router.post('/export', auth, controller.exportWorkflows);
+  router.post('/import', auth, upload.single('file'), controller.importWorkflows);
+
   router.post('/:id/execute', upload.any(), controller.execute);
 
   router.get('/', auth, controller.list);
@@ -21,6 +25,12 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   router.post('/:id/params', auth, controller.addParam);
   router.put('/:id/params/:paramId', auth, controller.updateParam);
   router.delete('/:id/params/:paramId', auth, controller.deleteParam);
+
+  // 附件管理
+  router.get('/:id/attachments', auth, controller.listAttachments);
+  router.post('/:id/attachments', auth, upload.single('file'), controller.uploadAttachment);
+  router.get('/:id/attachments/:attachmentId/download', auth, controller.downloadAttachment);
+  router.delete('/:id/attachments/:attachmentId', auth, controller.deleteAttachment);
 
   return router;
 }

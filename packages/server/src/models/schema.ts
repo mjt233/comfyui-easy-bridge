@@ -40,6 +40,20 @@ export const taskLogs = sqliteTable('task_logs', {
   completedAt: text('completed_at'),
 });
 
+export const workflowAttachments = sqliteTable('workflow_attachments', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  /** 用户上传的原始文件名 */
+  filename: text('filename').notNull(),
+  /** 磁盘存储名（uuid + 扩展名） */
+  storedName: text('stored_name').notNull(),
+  /** 文件字节数 */
+  size: integer('size').notNull(),
+  /** MIME 类型；可空 */
+  mimetype: text('mimetype'),
+  createdAt: text('created_at').notNull(),
+});
+
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),

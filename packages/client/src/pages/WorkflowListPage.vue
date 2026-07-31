@@ -32,6 +32,53 @@
       </v-col>
     </v-row>
 
+    <!-- 多选导出 / 批量导入工具栏 -->
+    <v-row v-if="workflows.length > 0" class="mb-2 align-center">
+      <v-col cols="auto">
+        <v-checkbox
+          label="全选"
+          :model-value="allSelected"
+          hide-details
+          density="compact"
+          @update:model-value="toggleSelectAll"
+        />
+      </v-col>
+      <v-col cols="auto">
+        <span class="text-caption text-grey">已选 {{ selectedIds.size }} 项</span>
+      </v-col>
+      <v-spacer />
+      <v-col cols="auto">
+        <v-btn
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-export"
+          :disabled="selectedIds.size === 0"
+          :loading="exporting"
+          @click="handleExport"
+        >
+          导出选中
+        </v-btn>
+        <v-btn
+          class="ml-2"
+          color="primary"
+          variant="tonal"
+          prepend-icon="mdi-import"
+          :loading="importing"
+          @click="triggerImport"
+        >
+          导入
+        </v-btn>
+        <!-- 隐藏的文件选择框，用于导入 ZIP -->
+        <input
+          ref="importInput"
+          type="file"
+          accept=".zip,application/zip"
+          class="d-none"
+          @change="handleImportFile"
+        >
+      </v-col>
+    </v-row>
+
     <v-card v-if="workflows.length === 0">
       <v-card-text class="text-center py-8 text-grey">
         暂无工作流，点击上方按钮新建
@@ -47,6 +94,14 @@
         @click="router.push(`/admin/workflow/${wf.id}`)"
       >
         <template #prepend>
+          <v-checkbox
+            :model-value="selectedIds.has(wf.id)"
+            hide-details
+            density="compact"
+            class="mr-1"
+            @click.stop
+            @update:model-value="toggleSelect(wf.id)"
+          />
           <v-icon :color="getColor(wf.id)" class="mr-2">
             mdi-graph-outline
           </v-icon>
@@ -181,9 +236,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue';
+import { ref, reactive, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { listWorkflows, deleteWorkflow, getWorkflow, executeWorkflow } from '@/api/workflows';
+import {
+  listWorkflows,
+  deleteWorkflow,
+  getWorkflow,
+  executeWorkflow,
+  exportWorkflows,
+  importWorkflows,
+} from '@/api/workflows';
 import type { Workflow, WorkflowParam } from '@/types';
 import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
@@ -201,6 +263,99 @@ const workflows = ref<Workflow[]>([]);
 const deleteDialog = ref(false);
 const deleteTarget = ref<string | null>(null);
 const snackbar = ref({ show: false, text: '', color: 'success' });
+
+// 多选导出 / 批量导入状态
+const selectedIds = ref<Set<string>>(new Set());
+const exporting = ref(false);
+const importing = ref(false);
+/** 隐藏的导入文件选择框引用 */
+const importInput = ref<HTMLInputElement | null>(null);
+/** 是否已全选 */
+const allSelected = computed(
+  () => workflows.value.length > 0 && workflows.value.every((w) => selectedIds.value.has(w.id)),
+);
+
+/**
+ * 切换全选状态
+ * @param val 是否全选
+ */
+function toggleSelectAll(val: unknown) {
+  if (val) {
+    selectedIds.value = new Set(workflows.value.map((w) => w.id));
+  } else {
+    selectedIds.value = new Set();
+  }
+}
+
+/**
+ * 切换单个工作流选中状态
+ * @param id 工作流 ID
+ */
+function toggleSelect(id: string) {
+  const next = new Set(selectedIds.value);
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  selectedIds.value = next;
+}
+
+/**
+ * 导出选中的工作流为 ZIP
+ */
+async function handleExport() {
+  if (selectedIds.value.size === 0) return;
+  exporting.value = true;
+  try {
+    await exportWorkflows([...selectedIds.value]);
+    snackbar.value = { show: true, text: '已导出', color: 'success' };
+  } catch {
+    snackbar.value = { show: true, text: '导出失败', color: 'error' };
+  } finally {
+    exporting.value = false;
+  }
+}
+
+/**
+ * 触发隐藏文件选择框（导入 ZIP）
+ */
+function triggerImport() {
+  importInput.value?.click();
+}
+
+/**
+ * 处理导入文件选择：上传 ZIP 并展示结果摘要
+ * @param event 文件选择事件
+ */
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  // 重置 input，允许重复导入同一文件
+  input.value = '';
+  if (!file) return;
+  importing.value = true;
+  try {
+    const result = await importWorkflows(file);
+    let text = `导入成功 ${result.imported} 个工作流`;
+    if (result.renamed.length > 0) {
+      text += `，${result.renamed.length} 个因 ID 冲突已改名`;
+    }
+    if (result.failed.length > 0) {
+      text += `，${result.failed.length} 个失败`;
+    }
+    snackbar.value = {
+      show: true,
+      text,
+      color: result.failed.length > 0 ? 'warning' : 'success',
+    };
+    await load();
+  } catch {
+    snackbar.value = { show: true, text: '导入失败，请检查文件格式', color: 'error' };
+  } finally {
+    importing.value = false;
+  }
+}
 
 // 每个工作流对应的图标颜色
 const itemColors = ['primary', '#4CAF50', '#FF9800', '#9C27B0', '#00BCD4', '#E91E63', '#607D8B', '#795548', '#3F51B5', '#009688'];

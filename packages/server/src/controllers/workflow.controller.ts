@@ -2,6 +2,8 @@ import { Request, Response, NextFunction } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from '../services/workflow.service';
+import { AttachmentService } from '../services/attachment.service';
+import { WorkflowIOService } from '../services/workflow-io.service';
 import {
   executeWorkflow,
   applyAliases,
@@ -15,6 +17,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
   const workflowService = new WorkflowService(db);
   const settingsService = new SettingsService(db);
   const taskService = new TaskService(db);
+  const attachmentService = new AttachmentService(db);
+  const workflowIOService = new WorkflowIOService(db);
 
   return {
     list(_req: Request, res: Response): void {
@@ -68,6 +72,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
+      // 先清理附件磁盘文件，再删除工作流（附件行由 FK 级联删除）
+      attachmentService.deleteByWorkflow(id);
       workflowService.delete(id);
       res.status(204).send();
     },
@@ -247,6 +253,136 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       } catch (err) {
         next(err);
       }
+    },
+
+    /**
+     * 多选导出工作流为 ZIP（含参数与附件）
+     * @param req 请求体 { ids: string[] }
+     * @param res ZIP 文件响应
+     */
+    async exportWorkflows(req: Request, res: Response): Promise<void> {
+      const ids = (req.body?.ids ?? []) as unknown;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        res.status(400).json({ error: 'ids array is required', code: 'missing_parameter' });
+        return;
+      }
+      const buffer = await workflowIOService.exportWorkflows(ids as string[]);
+      const filename = `workflows-export-${Date.now()}.zip`;
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(buffer);
+    },
+
+    /**
+     * 批量导入工作流 ZIP
+     * @param req multipart 请求，字段 file 为 ZIP 文件
+     * @param res 导入结果摘要
+     */
+    async importWorkflows(req: Request, res: Response): Promise<void> {
+      const file = req.file as Express.Multer.File | undefined;
+      if (!file) {
+        res.status(400).json({ error: 'zip file is required', code: 'missing_parameter' });
+        return;
+      }
+      try {
+        const result = await workflowIOService.importWorkflows(file.buffer);
+        res.json(result);
+      } catch (err: unknown) {
+        if (err instanceof Error && /manifest/i.test(err.message)) {
+          res.status(400).json({ error: err.message, code: 'missing_parameter' });
+          return;
+        }
+        throw err;
+      }
+    },
+
+    /**
+     * 上传工作流附件
+     * @param req multipart 请求，字段 file 为附件
+     * @param res 新建的附件记录
+     */
+    uploadAttachment(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const wf = workflowService.getById(id);
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      const file = req.file as Express.Multer.File | undefined;
+      if (!file) {
+        res.status(400).json({ error: 'file is required', code: 'missing_parameter' });
+        return;
+      }
+      const attachment = attachmentService.create(id, {
+        filename: file.originalname,
+        buffer: file.buffer,
+        mimetype: file.mimetype ?? null,
+      });
+      res.status(201).json(attachment);
+    },
+
+    /**
+     * 列出工作流附件
+     * @param req 路径参数 id 为工作流 ID
+     * @param res 附件记录列表
+     */
+    listAttachments(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const wf = workflowService.getById(id);
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      res.json(attachmentService.list(id));
+    },
+
+    /**
+     * 下载工作流附件
+     * @param req 路径参数 id / attachmentId
+     * @param res 附件二进制响应
+     */
+    downloadAttachment(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const attachmentId = Number(req.params.attachmentId);
+      const attachment = attachmentService.getById(attachmentId);
+      // 附件不存在或不属于该工作流
+      if (!attachment || attachment.workflowId !== id) {
+        res.status(404).json({ error: 'Attachment not found', code: 'attachment_not_found' });
+        return;
+      }
+      let buffer: Buffer;
+      try {
+        buffer = attachmentService.readBuffer(attachment);
+      } catch {
+        // 磁盘文件缺失
+        res.status(404).json({ error: 'Attachment file not found', code: 'attachment_not_found' });
+        return;
+      }
+      // 中文文件名使用 RFC 5987 编码
+      const encoded = encodeURIComponent(attachment.filename);
+      res.setHeader('Content-Type', attachment.mimetype ?? 'application/octet-stream');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${encoded}"; filename*=UTF-8''${encoded}`,
+      );
+      res.send(buffer);
+    },
+
+    /**
+     * 删除工作流附件（磁盘文件 + 记录行）
+     * @param req 路径参数 id / attachmentId
+     * @param res 204
+     */
+    deleteAttachment(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const attachmentId = Number(req.params.attachmentId);
+      const attachment = attachmentService.getById(attachmentId);
+      if (!attachment || attachment.workflowId !== id) {
+        res.status(404).json({ error: 'Attachment not found', code: 'attachment_not_found' });
+        return;
+      }
+      attachmentService.delete(attachmentId);
+      res.status(204).send();
     },
   };
 }
