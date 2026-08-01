@@ -64,7 +64,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1 });
+      // 与 getById 返回结构保持一致：补充 params，供前端直接作为 WorkflowDetail 使用
+      const params = workflowService.getParams(id);
+      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
     },
 
     /** 模拟构建：脚本构建 + 应用已保存参数配置，返回最终 JSON 字符串 */

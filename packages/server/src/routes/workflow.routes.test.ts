@@ -438,6 +438,8 @@ describe('Workflow API', () => {
     expect(res.status).toBe(200);
     expect(res.body.buildScript).toContain('export default');
     expect(res.body.buildScriptEnabled).toBe(true);
+    // 响应应包含 params 数组（无参数工作流为空数组），与 getById / WorkflowDetail 结构一致
+    expect(Array.isArray(res.body.params)).toBe(true);
 
     const detail = await supertest(app)
       .get('/api/workflows/build-flow')
