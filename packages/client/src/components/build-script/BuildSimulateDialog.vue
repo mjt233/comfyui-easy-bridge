@@ -171,6 +171,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
+import axios from 'axios';
 import { simulateBuild } from '@/api/workflows';
 import { parseWorkflowGraph, type GraphNode } from '../workflow-canvas/workflowGraph';
 import WorkflowCanvas from '../workflow-canvas/WorkflowCanvas.vue';
@@ -206,10 +207,15 @@ const stringValues = ref<Record<string, string>>({});
 /** 布尔参数值（key 为别名） */
 const booleanValues = ref<Record<string, boolean>>({});
 
-/** 自定义自由字段行 */
+/**
+ * 用户自定义的自由字段行
+ */
 interface FreeField {
+  /** 字段名 */
   key: string;
+  /** 字段类型 text/number/boolean */
   type: string;
+  /** 字段值（字符串输入） */
   value: string;
 }
 const freeFields = ref<FreeField[]>([]);
@@ -253,7 +259,8 @@ function buildParams(): Record<string, unknown> {
     const key = f.key.trim();
     if (!key) continue;
     if (f.type === 'boolean') {
-      result[key] = f.value === 'true' || f.value === '1';
+      const s = f.value.trim().toLowerCase();
+      result[key] = ['true', '1', 'yes', 'on'].includes(s);
     } else if (f.type === 'number') {
       result[key] = f.value === '' ? '' : Number(f.value);
     } else {
@@ -261,6 +268,21 @@ function buildParams(): Record<string, unknown> {
     }
   }
   return result;
+}
+
+/**
+ * 从异常中提取可展示的错误信息。
+ * axios 的 message 是通用 "Request failed with status code xxx"，
+ * 需优先读取后端返回的 { error } 字段。
+ * @param err 任意异常
+ * @returns 可展示的错误文案
+ */
+function extractError(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as { error?: string } | undefined;
+    return data?.error ?? err.message;
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** 执行模拟构建 */
@@ -275,8 +297,8 @@ async function runSimulate(): Promise<void> {
     builtJson.value = res.json;
     step.value = 2;
   } catch (err) {
-    // 后端失败返回 HTTP 400 {error, code}，axios reject 后在此展示错误
-    errorText.value = err instanceof Error ? err.message : String(err);
+    // 后端失败返回 HTTP 400 {error, code}，axios reject 后在此展示真实错误
+    errorText.value = extractError(err);
     step.value = 2;
   } finally {
     simulating.value = false;
