@@ -9,6 +9,7 @@ import {
   generateNodeClassDts,
   generateBuildDts,
   getNodeInfoCached,
+  fetchNodeInfo,
   clearNodeInfoCache,
   nodeInfoServiceConfig,
 } from './node-info.service';
@@ -122,6 +123,8 @@ describe('getNodeInfoCached', () => {
 
   afterEach(() => {
     clearNodeInfoCache();
+    // 恢复默认超时，避免影响其他用例
+    nodeInfoServiceConfig.fetchTimeoutMs = 10000;
   });
 
   it('returns null when comfyui_base_url is not configured', async () => {
@@ -163,5 +166,100 @@ describe('getNodeInfoCached', () => {
 
     const result = await getNodeInfoCached(db);
     expect(result).toBeNull();
+  });
+
+  it('deduplicates concurrent calls into a single fetch', async () => {
+    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+
+    // 用延迟 promise 模拟慢速拉取，验证并发去重
+    // 延迟 promise 的 resolve 在闭包内赋值，用 `!` 断言绕过“使用前未赋值”检查
+    let resolveFetch!: (value: Response | PromiseLike<Response>) => void;
+    const fetchPromise = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    nodeInfoServiceConfig.fetchImpl = async (url: string) => {
+      fetchCalls.push(url);
+      return fetchPromise as Promise<Response>;
+    };
+
+    const p1 = getNodeInfoCached(db);
+    const p2 = getNodeInfoCached(db);
+    // 两个并发调用尚未完成前，只应发起一次 fetch
+    expect(fetchCalls).toHaveLength(1);
+
+    // 完成第一个 fetch，两个调用都应拿到同一份数据
+    resolveFetch({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify(sampleObjectInfo);
+      },
+    } as unknown as Response);
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toEqual(r2);
+    expect(fetchCalls).toHaveLength(1);
+  });
+
+  it('returns null when fetch times out (abort)', async () => {
+    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    nodeInfoServiceConfig.fetchTimeoutMs = 50;
+
+    // fetchImpl 永不 resolve，仅在 abort 时 reject（模拟超时）
+    nodeInfoServiceConfig.fetchImpl = async (_url: string, init?: { signal?: AbortSignal }) => {
+      fetchCalls.push(_url);
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    };
+
+    const result = await getNodeInfoCached(db);
+    expect(result).toBeNull();
+    expect(fetchCalls).toHaveLength(1);
+  });
+});
+
+describe('fetchNodeInfo', () => {
+  // fetchNodeInfo 仅依赖 baseUrl 与 nodeInfoServiceConfig，无需 DB
+  beforeEach(() => {
+    // 使用既有 fetch 覆盖模式：返回样本 object_info
+    nodeInfoServiceConfig.fetchImpl = async (_url: string) => {
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify(sampleObjectInfo);
+        },
+      } as unknown as Response;
+    };
+    nodeInfoServiceConfig.now = () => 1_000_000;
+  });
+
+  afterEach(() => {
+    nodeInfoServiceConfig.fetchTimeoutMs = 10000;
+  });
+
+  it('throws on non-2xx status', async () => {
+    nodeInfoServiceConfig.fetchImpl = async () => {
+      return { ok: false, status: 500, async text() { return 'boom'; } } as unknown as Response;
+    };
+
+    await expect(fetchNodeInfo('http://comfy:8188')).rejects.toThrow('object_info returned status 500');
+  });
+
+  it('throws on invalid JSON', async () => {
+    nodeInfoServiceConfig.fetchImpl = async () => {
+      return { ok: true, status: 200, async text() { return 'not json'; } } as unknown as Response;
+    };
+
+    await expect(fetchNodeInfo('http://comfy:8188')).rejects.toThrow(SyntaxError);
+  });
+
+  it('throws when parsed JSON is not an object', async () => {
+    nodeInfoServiceConfig.fetchImpl = async () => {
+      return { ok: true, status: 200, async text() { return JSON.stringify([1, 2, 3]); } } as unknown as Response;
+    };
+
+    await expect(fetchNodeInfo('http://comfy:8188')).rejects.toThrow('object_info is not an object');
   });
 });
