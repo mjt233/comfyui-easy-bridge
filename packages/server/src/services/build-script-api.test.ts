@@ -40,6 +40,13 @@ describe('build-script-api', () => {
     expect(BUILD_SCRIPT_API_DTS).not.toContain('ComfyClassType');
     // 头部独立导出且被静态版复用
     expect(BUILD_SCRIPT_API_DTS).toContain(BUILD_SCRIPT_DTS_HEADER.trim());
+    // 精确锁定拼装结构（唯一允许的差异是头部前导换行被去除）
+    expect(BUILD_SCRIPT_API_DTS).toBe(
+      `${BUILD_SCRIPT_DTS_HEADER}\n${buildBuildContextDts(
+        'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
+        'findNodesByClass(classType: string): string[];',
+      )}`,
+    );
   });
 
   it('buildBuildContextDts injects custom signatures', () => {

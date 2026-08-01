@@ -65,6 +65,7 @@ declare interface BuildContext {
 /**
  * 静态版（ComfyUI 未配置/不可达时降级）脚本 API 类型声明文本。
  * 由 GET /api/workflows/build-api.d.ts 下发，前端 addExtraLib 注册。
+ * 注：与旧版硬编码文本相比，去除了开头的多余换行，消费方均以子串断言，无影响。
  */
 export const BUILD_SCRIPT_API_DTS = `${BUILD_SCRIPT_DTS_HEADER}
 ${buildBuildContextDts(
