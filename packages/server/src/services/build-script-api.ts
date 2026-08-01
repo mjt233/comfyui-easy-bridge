@@ -14,12 +14,8 @@ export interface ComfyNode {
 /** ComfyUI API 工作流（节点 ID → 节点） */
 export type ComfyWorkflow = Record<string, ComfyNode>;
 
-/**
- * Monaco 编辑器注册的脚本 API 类型声明文本。
- * 由 GET /api/workflows/build-api.d.ts 下发，前端 addExtraLib 注册。
- */
-export const BUILD_SCRIPT_API_DTS = `
-/** ComfyUI API 工作流节点 */
+/** d.ts 头部：节点与工作流基础声明 */
+export const BUILD_SCRIPT_DTS_HEADER = `/** ComfyUI API 工作流节点 */
 declare interface ComfyNode {
   inputs: Record<string, unknown>;
   class_type: string;
@@ -28,15 +24,24 @@ declare interface ComfyNode {
 
 /** ComfyUI API 工作流（节点 ID → 节点） */
 declare type ComfyWorkflow = Record<string, ComfyNode>;
+`;
 
-/** 构建上下文：脚本默认导出函数的唯一入参 */
+/**
+ * 生成 BuildContext 声明文本，注入 addNode / findNodesByClass 的方法签名。
+ * 静态版（classType: string）与动态版（classType: ComfyClassType）复用同一模板，避免两处漂移。
+ * @param addNodeSig addNode 方法签名行（不含缩进）
+ * @param findNodesByClassSig findNodesByClass 方法签名行（不含缩进）
+ * @returns BuildContext 的 d.ts 文本
+ */
+export function buildBuildContextDts(addNodeSig: string, findNodesByClassSig: string): string {
+  return `/** 构建上下文：脚本默认导出函数的唯一入参 */
 declare interface BuildContext {
   /** 原始工作流（深拷贝，可直接修改） */
   workflow: ComfyWorkflow;
   /** 用户提交的参数（别名字段 + 自由添加字段） */
   params: Record<string, unknown>;
   /** 新增节点；节点 ID 已存在时抛错 */
-  addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;
+  ${addNodeSig}
   /** 删除节点；自动清理指向它的连线 */
   removeNode(nodeId: string): void;
   /** 连接：source 节点的第 sourceSlot 个输出 → target 节点的 targetField 输入 */
@@ -48,13 +53,28 @@ declare interface BuildContext {
   /** 读取节点字段值 */
   getInput(nodeId: string, field: string): unknown;
   /** 按 class_type 查找节点 ID 列表 */
-  findNodesByClass(classType: string): string[];
+  ${findNodesByClassSig}
   /** 获取节点引用（不存在返回 undefined） */
   getNode(nodeId: string): ComfyNode | undefined;
   /** 设置节点标题（_meta.title） */
   setTitle(nodeId: string, title: string): void;
 }
 `;
+}
+
+/** 静态版 BuildContext 声明（classType: string） */
+const STATIC_BUILD_CONTEXT_DTS = buildBuildContextDts(
+  'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
+  'findNodesByClass(classType: string): string[];',
+);
+
+/**
+ * 静态版（ComfyUI 未配置/不可达时降级）脚本 API 类型声明文本。
+ * 由 GET /api/workflows/build-api.d.ts 下发，前端 addExtraLib 注册。
+ * 注：与旧版硬编码文本相比，去除了开头的多余换行，消费方均以子串断言，无影响。
+ */
+export const BUILD_SCRIPT_API_DTS = `${BUILD_SCRIPT_DTS_HEADER}
+${STATIC_BUILD_CONTEXT_DTS}`;
 
 /**
  * 编辑器"默认导出模板"片段：一键插入到脚本中。

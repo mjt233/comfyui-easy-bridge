@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,12 +6,15 @@ import supertest from 'supertest';
 import express from 'express';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import JSZip from 'jszip';
 import * as schema from '../models/schema';
 import { createWorkflowRoutes } from './workflow.routes';
 import { createAuthRoutes } from './auth.routes';
 import { createSettingsRoutes } from './settings.routes';
 import { createTaskRoutes } from './task.routes';
+import { nodeInfoServiceConfig, clearNodeInfoCache } from '../services/node-info.service';
+import { SettingsService } from '../services/settings.service';
 
 // 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
@@ -19,6 +22,7 @@ process.env.DATA_DIR = tempDataDir;
 
 describe('Workflow API', () => {
   let app: express.Express;
+  let db: BetterSQLite3Database<typeof schema>;
 
   beforeAll(() => {
     const sqlite = new Database(':memory:');
@@ -48,7 +52,7 @@ describe('Workflow API', () => {
       CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
-    const db = drizzle(sqlite, { schema });
+    db = drizzle(sqlite, { schema });
 
     app = express();
     app.use(express.json());
@@ -56,6 +60,17 @@ describe('Workflow API', () => {
     app.use('/api/workflows', createWorkflowRoutes(db));
     app.use('/api/settings', createSettingsRoutes(db));
     app.use('/api/tasks', createTaskRoutes(db));
+  });
+
+  beforeEach(() => {
+    clearNodeInfoCache();
+    // 清空 comfyui_base_url，保证静态 d.ts 用例不受测试顺序污染
+    new SettingsService(db).set('comfyui_base_url', '');
+    // 恢复默认 fetch 实现（部分用例会覆盖它）
+    nodeInfoServiceConfig.fetchImpl = async (url: string, init?: { signal?: AbortSignal }) => {
+      const res = await fetch(url, init);
+      return res;
+    };
   });
 
   afterAll(() => {
@@ -423,6 +438,53 @@ describe('Workflow API', () => {
     expect(res.text).toContain('declare interface BuildContext');
   });
 
+  it('GET /api/workflows/build-api.d.ts returns dynamic dts with node classes when object_info available', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 配置 comfyui_base_url 并注入假 object_info
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    nodeInfoServiceConfig.fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          KSampler: {
+            input: { required: { seed: ['INT', {}] } },
+            display_name: 'KSampler',
+            output: ['LATENT'],
+          },
+        });
+      },
+    }) as unknown as Response;
+
+    const res = await supertest(app)
+      .get('/api/workflows/build-api.d.ts')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('declare type ComfyClassType = keyof ComfyNodeInputs;');
+    expect(res.text).toContain('"KSampler": {');
+    expect(res.text).toContain('addNode<K extends ComfyClassType>');
+  });
+
+  it('GET /api/workflows/build-api.d.ts falls back to static dts when no base url', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 确保未配置 comfyui_base_url（beforeEach 已清空，此处显式再清一次）
+    new SettingsService(db).set('comfyui_base_url', '');
+
+    const res = await supertest(app)
+      .get('/api/workflows/build-api.d.ts')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('declare interface BuildContext');
+    expect(res.text).not.toContain('ComfyClassType');
+  });
+
   it('PUT /api/workflows/:id/build-script saves script and enabled flag', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
@@ -459,7 +521,7 @@ describe('Workflow API', () => {
       .post('/api/workflows/sim-flow/build/simulate')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 42); return ctx.workflow; }`,
+        script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 42); return ctx.workflow; }',
         params: {},
       });
     expect(res.status).toBe(200);
@@ -478,7 +540,7 @@ describe('Workflow API', () => {
     const res = await supertest(app)
       .post('/api/workflows/sim-bad/build/simulate')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build() { throw new Error('boom'); }`, params: {} });
+      .send({ script: 'export default function build() { throw new Error(\'boom\'); }', params: {} });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('build_script_error');
     expect(res.body.error).toContain('boom');
@@ -495,7 +557,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .put('/api/workflows/exec-flow/build-script')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 777); return ctx.workflow; }`, enabled: true });
+      .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return ctx.workflow; }', enabled: true });
     // 设置 ComfyUI base URL
     await supertest(app)
       .put('/api/settings')
@@ -522,7 +584,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .put('/api/workflows/exec-bad/build-script')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build() { throw new Error('broken'); }`, enabled: true });
+      .send({ script: 'export default function build() { throw new Error(\'broken\'); }', enabled: true });
     await supertest(app)
       .put('/api/settings')
       .set('Authorization', `Bearer ${token}`)
