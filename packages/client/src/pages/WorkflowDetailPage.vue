@@ -114,9 +114,9 @@
       <v-window v-model="section">
         <v-window-item value="canvas">
           <v-card-text>
+            <!-- 仅画布 Tab 激活时挂载：保证 viewport 以真实尺寸初始化，避免隐藏挂载触发 vue-flow 警告 -->
             <WorkflowCanvas
-              v-if="workflow"
-              ref="canvasRef"
+              v-if="workflow && section === 'canvas'"
               :raw-json="workflow.rawJson"
               :height="'560px'"
               @node-click="handleCanvasNodeClick"
@@ -345,7 +345,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
@@ -403,15 +403,6 @@ const viewMode = ref<'chip' | 'list'>('chip');
 
 /** 当前展示的 Tab（画布 / 参数配置） */
 const section = ref<'canvas' | 'config'>('config');
-/** 画布组件引用（用于切换 Tab 后重新适配视口） */
-const canvasRef = ref<InstanceType<typeof WorkflowCanvas> | null>(null);
-
-// 切换到画布 Tab 时重新适配视口，避免隐藏状态下 fitView 尺寸为 0
-watch(section, (value) => {
-  if (value === 'canvas') {
-    nextTick(() => canvasRef.value?.fitCanvasView());
-  }
-});
 
 /**
  * 将节点字段平铺为列表视图数据

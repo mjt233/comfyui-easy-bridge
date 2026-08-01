@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { VueFlow, useVueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core';
+import { computed, ref, watch, markRaw } from 'vue';
+import { VueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { MiniMap } from '@vue-flow/minimap';
@@ -21,11 +21,12 @@ const emit = defineEmits<{
   'node-click': [nodeId: string];
 }>();
 
-/** vue-flow store（用于 Tab 切换后重新适配视口） */
-const { fitView } = useVueFlow();
-
-/** 自定义节点类型映射 */
-const nodeTypes = { comfy: WorkflowNode };
+/**
+ * 自定义节点类型映射。
+ * markRaw 标记组件，避免 vue-flow 把 nodeTypes 存入响应式 store 时
+ * 将组件对象包成 reactive，从而触发 "Component was made a reactive object" 警告。
+ */
+const nodeTypes = { comfy: markRaw(WorkflowNode) };
 
 /** 响应式 rawJson */
 const rawJsonRef = computed(() => props.rawJson);
@@ -54,18 +55,6 @@ watch(
 function onNodeClick(event: NodeMouseEvent): void {
   emit('node-click', event.node.id);
 }
-
-/**
- * 重新适配视口（供父组件在画布 Tab 变为可见后调用，避免隐藏状态尺寸为 0）
- */
-function fitCanvasView(): void {
-  // 等待一帧，确保容器完成布局后再适配
-  requestAnimationFrame(() => {
-    fitView({ padding: 0.15 });
-  });
-}
-
-defineExpose({ fitCanvasView });
 </script>
 
 <template>
