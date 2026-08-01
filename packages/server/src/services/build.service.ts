@@ -40,9 +40,27 @@ export function runBuildScript(
     // 主线程转译（typescript 包在 worker 内不可解析）
     let jsCode: string;
     try {
-      jsCode = ts.transpileModule(script, {
-        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-      }).outputText;
+      const transpileResult = ts.transpileModule(script, {
+        compilerOptions: {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES2022,
+        },
+        // reportDiagnostics 是 TranspileOptions 的顶层选项（不是 compilerOptions），
+        // 放在 compilerOptions 内时 TS 5.9 不会返回语法错误诊断
+        reportDiagnostics: true,
+      });
+      // transpileModule 语法错误不抛异常，需显式读取 diagnostics
+      if (transpileResult.diagnostics && transpileResult.diagnostics.length > 0) {
+        const first = transpileResult.diagnostics[0];
+        const message = ts.flattenDiagnosticMessageText(first.messageText, '\n');
+        resolve({
+          ok: false,
+          code: 'build_script_error',
+          error: `Transpile error: ${message}`,
+        });
+        return;
+      }
+      jsCode = transpileResult.outputText;
     } catch (err) {
       resolve({
         ok: false,
@@ -52,10 +70,21 @@ export function runBuildScript(
       return;
     }
 
-    const worker = new Worker(BUILD_WORKER_SOURCE, {
-      eval: true,
-      workerData: { jsCode, params, workflow },
-    });
+    // 创建 worker；workerData 不可结构化克隆时会同步抛错，需捕获并转为构建错误
+    let worker: Worker;
+    try {
+      worker = new Worker(BUILD_WORKER_SOURCE, {
+        eval: true,
+        workerData: { jsCode, params, workflow },
+      });
+    } catch (err) {
+      resolve({
+        ok: false,
+        code: 'build_script_error',
+        error: err instanceof Error ? err.message : 'Failed to start build worker',
+      });
+      return;
+    }
 
     const timer = setTimeout(() => {
       if (settled) return;

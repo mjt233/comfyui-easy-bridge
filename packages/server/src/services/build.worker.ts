@@ -109,7 +109,8 @@ async function run() {
     }
     parentPort.postMessage({ ok: true, workflow: result });
   } catch (err) {
-    const msg = (err && err.message) ? err.message + '\\n' + (err.stack || '') : String(err);
+    // 使用完整 stack（首行已含 "Error: message"），避免消息重复
+    const msg = (err && err.stack) ? err.stack : String(err);
     parentPort.postMessage({ ok: false, error: msg });
   }
 }

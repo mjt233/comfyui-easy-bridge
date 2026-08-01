@@ -51,11 +51,46 @@ describe('runBuildScript', () => {
     expect(baseWorkflow['4'].inputs.seed).toBe(0);
   });
 
-  it('reports syntax errors', async () => {
+  it('supports disconnect/getInput/findNodesByClass/getNode/setTitle', async () => {
+    const script = `
+      export default function build(ctx: any) {
+        const nodes = ctx.findNodesByClass('KSampler');
+        ctx.setTitle('4', '自定义采样器');
+        ctx.disconnect('4', 'model', 'fallback');
+        const input = ctx.getInput('4', 'model');
+        const node = ctx.getNode('1');
+        return { ...ctx.workflow, _info: { nodes, input, nodeClass: node.class_type } };
+      }
+    `;
+    const result = await runBuildScript(script, {}, baseWorkflow);
+    expect(result.ok).toBe(true);
+    expect(result.workflow?.['4']._meta?.title).toBe('自定义采样器');
+    expect(result.workflow?.['4'].inputs.model).toBe('fallback');
+    expect(result.workflow?._info).toEqual({
+      nodes: ['4'],
+      input: 'fallback',
+      nodeClass: 'CheckpointLoaderSimple',
+    });
+  });
+
+  it('rejects results larger than 2MB', async () => {
+    const script = `
+      export default function build(ctx: any) {
+        ctx.setInput('4', 'big', 'x'.repeat(3 * 1024 * 1024));
+        return ctx.workflow;
+      }
+    `;
+    const result = await runBuildScript(script, {}, baseWorkflow);
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('build_script_error');
+    expect(result.error).toContain('too large');
+  });
+
+  it('reports syntax errors with real diagnostic', async () => {
     const result = await runBuildScript('export default function build( {', {}, baseWorkflow);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
-    expect(result.error).toBeTruthy();
+    expect(result.error).toContain('Transpile error');
   });
 
   it('reports runtime errors with message', async () => {
