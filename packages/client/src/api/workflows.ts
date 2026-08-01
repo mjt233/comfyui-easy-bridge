@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult } from '@/types';
 
 export async function listWorkflows(): Promise<Workflow[]> {
   const res = await client.get<Workflow[]>('/workflows');
@@ -93,6 +93,40 @@ export async function executeWorkflow(
   const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+  return res.data;
+}
+
+/** 拉取动态构建脚本 API 类型声明（d.ts 文本） */
+export async function getBuildApiTypes(): Promise<string> {
+  const res = await client.get<string>('/workflows/build-api.d.ts');
+  return res.data;
+}
+
+/**
+ * 保存动态构建脚本与启用状态
+ * @param workflowId 工作流 ID
+ * @param data 脚本与启用状态
+ * @returns 更新后的工作流详情
+ */
+export async function saveBuildScript(
+  workflowId: string,
+  data: { script: string; enabled: boolean },
+): Promise<WorkflowDetail> {
+  const res = await client.put<WorkflowDetail>(`/workflows/${workflowId}/build-script`, data);
+  return res.data;
+}
+
+/**
+ * 模拟构建：脚本 + 参数 → 构建后的最终 JSON
+ * @param workflowId 工作流 ID
+ * @param data 脚本源码与参数
+ * @returns 模拟结果
+ */
+export async function simulateBuild(
+  workflowId: string,
+  data: { script: string; params: Record<string, unknown> },
+): Promise<SimulateResult> {
+  const res = await client.post<SimulateResult>(`/workflows/${workflowId}/build/simulate`, data);
   return res.data;
 }
 

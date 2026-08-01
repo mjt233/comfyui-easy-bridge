@@ -30,6 +30,10 @@ export interface WorkflowParam {
 
 export interface WorkflowDetail extends Workflow {
   params: WorkflowParam[];
+  /** 动态构建脚本源码 */
+  buildScript: string;
+  /** 是否启用动态构建 */
+  buildScriptEnabled: boolean;
 }
 
 /**
@@ -66,4 +70,12 @@ export interface ImportResult {
 
 export interface Settings {
   [key: string]: string;
+}
+
+/**
+ * 模拟构建结果
+ */
+export interface SimulateResult {
+  /** 构建并应用参数后的最终工作流 JSON 字符串 */
+  json: string;
 }
