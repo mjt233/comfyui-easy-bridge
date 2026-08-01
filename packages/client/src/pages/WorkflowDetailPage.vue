@@ -109,6 +109,9 @@
         <v-tab value="canvas">
           画布
         </v-tab>
+        <v-tab value="build">
+          动态构建脚本
+        </v-tab>
       </v-tabs>
 
       <v-window v-model="section">
@@ -120,6 +123,17 @@
               :raw-json="workflow.rawJson"
               :height="'560px'"
               @node-click="handleCanvasNodeClick"
+            />
+          </v-card-text>
+        </v-window-item>
+
+        <v-window-item value="build">
+          <v-card-text>
+            <!-- 仅 Build 页签激活时挂载编辑器，避免隐藏挂载的布局问题 -->
+            <BuildScriptEditor
+              v-if="workflow && section === 'build'"
+              :workflow="workflow"
+              @saved="handleBuildScriptSaved"
             />
           </v-card-text>
         </v-window-item>
@@ -350,6 +364,7 @@ import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
+import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
 
 /**
  * 节点字段展示信息
@@ -401,8 +416,8 @@ const clearingOrphans = ref(false);
 
 const viewMode = ref<'chip' | 'list'>('chip');
 
-/** 当前展示的 Tab（画布 / 参数配置） */
-const section = ref<'canvas' | 'config'>('config');
+/** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本） */
+const section = ref<'canvas' | 'config' | 'build'>('config');
 
 /**
  * 将节点字段平铺为列表视图数据
@@ -570,6 +585,14 @@ async function clearAllOrphans() {
   } finally {
     clearingOrphans.value = false;
   }
+}
+
+/**
+ * 动态构建脚本保存成功后刷新本地工作流
+ * @param updated 保存返回的最新工作流详情
+ */
+function handleBuildScriptSaved(updated: WorkflowDetail): void {
+  workflow.value = updated;
 }
 
 /**

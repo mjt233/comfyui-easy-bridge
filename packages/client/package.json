@@ -18,6 +18,7 @@
     "@vue-flow/minimap": "^1.5.4",
     "axios": "^1.7.0",
     "highlight.js": "^11.11.1",
+    "monaco-editor": "^0.56.0",
     "vue": "^3.5.0",
     "vue-router": "^4.4.0",
     "vuetify": "^3.7.0"
