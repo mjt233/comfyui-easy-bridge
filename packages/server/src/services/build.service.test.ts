@@ -137,4 +137,11 @@ describe('runBuildScript', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain('not found');
   });
+
+  it('connect with non-number slot throws', async () => {
+    const script = `export default function build(ctx: any) { ctx.connect('1', 'x', '4', 'model'); return ctx.workflow; }`;
+    const result = await runBuildScript(script, {}, baseWorkflow);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('source slot must be a number');
+  });
 });

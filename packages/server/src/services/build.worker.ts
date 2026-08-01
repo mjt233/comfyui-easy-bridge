@@ -52,6 +52,7 @@ function createContext(workflow, params) {
     connect(sourceNodeId, sourceSlot, targetNodeId, targetField) {
       if (!wf[sourceNodeId]) throw new Error('connect: source node "' + sourceNodeId + '" not found');
       if (!wf[targetNodeId]) throw new Error('connect: target node "' + targetNodeId + '" not found');
+      if (typeof sourceSlot !== 'number') throw new Error('connect: source slot must be a number');
       wf[targetNodeId].inputs[targetField] = [sourceNodeId, sourceSlot];
     },
     disconnect(targetNodeId, targetField, fallbackValue) {

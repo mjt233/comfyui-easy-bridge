@@ -280,7 +280,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             });
             taskService.updateStatus(failedTask.id, {
               status: 'failed',
-              errorMessage: `Dynamic build failed: ${buildResult.error}`,
+              errorMessage: `Dynamic build failed [${buildResult.code ?? 'build_script_error'}]: ${buildResult.error}`,
             });
             res.json({ task_id: failedTask.id, status: 'failed', comfyui_response: null });
             return;
