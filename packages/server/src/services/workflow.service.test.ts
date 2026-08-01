@@ -266,4 +266,28 @@ describe('WorkflowService', () => {
     });
     expect(() => service.updateParam(p.id, { alias: null, defaultValue: null })).toThrow(/alias|defaultValue|required/i);
   });
+
+  it('updateBuildScript saves script and enabled flag', () => {
+    service.create({ id: 'wf-build', name: 'Build', rawJson: '{}' });
+
+    const updated = service.updateBuildScript('wf-build', { script: 'export default function build(ctx) { return ctx.workflow; }', enabled: true });
+
+    expect(updated?.buildScript).toContain('export default');
+    expect(updated?.buildScriptEnabled).toBe(1);
+
+    const disabled = service.updateBuildScript('wf-build', { script: '', enabled: false });
+    expect(disabled?.buildScript).toBe('');
+    expect(disabled?.buildScriptEnabled).toBe(0);
+  });
+
+  it('update with id rename preserves build script columns', () => {
+    service.create({ id: 'wf-old', name: 'Old', rawJson: '{}' });
+    service.updateBuildScript('wf-old', { script: '// keep me', enabled: true });
+
+    const renamed = service.update('wf-old', { id: 'wf-new' });
+
+    expect(renamed?.id).toBe('wf-new');
+    expect(renamed?.buildScript).toBe('// keep me');
+    expect(renamed?.buildScriptEnabled).toBe(1);
+  });
 });

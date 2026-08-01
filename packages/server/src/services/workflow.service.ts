@@ -61,6 +61,16 @@ interface UpdateParamInput {
 }
 
 /**
+ * 保存动态构建脚本的输入
+ */
+interface UpdateBuildScriptInput {
+  /** 脚本源码 */
+  script: string;
+  /** 是否启用 */
+  enabled: boolean;
+}
+
+/**
  * 规范化别名：空字符串视为 null
  * @param alias 原始别名
  * @returns 规范化后的别名
@@ -156,6 +166,8 @@ export class WorkflowService {
           id: input.id!,
           name: input.name ?? existing.name,
           rawJson: input.rawJson ?? existing.rawJson,
+          buildScript: existing.buildScript,
+          buildScriptEnabled: existing.buildScriptEnabled,
           createdAt: existing.createdAt,
           updatedAt: now,
         }).run();
@@ -293,5 +305,23 @@ export class WorkflowService {
    */
   deleteParam(id: number) {
     this.db.delete(schema.workflowParams).where(eq(schema.workflowParams.id, id)).run();
+  }
+
+  /**
+   * 保存动态构建脚本与启用状态
+   * @param id 工作流 ID
+   * @param input 脚本与启用状态
+   * @returns 更新后的工作流行
+   */
+  updateBuildScript(id: string, input: UpdateBuildScriptInput) {
+    this.db.update(schema.workflows)
+      .set({
+        buildScript: input.script,
+        buildScriptEnabled: input.enabled ? 1 : 0,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.workflows.id, id))
+      .run();
+    return this.getById(id);
   }
 }
