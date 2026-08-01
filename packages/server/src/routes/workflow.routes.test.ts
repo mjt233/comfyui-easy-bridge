@@ -521,7 +521,7 @@ describe('Workflow API', () => {
       .post('/api/workflows/sim-flow/build/simulate')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 42); return ctx.workflow; }`,
+        script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 42); return ctx.workflow; }',
         params: {},
       });
     expect(res.status).toBe(200);
@@ -540,7 +540,7 @@ describe('Workflow API', () => {
     const res = await supertest(app)
       .post('/api/workflows/sim-bad/build/simulate')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build() { throw new Error('boom'); }`, params: {} });
+      .send({ script: 'export default function build() { throw new Error(\'boom\'); }', params: {} });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('build_script_error');
     expect(res.body.error).toContain('boom');
@@ -557,7 +557,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .put('/api/workflows/exec-flow/build-script')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 777); return ctx.workflow; }`, enabled: true });
+      .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return ctx.workflow; }', enabled: true });
     // 设置 ComfyUI base URL
     await supertest(app)
       .put('/api/settings')
@@ -584,7 +584,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .put('/api/workflows/exec-bad/build-script')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: `export default function build() { throw new Error('broken'); }`, enabled: true });
+      .send({ script: 'export default function build() { throw new Error(\'broken\'); }', enabled: true });
     await supertest(app)
       .put('/api/settings')
       .set('Authorization', `Bearer ${token}`)
