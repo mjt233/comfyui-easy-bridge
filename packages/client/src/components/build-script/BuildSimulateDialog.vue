@@ -332,7 +332,23 @@ function downloadJson(): void {
   URL.revokeObjectURL(url);
 }
 
-// 打开对话框时用已保存别名初始化参数值（仅初始化一次）
+/**
+ * 读取工作流 rawJson 中某节点字段的原始值。
+ * @param nodeId 节点 ID
+ * @param fieldName 字段名
+ * @returns 原始值；连线引用（数组）、字段不存在或解析失败时为 undefined
+ */
+function rawFieldValue(nodeId: string, fieldName: string): unknown {
+  try {
+    const json = JSON.parse(props.workflow.rawJson) as Record<string, { inputs?: Record<string, unknown> }>;
+    const value = json[nodeId]?.inputs?.[fieldName];
+    return Array.isArray(value) ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}
+
+// 打开对话框时按 defaultValue ?? rawJson 原值 预填（与 WorkflowListPage 真实执行一致）
 watch(show, (val) => {
   if (val) {
     stringValues.value = {};
@@ -340,9 +356,12 @@ watch(show, (val) => {
     for (const p of aliasParams.value) {
       if (!p.alias) continue;
       if (p.paramType === 'boolean') {
-        booleanValues.value[p.alias] = false;
+        // defaultValue 为字符串：布尔参数按真值字符串判断
+        booleanValues.value[p.alias] = p.defaultValue === 'true' || p.defaultValue === '1';
       } else {
-        stringValues.value[p.alias] = '';
+        // 默认值覆盖优先，否则取 rawJson 原值；null/undefined 回退为空字符串
+        const d = p.defaultValue ?? rawFieldValue(p.nodeId, p.fieldName);
+        stringValues.value[p.alias] = d == null ? '' : String(d);
       }
     }
     freeFields.value = [];

@@ -74,12 +74,19 @@ const enabled = ref(props.workflow.buildScriptEnabled);
 const editorValue = ref(props.workflow.buildScript);
 /** 保存的脚本（用于重置与脏检查） */
 const savedScript = ref(props.workflow.buildScript);
+/** 保存的启用状态（用于重置与脏检查） */
+const savedEnabled = ref(props.workflow.buildScriptEnabled);
 /** 是否有未保存更改 */
 const dirty = ref(false);
 /** 保存中 */
 const saving = ref(false);
 /** 模拟构建对话框开关 */
 const simulateOpen = ref(false);
+
+// 脚本内容或启用开关任一与已保存状态不一致即为未保存
+watch([editorValue, enabled], ([val, en]) => {
+  dirty.value = val !== savedScript.value || en !== savedEnabled.value;
+});
 
 /** 编辑器宿主元素 */
 const editorHost = ref<HTMLDivElement | null>(null);
@@ -92,14 +99,13 @@ function insertTemplate(): void {
   const current = editor.getValue();
   const next = current.trim() === '' ? DEFAULT_BUILD_SCRIPT_TEMPLATE : `${current}\n\n${DEFAULT_BUILD_SCRIPT_TEMPLATE}`;
   editor.setValue(next);
-  dirty.value = true;
 }
 
 /** 重置为已保存内容 */
 function resetToSaved(): void {
   if (!editor) return;
   editor.setValue(savedScript.value);
-  enabled.value = props.workflow.buildScriptEnabled;
+  enabled.value = savedEnabled.value;
   dirty.value = false;
 }
 
@@ -113,6 +119,7 @@ async function save(): Promise<void> {
       enabled: enabled.value,
     });
     savedScript.value = updated.buildScript;
+    savedEnabled.value = updated.buildScriptEnabled;
     editorValue.value = updated.buildScript;
     dirty.value = false;
     emit('saved', updated);
@@ -143,7 +150,6 @@ onMounted(async () => {
   });
   editor.onDidChangeModelContent(() => {
     editorValue.value = editor?.getValue() ?? '';
-    dirty.value = editorValue.value !== savedScript.value;
   });
 });
 
@@ -157,6 +163,7 @@ watch(
   () => props.workflow.buildScript,
   (val) => {
     savedScript.value = val;
+    savedEnabled.value = props.workflow.buildScriptEnabled;
     if (editor && !dirty.value) {
       editor.setValue(val);
     }
