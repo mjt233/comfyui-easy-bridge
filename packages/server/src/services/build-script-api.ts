@@ -62,16 +62,19 @@ declare interface BuildContext {
 `;
 }
 
+/** 静态版 BuildContext 声明（classType: string） */
+const STATIC_BUILD_CONTEXT_DTS = buildBuildContextDts(
+  'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
+  'findNodesByClass(classType: string): string[];',
+);
+
 /**
  * 静态版（ComfyUI 未配置/不可达时降级）脚本 API 类型声明文本。
  * 由 GET /api/workflows/build-api.d.ts 下发，前端 addExtraLib 注册。
  * 注：与旧版硬编码文本相比，去除了开头的多余换行，消费方均以子串断言，无影响。
  */
 export const BUILD_SCRIPT_API_DTS = `${BUILD_SCRIPT_DTS_HEADER}
-${buildBuildContextDts(
-  'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
-  'findNodesByClass(classType: string): string[];',
-)}`;
+${STATIC_BUILD_CONTEXT_DTS}`;
 
 /**
  * 编辑器"默认导出模板"片段：一键插入到脚本中。
