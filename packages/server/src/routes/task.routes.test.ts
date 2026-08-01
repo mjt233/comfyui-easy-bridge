@@ -54,12 +54,12 @@ function buildHistoryJson(promptId: string, withOutputs: boolean): unknown {
       status: { status_str: 'success', completed: true, messages: [] },
       outputs: withOutputs
         ? {
-            '9': {
-              images: [
-                { filename: 'history-out.png', subfolder: '', type: 'output' },
-              ],
-            },
-          }
+          '9': {
+            images: [
+              { filename: 'history-out.png', subfolder: '', type: 'output' },
+            ],
+          },
+        }
         : {},
     },
   };

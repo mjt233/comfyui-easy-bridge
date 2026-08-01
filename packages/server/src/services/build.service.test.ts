@@ -45,7 +45,7 @@ describe('runBuildScript', () => {
   });
 
   it('does not mutate the input workflow (deep copy)', async () => {
-    const script = `export default function build(ctx: any) { ctx.setInput('4', 'seed', 999); return ctx.workflow; }`;
+    const script = 'export default function build(ctx: any) { ctx.setInput(\'4\', \'seed\', 999); return ctx.workflow; }';
     const result = await runBuildScript(script, {}, baseWorkflow);
     expect(result.ok).toBe(true);
     expect(baseWorkflow['4'].inputs.seed).toBe(0);
@@ -94,7 +94,7 @@ describe('runBuildScript', () => {
   });
 
   it('reports runtime errors with message', async () => {
-    const script = `export default function build(ctx: any) { ctx.addNode('4', 'X'); return ctx.workflow; }`;
+    const script = 'export default function build(ctx: any) { ctx.addNode(\'4\', \'X\'); return ctx.workflow; }';
     const result = await runBuildScript(script, {}, baseWorkflow);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
@@ -102,7 +102,7 @@ describe('runBuildScript', () => {
   });
 
   it('kills infinite loops via timeout', async () => {
-    const script = `export default function build() { while (true) {} }`;
+    const script = 'export default function build() { while (true) {} }';
     const result = await runBuildScript(script, {}, baseWorkflow, 1000);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_timeout');
@@ -132,14 +132,14 @@ describe('runBuildScript', () => {
   });
 
   it('connect to missing node throws', async () => {
-    const script = `export default function build(ctx: any) { ctx.connect('nope', 0, '4', 'model'); return ctx.workflow; }`;
+    const script = 'export default function build(ctx: any) { ctx.connect(\'nope\', 0, \'4\', \'model\'); return ctx.workflow; }';
     const result = await runBuildScript(script, {}, baseWorkflow);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('not found');
   });
 
   it('connect with non-number slot throws', async () => {
-    const script = `export default function build(ctx: any) { ctx.connect('1', 'x', '4', 'model'); return ctx.workflow; }`;
+    const script = 'export default function build(ctx: any) { ctx.connect(\'1\', \'x\', \'4\', \'model\'); return ctx.workflow; }';
     const result = await runBuildScript(script, {}, baseWorkflow);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('source slot must be a number');

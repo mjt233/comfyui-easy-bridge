@@ -10,9 +10,9 @@ export function ensureWorkflowBuildColumns(sqlite: Database): void {
   const has = (name: string): boolean => cols.some((c) => c.name === name);
 
   if (!has('build_script')) {
-    sqlite.exec(`ALTER TABLE workflows ADD COLUMN build_script TEXT NOT NULL DEFAULT ''`);
+    sqlite.exec('ALTER TABLE workflows ADD COLUMN build_script TEXT NOT NULL DEFAULT \'\'');
   }
   if (!has('build_script_enabled')) {
-    sqlite.exec(`ALTER TABLE workflows ADD COLUMN build_script_enabled INTEGER NOT NULL DEFAULT 0`);
+    sqlite.exec('ALTER TABLE workflows ADD COLUMN build_script_enabled INTEGER NOT NULL DEFAULT 0');
   }
 }
