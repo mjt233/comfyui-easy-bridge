@@ -87,6 +87,8 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `workflow_not_found` | 工作流不存在 |
 | `alias_conflict` | 别名重复 (UNIQUE 约束) |
 | `comfyui_unreachable` | ComfyUI 服务不可达或返回错误 |
+| `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
+| `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |
 
 ## 参考资料
 

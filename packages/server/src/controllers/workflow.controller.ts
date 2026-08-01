@@ -10,6 +10,8 @@ import {
   processMediaParams,
   resolveSubmittedAliasValues,
 } from '../services/executor.service';
+import { runBuildScript } from '../services/build.service';
+import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
@@ -21,6 +23,11 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
   const workflowIOService = new WorkflowIOService(db);
 
   return {
+    /** 返回动态构建脚本 API 的 d.ts 文本（供 Monaco 注册类型提示） */
+    getBuildApiTypes(_req: Request, res: Response): void {
+      res.type('text/plain').send(BUILD_SCRIPT_API_DTS);
+    },
+
     list(_req: Request, res: Response): void {
       res.json(workflowService.list());
     },
@@ -33,7 +40,66 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       const params = workflowService.getParams(id);
-      res.json({ ...wf, params });
+      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
+    },
+
+    /** 保存动态构建脚本与启用状态 */
+    saveBuildScript(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      const body = req.body as { script?: unknown; enabled?: unknown };
+      if (typeof body.script !== 'string') {
+        res.status(400).json({ error: 'script is required', code: 'missing_parameter' });
+        return;
+      }
+      const wf = workflowService.updateBuildScript(id, {
+        script: body.script,
+        enabled: body.enabled === true,
+      });
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      // 与 getById 返回结构保持一致：补充 params，供前端直接作为 WorkflowDetail 使用
+      const params = workflowService.getParams(id);
+      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
+    },
+
+    /** 模拟构建：脚本构建 + 应用已保存参数配置，返回最终 JSON 字符串 */
+    async simulateBuild(req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        const id = req.params.id as string;
+        const wf = workflowService.getById(id);
+        if (!wf) {
+          res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+          return;
+        }
+        const body = req.body as { script?: unknown; params?: unknown };
+        if (typeof body.script !== 'string' || body.script.trim() === '') {
+          res.status(400).json({ error: 'script is required', code: 'missing_parameter' });
+          return;
+        }
+        const aliasParams = (body.params && typeof body.params === 'object' && !Array.isArray(body.params))
+          ? body.params as Record<string, unknown>
+          : {};
+
+        // 脚本构建（作用于 rawJson 的深拷贝）
+        const buildResult = await runBuildScript(body.script, aliasParams, JSON.parse(wf.rawJson) as ComfyWorkflow);
+        if (!buildResult.ok) {
+          res.status(400).json({ error: buildResult.error, code: buildResult.code });
+          return;
+        }
+        // 应用已保存参数配置（与真实执行顺序一致）
+        const workflowParams = workflowService.getParams(id);
+        const finalJson = applyAliases(JSON.stringify(buildResult.workflow), workflowParams, aliasParams);
+        res.json({ json: finalJson });
+      } catch (err) {
+        next(err);
+      }
     },
 
     create(req: Request, res: Response): void {
@@ -193,8 +259,37 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 处理媒体文件上传
         const finalAliasValues = await processMediaParams(params, aliasValues, uploadedFiles, baseUrl);
 
-        // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值）
-        const modifiedJson = applyAliases(wf.rawJson, params, finalAliasValues);
+        // 【动态构建】上传完成后、别名替换前执行脚本（仅当已保存且启用）
+        let buildSource = wf.rawJson;
+        if (wf.buildScriptEnabled && wf.buildScript) {
+          const buildResult = await runBuildScript(
+            wf.buildScript,
+            finalAliasValues,
+            JSON.parse(wf.rawJson) as ComfyWorkflow,
+          );
+          if (!buildResult.ok) {
+            // 构建失败：记录 failed 任务，不提交 ComfyUI
+            const failedTask = taskService.create({
+              workflowId: wf.id,
+              workflowName: wf.name,
+              aliasValues: JSON.stringify(finalAliasValues),
+              comfyuiUrl: `${baseUrl}/prompt`,
+              comfyuiRequestBody: null,
+              comfyuiResponse: null,
+              promptId: null,
+            });
+            taskService.updateStatus(failedTask.id, {
+              status: 'failed',
+              errorMessage: `Dynamic build failed [${buildResult.code ?? 'build_script_error'}]: ${buildResult.error}`,
+            });
+            res.json({ task_id: failedTask.id, status: 'failed', comfyui_response: null });
+            return;
+          }
+          buildSource = JSON.stringify(buildResult.workflow);
+        }
+
+        // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
+        const modifiedJson = applyAliases(buildSource, params, finalAliasValues);
 
         // 任务日志记录转换后、实际提交到 ComfyUI 的别名参数
         const submittedAliasValues = resolveSubmittedAliasValues(params, finalAliasValues);
@@ -226,7 +321,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
 
-        const result = await executeWorkflow(wf.rawJson, params, finalAliasValues, baseUrl);
+        const result = await executeWorkflow(buildSource, params, finalAliasValues, baseUrl);
 
         const task = taskService.create({
           workflowId: wf.id,

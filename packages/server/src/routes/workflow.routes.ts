@@ -11,11 +11,14 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   const auth = createAuthMiddleware(db);
   const upload = multer({ storage: multer.memoryStorage() });
 
-  // 静态路径（export/import）需在 :id 动态路由之前注册
+  // 静态路径（build-api.d.ts / export / import）需在 :id 动态路由之前注册
+  router.get('/build-api.d.ts', auth, controller.getBuildApiTypes);
   router.post('/export', auth, controller.exportWorkflows);
   router.post('/import', auth, upload.single('file'), controller.importWorkflows);
 
   router.post('/:id/execute', upload.any(), controller.execute);
+  router.put('/:id/build-script', auth, controller.saveBuildScript);
+  router.post('/:id/build/simulate', auth, controller.simulateBuild);
 
   router.get('/', auth, controller.list);
   router.post('/', auth, controller.create);

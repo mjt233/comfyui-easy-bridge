@@ -4,6 +4,10 @@ export const workflows = sqliteTable('workflows', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   rawJson: text('raw_json').notNull(),
+  /** 动态构建脚本源码；空串表示未配置 */
+  buildScript: text('build_script').notNull().default(''),
+  /** 是否启用动态构建（0/1） */
+  buildScriptEnabled: integer('build_script_enabled').notNull().default(0),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

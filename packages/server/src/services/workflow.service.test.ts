@@ -12,7 +12,7 @@ describe('WorkflowService', () => {
     sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -265,5 +265,29 @@ describe('WorkflowService', () => {
       defaultValue: 'x',
     });
     expect(() => service.updateParam(p.id, { alias: null, defaultValue: null })).toThrow(/alias|defaultValue|required/i);
+  });
+
+  it('updateBuildScript saves script and enabled flag', () => {
+    service.create({ id: 'wf-build', name: 'Build', rawJson: '{}' });
+
+    const updated = service.updateBuildScript('wf-build', { script: 'export default function build(ctx) { return ctx.workflow; }', enabled: true });
+
+    expect(updated?.buildScript).toContain('export default');
+    expect(updated?.buildScriptEnabled).toBe(1);
+
+    const disabled = service.updateBuildScript('wf-build', { script: '', enabled: false });
+    expect(disabled?.buildScript).toBe('');
+    expect(disabled?.buildScriptEnabled).toBe(0);
+  });
+
+  it('update with id rename preserves build script columns', () => {
+    service.create({ id: 'wf-old', name: 'Old', rawJson: '{}' });
+    service.updateBuildScript('wf-old', { script: '// keep me', enabled: true });
+
+    const renamed = service.update('wf-old', { id: 'wf-new' });
+
+    expect(renamed?.id).toBe('wf-new');
+    expect(renamed?.buildScript).toBe('// keep me');
+    expect(renamed?.buildScriptEnabled).toBe(1);
   });
 });

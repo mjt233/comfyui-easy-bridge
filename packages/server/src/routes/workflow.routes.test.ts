@@ -11,6 +11,7 @@ import * as schema from '../models/schema';
 import { createWorkflowRoutes } from './workflow.routes';
 import { createAuthRoutes } from './auth.routes';
 import { createSettingsRoutes } from './settings.routes';
+import { createTaskRoutes } from './task.routes';
 
 // 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
@@ -23,7 +24,7 @@ describe('Workflow API', () => {
     const sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -54,6 +55,7 @@ describe('Workflow API', () => {
     app.use('/api/auth', createAuthRoutes(db));
     app.use('/api/workflows', createWorkflowRoutes(db));
     app.use('/api/settings', createSettingsRoutes(db));
+    app.use('/api/tasks', createTaskRoutes(db));
   });
 
   afterAll(() => {
@@ -408,5 +410,132 @@ describe('Workflow API', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('missing_parameter');
+  });
+
+  it('GET /api/workflows/build-api.d.ts returns d.ts text', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const res = await supertest(app)
+      .get('/api/workflows/build-api.d.ts')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('declare interface BuildContext');
+  });
+
+  it('PUT /api/workflows/:id/build-script saves script and enabled flag', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'build-flow', name: 'Build', rawJson: JSON.stringify({ '1': { inputs: { a: 1 }, class_type: 'Start' } }) });
+
+    const res = await supertest(app)
+      .put('/api/workflows/build-flow/build-script')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ script: 'export default function build(ctx: any) { return ctx.workflow; }', enabled: true });
+    expect(res.status).toBe(200);
+    expect(res.body.buildScript).toContain('export default');
+    expect(res.body.buildScriptEnabled).toBe(true);
+    // 响应应包含 params 数组（无参数工作流为空数组），与 getById / WorkflowDetail 结构一致
+    expect(Array.isArray(res.body.params)).toBe(true);
+
+    const detail = await supertest(app)
+      .get('/api/workflows/build-flow')
+      .set('Authorization', `Bearer ${token}`);
+    expect(detail.body.buildScriptEnabled).toBe(true);
+  });
+
+  it('POST /api/workflows/:id/build/simulate returns built json', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'sim-flow', name: 'Sim', rawJson: JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } }) });
+
+    const res = await supertest(app)
+      .post('/api/workflows/sim-flow/build/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 42); return ctx.workflow; }`,
+        params: {},
+      });
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body.json as string) as { '1': { inputs: { seed: number } } };
+    expect(parsed['1'].inputs.seed).toBe(42);
+  });
+
+  it('POST simulate returns error for failing script', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'sim-bad', name: 'Bad', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/sim-bad/build/simulate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ script: `export default function build() { throw new Error('boom'); }`, params: {} });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('build_script_error');
+    expect(res.body.error).toContain('boom');
+  });
+
+  it('execute runs enabled build script before submitting', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const rawJson = JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-flow', name: 'Exec', rawJson });
+    await supertest(app)
+      .put('/api/workflows/exec-flow/build-script')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ script: `export default function build(ctx: any) { ctx.setInput('1', 'seed', 777); return ctx.workflow; }`, enabled: true });
+    // 设置 ComfyUI base URL
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+
+    const res = await supertest(app).post('/api/workflows/exec-flow/execute').send({});
+    // 提交会失败（ComfyUI 不可达），但任务日志中应含脚本修改后的 seed
+    expect(res.status).toBe(200);
+    expect(['failed', 'queued']).toContain(res.body.status);
+    const tasks = await supertest(app).get('/api/tasks').set('Authorization', `Bearer ${token}`);
+    const task = (tasks.body as Array<{ comfyuiRequestBody: string | null; status: string }>)
+      .find((t) => (t.comfyuiRequestBody ?? '').includes('777'));
+    expect(task).toBeTruthy();
+  });
+
+  it('execute with failing build script marks task failed without submitting', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-bad', name: 'ExecBad', rawJson: '{}' });
+    await supertest(app)
+      .put('/api/workflows/exec-bad/build-script')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ script: `export default function build() { throw new Error('broken'); }`, enabled: true });
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+
+    const res = await supertest(app).post('/api/workflows/exec-bad/execute').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('failed');
+    const tasks = await supertest(app).get('/api/tasks').set('Authorization', `Bearer ${token}`);
+    const task = (tasks.body as Array<{ workflowId: string; status: string; errorMessage: string }>)
+      .find((t) => t.workflowId === 'exec-bad');
+    expect(task?.status).toBe('failed');
+    expect(task?.errorMessage).toContain('Dynamic build failed');
+    expect(task?.errorMessage).toContain('broken');
   });
 });
