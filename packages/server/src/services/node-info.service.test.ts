@@ -168,6 +168,29 @@ describe('getNodeInfoCached', () => {
     expect(result).toBeNull();
   });
 
+  it('negative-caches fetch failures within short TTL', async () => {
+    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    // 首次拉取失败（push URL 后抛错，便于统计重试次数）
+    nodeInfoServiceConfig.fetchImpl = async (url: string) => {
+      fetchCalls.push(url);
+      throw new Error('unreachable');
+    };
+    const first = await getNodeInfoCached(db);
+    expect(first).toBeNull();
+    expect(fetchCalls).toHaveLength(1);
+
+    // 负缓存 TTL 内：不再重试，仍返回 null
+    const second = await getNodeInfoCached(db);
+    expect(second).toBeNull();
+    expect(fetchCalls).toHaveLength(1);
+
+    // 负缓存过期后：重试一次（仍然失败 → null）
+    nodeInfoServiceConfig.now = () => 1_000_000 + nodeInfoServiceConfig.negativeCacheTtlMs + 1;
+    const third = await getNodeInfoCached(db);
+    expect(third).toBeNull();
+    expect(fetchCalls).toHaveLength(2);
+  });
+
   it('deduplicates concurrent calls into a single fetch', async () => {
     new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
 

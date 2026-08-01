@@ -40,6 +40,8 @@ export const nodeInfoServiceConfig = {
   fetchTimeoutMs: 10000,
   /** 缓存 TTL（毫秒） */
   cacheTtlMs: 30 * 60 * 1000,
+  /** 拉取失败后的负缓存 TTL（毫秒） */
+  negativeCacheTtlMs: 60 * 1000,
   /** fetch 实现（测试可覆盖） */
   fetchImpl: async (url: string, init?: { signal?: AbortSignal }) => {
     const res = await fetch(url, init);
@@ -49,8 +51,8 @@ export const nodeInfoServiceConfig = {
   now: (): number => Date.now(),
 };
 
-/** 缓存：baseUrl → { 摘要数据, 拉取时间戳 } */
-const cache = new Map<string, { data: Record<string, NodeClassInfo>; fetchedAt: number }>();
+/** 缓存：baseUrl → { 摘要数据(可为 null 表示失败), 拉取时间戳 } */
+const cache = new Map<string, { data: Record<string, NodeClassInfo> | null; fetchedAt: number }>();
 /** 进行中的拉取（并发去重） */
 const inflight = new Map<string, Promise<Record<string, NodeClassInfo> | null>>();
 
@@ -177,10 +179,13 @@ export async function getNodeInfoCached(
   const baseUrl = new SettingsService(db).get('comfyui_base_url');
   if (!baseUrl) return null;
 
-  // TTL 内直接返回缓存
+  // TTL 内直接返回缓存（成功用长 TTL，失败用短负缓存 TTL）
   const cached = cache.get(baseUrl);
-  if (cached && nodeInfoServiceConfig.now() - cached.fetchedAt < nodeInfoServiceConfig.cacheTtlMs) {
-    return cached.data;
+  if (cached) {
+    const ttl = cached.data ? nodeInfoServiceConfig.cacheTtlMs : nodeInfoServiceConfig.negativeCacheTtlMs;
+    if (nodeInfoServiceConfig.now() - cached.fetchedAt < ttl) {
+      return cached.data;
+    }
   }
 
   // 并发去重：已有进行中的拉取则复用
@@ -194,7 +199,8 @@ export async function getNodeInfoCached(
       cache.set(baseUrl, { data, fetchedAt: nodeInfoServiceConfig.now() });
       return data;
     } catch {
-      // 拉取失败/超时：降级为 null，不抛错
+      // 拉取失败/超时：写入负缓存（短 TTL），降级为 null，不抛错
+      cache.set(baseUrl, { data: null, fetchedAt: nodeInfoServiceConfig.now() });
       return null;
     }
   })().finally(() => {
