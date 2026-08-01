@@ -333,6 +333,20 @@ function downloadJson(): void {
 }
 
 /**
+ * 将任意值解析为布尔（与 WorkflowListPage 真实执行对话框 parseBooleanDefault 语义一致）。
+ * @param raw 原始值（string/number/boolean）
+ * @returns 布尔结果；无法识别时返回 false
+ */
+function parseBooleanValue(raw: unknown): boolean {
+  if (typeof raw === 'boolean') return raw;
+  if (typeof raw === 'number') return raw === 1;
+  const s = String(raw ?? '').trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  if (['false', '0', 'no', 'off', ''].includes(s)) return false;
+  return false;
+}
+
+/**
  * 读取工作流 rawJson 中某节点字段的原始值。
  * @param nodeId 节点 ID
  * @param fieldName 字段名
@@ -356,8 +370,8 @@ watch(show, (val) => {
     for (const p of aliasParams.value) {
       if (!p.alias) continue;
       if (p.paramType === 'boolean') {
-        // defaultValue 为字符串：布尔参数按真值字符串判断
-        booleanValues.value[p.alias] = p.defaultValue === 'true' || p.defaultValue === '1';
+        // 默认值覆盖优先，否则回退 rawJson 原值，按真实执行语义解析布尔
+        booleanValues.value[p.alias] = parseBooleanValue(p.defaultValue ?? rawFieldValue(p.nodeId, p.fieldName));
       } else {
         // 默认值覆盖优先，否则取 rawJson 原值；null/undefined 回退为空字符串
         const d = p.defaultValue ?? rawFieldValue(p.nodeId, p.fieldName);
