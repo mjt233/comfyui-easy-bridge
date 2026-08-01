@@ -102,144 +102,169 @@
     </v-card>
 
     <v-card>
-      <v-card-title>
-        参数别名配置
-        <v-btn-toggle
-          v-model="viewMode"
-          variant="outlined"
-          density="compact"
-          color="primary"
-          class="ml-4"
-          mandatory
-        >
-          <v-btn value="chip" size="small">
-            字段
-          </v-btn>
-          <v-btn value="list" size="small">
-            列表
-          </v-btn>
-        </v-btn-toggle>
-      </v-card-title>
-      <v-card-text>
-        <p v-if="viewMode === 'chip'" class="text-body-2 text-grey mb-4">
-          下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
-        </p>
-        <p v-else class="text-body-2 text-grey mb-4">
-          下方按字段平铺列出所有可配置输入。点击行可配置别名和标签。
-        </p>
+      <v-tabs v-model="section" color="primary">
+        <v-tab value="config">
+          参数配置
+        </v-tab>
+        <v-tab value="canvas">
+          画布
+        </v-tab>
+      </v-tabs>
 
-        <template v-if="nodes.length > 0">
-          <v-table v-show="viewMode === 'chip'">
-            <thead>
-              <tr>
-                <th style="min-width: 100px">
-                  节点 ID
-                </th>
-                <th style="min-width: 140px">
-                  节点标题
-                </th>
-                <th>字段名</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(node, ni) in nodes" :key="ni">
-                <td style="min-width: 100px">
-                  {{ node.nodeId }}
-                </td>
-                <td style="min-width: 140px">
-                  {{ node.title }}
-                </td>
-                <td>
-                  <div class="d-flex flex-wrap ga-2 align-center">
-                    <v-chip
-                      v-for="(info, fi) in node.fields"
-                      :key="fi"
-                      :color="info.paramId ? 'primary' : undefined"
-                      :variant="info.paramId ? 'flat' : 'outlined'"
-                      size="small"
-                      @click="openDialog(node, info)"
-                    >
-                      <span v-if="info.paramId && info.label">{{ info.alias || info.name }}</span>
-                      <span v-else-if="info.paramId && !info.alias">{{ info.name }}</span>
-                      <span v-else>{{ info.name }}</span>
-                      <template #append>
-                        <span v-if="info.paramType !== 'text'" class="text-caption ml-1 opacity-70">{{ info.paramType }}</span>
-                        <span v-if="info.paramId" class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias || '仅默认值' }}</span>
-                      </template>
-                    </v-chip>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
+      <v-window v-model="section">
+        <v-window-item value="canvas">
+          <v-card-text>
+            <WorkflowCanvas
+              v-if="workflow"
+              ref="canvasRef"
+              :raw-json="workflow.rawJson"
+              :height="'560px'"
+              @node-click="handleCanvasNodeClick"
+            />
+          </v-card-text>
+        </v-window-item>
 
-          <v-table v-show="viewMode === 'list'">
-            <thead>
-              <tr>
-                <th style="min-width: 100px">
-                  节点 ID
-                </th>
-                <th style="min-width: 140px">
-                  节点标题
-                </th>
-                <th style="min-width: 120px">
-                  字段名
-                </th>
-                <th>默认值</th>
-                <th>类型</th>
-                <th style="min-width: 120px">
-                  别名
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="(item, i) in flatFields"
-                :key="i"
-                style="cursor: pointer"
-                @click="openDialog(getNode(item.nodeId)!, item)"
-              >
-                <td>{{ item.nodeId }}</td>
-                <td>{{ item.title }}</td>
-                <td>{{ item.name }}</td>
-                <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                  {{ item.value }}
-                </td>
-                <td>
-                  <v-chip
-                    v-if="item.paramType !== 'text'"
-                    size="x-small"
-                    color="primary"
-                    variant="tonal"
+        <v-window-item value="config">
+          <v-card-title>
+            参数别名配置
+            <v-btn-toggle
+              v-model="viewMode"
+              variant="outlined"
+              density="compact"
+              color="primary"
+              class="ml-4"
+              mandatory
+            >
+              <v-btn value="chip" size="small">
+                字段
+              </v-btn>
+              <v-btn value="list" size="small">
+                列表
+              </v-btn>
+            </v-btn-toggle>
+          </v-card-title>
+          <v-card-text>
+            <p v-if="viewMode === 'chip'" class="text-body-2 text-grey mb-4">
+              下方列出了工作流 JSON 中所有节点的可配置输入字段。点击字段名标签配置别名和标签。
+            </p>
+            <p v-else class="text-body-2 text-grey mb-4">
+              下方按字段平铺列出所有可配置输入。点击行可配置别名和标签。
+            </p>
+
+            <template v-if="nodes.length > 0">
+              <v-table v-show="viewMode === 'chip'">
+                <thead>
+                  <tr>
+                    <th style="min-width: 100px">
+                      节点 ID
+                    </th>
+                    <th style="min-width: 140px">
+                      节点标题
+                    </th>
+                    <th>字段名</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(node, ni) in nodes" :key="ni">
+                    <td style="min-width: 100px">
+                      {{ node.nodeId }}
+                    </td>
+                    <td style="min-width: 140px">
+                      {{ node.title }}
+                    </td>
+                    <td>
+                      <div class="d-flex flex-wrap ga-2 align-center">
+                        <v-chip
+                          v-for="(info, fi) in node.fields"
+                          :key="fi"
+                          :color="info.paramId ? 'primary' : undefined"
+                          :variant="info.paramId ? 'flat' : 'outlined'"
+                          size="small"
+                          @click="openDialog(node, info)"
+                        >
+                          <span v-if="info.paramId && info.label">{{ info.alias || info.name }}</span>
+                          <span v-else-if="info.paramId && !info.alias">{{ info.name }}</span>
+                          <span v-else>{{ info.name }}</span>
+                          <template #append>
+                            <span v-if="info.paramType !== 'text'" class="text-caption ml-1 opacity-70">{{ info.paramType }}</span>
+                            <span v-if="info.paramId" class="text-caption ml-1" :class="info.label ? 'opacity-60' : 'opacity-80'">{{ info.label || info.alias || '仅默认值' }}</span>
+                          </template>
+                        </v-chip>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+
+              <v-table v-show="viewMode === 'list'">
+                <thead>
+                  <tr>
+                    <th style="min-width: 100px">
+                      节点 ID
+                    </th>
+                    <th style="min-width: 140px">
+                      节点标题
+                    </th>
+                    <th style="min-width: 120px">
+                      字段名
+                    </th>
+                    <th>默认值</th>
+                    <th>类型</th>
+                    <th style="min-width: 120px">
+                      别名
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(item, i) in flatFields"
+                    :key="i"
+                    style="cursor: pointer"
+                    @click="openDialog(getNode(item.nodeId)!, item)"
                   >
-                    {{ item.paramType }}
-                  </v-chip>
-                  <span v-else class="text-caption text-grey">text</span>
-                </td>
-                <td>
-                  <v-chip
-                    v-if="item.paramId"
-                    size="small"
-                    color="primary"
-                    variant="flat"
-                  >
-                    {{ item.alias || '仅默认值' }}
-                    <template v-if="item.paramId" #append>
-                      <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
-                        {{ item.label || item.alias || '仅默认值' }}
-                      </span>
-                    </template>
-                  </v-chip>
-                </td>
-              </tr>
-            </tbody>
-          </v-table>
-        </template>
+                    <td>{{ item.nodeId }}</td>
+                    <td>{{ item.title }}</td>
+                    <td>{{ item.name }}</td>
+                    <td class="text-caption text-grey" style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                      {{ item.value }}
+                    </td>
+                    <td>
+                      <v-chip
+                        v-if="item.paramType !== 'text'"
+                        size="x-small"
+                        color="primary"
+                        variant="tonal"
+                      >
+                        {{ item.paramType }}
+                      </v-chip>
+                      <span v-else class="text-caption text-grey">text</span>
+                    </td>
+                    <td>
+                      <v-chip
+                        v-if="item.paramId"
+                        size="small"
+                        color="primary"
+                        variant="flat"
+                      >
+                        {{ item.alias || '仅默认值' }}
+                        <template v-if="item.paramId" #append>
+                          <span class="text-caption ml-1" :class="item.label ? 'opacity-60' : 'opacity-80'">
+                            {{ item.label || item.alias || '仅默认值' }}
+                          </span>
+                        </template>
+                      </v-chip>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </template>
 
-        <p v-else class="text-grey text-center py-4">
-          无法解析工作流 JSON，请检查原始数据
-        </p>
-      </v-card-text>
+            <p v-else class="text-grey text-center py-4">
+              无法解析工作流 JSON，请检查原始数据
+            </p>
+          </v-card-text>
+        </v-window-item>
+      </v-window>
     </v-card>
 
     <v-dialog v-model="dialog.show" max-width="500">
@@ -320,10 +345,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
+import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 
 /**
  * 节点字段展示信息
@@ -374,6 +400,18 @@ const deletingOrphanId = ref<number | null>(null);
 const clearingOrphans = ref(false);
 
 const viewMode = ref<'chip' | 'list'>('chip');
+
+/** 当前展示的 Tab（画布 / 参数配置） */
+const section = ref<'canvas' | 'config'>('config');
+/** 画布组件引用（用于切换 Tab 后重新适配视口） */
+const canvasRef = ref<InstanceType<typeof WorkflowCanvas> | null>(null);
+
+// 切换到画布 Tab 时重新适配视口，避免隐藏状态下 fitView 尺寸为 0
+watch(section, (value) => {
+  if (value === 'canvas') {
+    nextTick(() => canvasRef.value?.fitCanvasView());
+  }
+});
 
 /**
  * 将节点字段平铺为列表视图数据
@@ -570,6 +608,21 @@ function openDialog(node: NodeField, info: FieldInfo) {
     paramType: info.paramType || 'text',
     saving: false,
   };
+}
+
+/**
+ * 画布节点点击 → 打开该节点可配置字段的编辑对话框
+ * @param nodeId 节点 ID
+ */
+function handleCanvasNodeClick(nodeId: string) {
+  const node = nodes.value.find(n => n.nodeId === nodeId);
+  if (!node || node.fields.length === 0) {
+    snackbar.value = { show: true, text: '该节点没有可配置字段', color: 'warning' };
+    return;
+  }
+  // 优先打开已配置过别名的字段，否则打开第一个可配置字段
+  const configured = node.fields.find(f => f.paramId != null);
+  openDialog(node, configured ?? node.fields[0]!);
 }
 
 /**

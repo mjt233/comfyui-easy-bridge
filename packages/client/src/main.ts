@@ -4,6 +4,9 @@ import * as components from 'vuetify/components';
 import * as directives from 'vuetify/directives';
 import '@mdi/font/css/materialdesignicons.css';
 import 'vuetify/styles';
+// vue-flow 全局样式（不可 scoped）
+import '@vue-flow/core/dist/style.css';
+import '@vue-flow/core/dist/theme-default.css';
 import App from './App.vue';
 import { router } from './router';
 
