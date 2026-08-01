@@ -12,6 +12,7 @@ import {
 } from '../services/executor.service';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
+import { getNodeInfoCached, generateBuildDts } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
@@ -24,8 +25,14 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
 
   return {
     /** 返回动态构建脚本 API 的 d.ts 文本（供 Monaco 注册类型提示） */
-    getBuildApiTypes(_req: Request, res: Response): void {
-      res.type('text/plain').send(BUILD_SCRIPT_API_DTS);
+    async getBuildApiTypes(_req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        // 有 object_info 时返回动态版（含节点类补全），否则降级为静态版
+        const nodeInfo = await getNodeInfoCached(db);
+        res.type('text/plain').send(nodeInfo ? generateBuildDts(nodeInfo) : BUILD_SCRIPT_API_DTS);
+      } catch (err) {
+        next(err);
+      }
     },
 
     list(_req: Request, res: Response): void {
