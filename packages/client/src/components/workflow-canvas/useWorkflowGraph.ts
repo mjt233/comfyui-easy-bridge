@@ -128,7 +128,7 @@ interface FlowEdge {
   target: string;
   /** 目标 Handle */
   targetHandle: string;
-  /** 边类型（smoothstep） */
+  /** 边类型（default = vue-flow 内置 BezierEdge 贝塞尔曲线） */
   type: string;
   /** 箭头 */
   markerEnd: EdgeMarkerType;
@@ -148,7 +148,7 @@ function createFlowEdge(edge: GraphEdge): FlowEdge {
     sourceHandle: edge.sourceHandle,
     target: edge.target,
     targetHandle: edge.targetHandle,
-    type: 'smoothstep',
+    type: 'default',
     markerEnd: MarkerType.ArrowClosed,
     style: { stroke: '#64748b', strokeWidth: 1.5 },
   };
