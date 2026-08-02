@@ -211,7 +211,12 @@
             <div class="d-flex align-center mb-2">
               <span class="text-subtitle-2">自定义字段</span>
               <v-spacer />
-              <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="addManualField">
+              <v-btn
+                size="small"
+                variant="tonal"
+                prepend-icon="mdi-plus"
+                @click="addManualField"
+              >
                 添加自定义字段
               </v-btn>
             </div>
@@ -269,7 +274,12 @@
                 hide-details
                 class="flex-grow-1"
               />
-              <v-btn icon="mdi-close" size="small" variant="text" @click="manualFields.splice(i, 1)" />
+              <v-btn
+                icon="mdi-close"
+                size="small"
+                variant="text"
+                @click="manualFields.splice(i, 1)"
+              />
             </div>
           </template>
         </v-card-text>
