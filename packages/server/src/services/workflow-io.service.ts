@@ -164,7 +164,7 @@ export class WorkflowIOService {
         // 生成唯一 ID：冲突时改名
         let newId = entry.id;
         if (this.workflowService.getById(newId)) {
-          newId = this.generateUniqueId(entry.id);
+          newId = this.generateUniqueId(entry.id, 'import');
           result.renamed.push({ old: entry.id, new: newId });
         }
 
@@ -220,16 +220,68 @@ export class WorkflowIOService {
   }
 
   /**
-   * 基于冲突 ID 生成唯一新 ID（追加 -import-<6位hex> 后缀）
-   * @param baseId 冲突的原始 ID
+   * 基于基础 ID 生成唯一新 ID（追加 -<kind>-<6位hex> 后缀，冲突时重试）
+   * @param baseId 基础 ID
+   * @param kind 后缀标识（如 import / copy）
    * @returns 唯一的新 ID
    */
-  private generateUniqueId(baseId: string): string {
+  private generateUniqueId(baseId: string, kind: string): string {
     let candidate = '';
     do {
       const suffix = randomBytes(3).toString('hex');
-      candidate = `${baseId}-import-${suffix}`;
+      candidate = `${baseId}-${kind}-${suffix}`;
     } while (this.workflowService.getById(candidate) != null);
     return candidate;
+  }
+
+  /**
+   * 复制工作流：生成唯一新 ID，克隆工作流本体（含动态构建脚本）、参数与附件（含磁盘文件）。
+   * 源工作流保持不变，复制品使用新的创建/更新时间戳。
+   * @param id 源工作流 ID
+   * @returns 复制后的新工作流行；源工作流不存在时返回 null
+   */
+  duplicate(id: string) {
+    const existing = this.workflowService.getById(id);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    // 生成唯一新 ID（-copy- 后缀，冲突时重试）
+    const newId = this.generateUniqueId(id, 'copy');
+
+    // ① 复制工作流本体：rawJson + 动态构建脚本与启用状态，名称追加 " (copy)"
+    this.db.insert(schema.workflows).values({
+      id: newId,
+      name: `${existing.name} (copy)`,
+      rawJson: existing.rawJson,
+      buildScript: existing.buildScript,
+      buildScriptEnabled: existing.buildScriptEnabled,
+      createdAt: now,
+      updatedAt: now,
+    }).run();
+
+    // ② 复制参数配置（含别名、标签、类型与默认值覆盖）
+    for (const p of this.workflowService.getParams(id)) {
+      this.db.insert(schema.workflowParams).values({
+        workflowId: newId,
+        nodeId: p.nodeId,
+        fieldName: p.fieldName,
+        alias: p.alias,
+        label: p.label,
+        paramType: p.paramType,
+        defaultValue: p.defaultValue,
+      }).run();
+    }
+
+    // ③ 复制附件：读取源磁盘文件，写入新记录与新的磁盘文件
+    for (const attachment of this.attachmentService.list(id)) {
+      this.attachmentService.create(newId, {
+        filename: attachment.filename,
+        buffer: this.attachmentService.readBuffer(attachment),
+        mimetype: attachment.mimetype,
+      });
+    }
+
+    // 回查并返回新工作流行
+    return this.workflowService.getById(newId)!;
   }
 }

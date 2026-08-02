@@ -117,7 +117,50 @@ describe('Workflow API', () => {
       .get('/api/workflows');
     expect(res.status).toBe(401);
   });
+  it('POST /api/workflows/:id/duplicate clones workflow with auth', async () => {
+    const loginRes = await supertest(app)
+      .post('/api/auth/login')
+      .send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
 
+    // 先创建源工作流
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'dup-src', name: '源', rawJson: '{"1":{"inputs":{}}}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/dup-src/duplicate')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(201);
+    expect(res.body.id).not.toBe('dup-src');
+    expect(res.body.name).toBe('源 (copy)');
+
+    // 复制出的工作流可通过 GET 查询
+    const getRes = await supertest(app)
+      .get(`/api/workflows/${res.body.id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.params).toHaveLength(0);
+  });
+
+  it('POST /api/workflows/:id/duplicate without auth returns 401', async () => {
+    const res = await supertest(app)
+      .post('/api/workflows/dup-src/duplicate');
+    expect(res.status).toBe(401);
+  });
+
+  it('POST /api/workflows/:id/duplicate with unknown id returns 404', async () => {
+    const loginRes = await supertest(app)
+      .post('/api/auth/login')
+      .send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const res = await supertest(app)
+      .post('/api/workflows/nonexistent/duplicate')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+  });
   it('GET /api/workflows/:id returns workflow with params', async () => {
     const loginRes = await supertest(app)
       .post('/api/auth/login')

@@ -26,6 +26,16 @@ export async function deleteWorkflow(id: string): Promise<void> {
 }
 
 /**
+ * 复制工作流：后端克隆本体、参数、动态构建脚本与附件，名称追加 " (copy)"
+ * @param id 源工作流 ID
+ * @returns 复制后的新工作流
+ */
+export async function duplicateWorkflow(id: string): Promise<Workflow> {
+  const res = await client.post<Workflow>(`/workflows/${id}/duplicate`);
+  return res.data;
+}
+
+/**
  * 新增工作流参数
  * @param workflowId 工作流 ID
  * @param data 参数数据（alias 可选）

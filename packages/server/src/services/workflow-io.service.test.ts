@@ -161,4 +161,45 @@ describe('WorkflowIOService', () => {
     };
     expect(manifest.workflows).toHaveLength(0);
   });
+
+  it('duplicate clones workflow, params, build script and attachments', () => {
+    const env = createEnv();
+    const { id, attachment } = seedWorkflow(env, 'src');
+    // 附加动态构建脚本
+    env.workflowService.updateBuildScript(id, { script: 'export default {}', enabled: true });
+
+    const copy = env.ioService.duplicate(id);
+    expect(copy).not.toBeNull();
+    const newId = copy!.id;
+    // 新 ID 唯一，与源不同
+    expect(newId).not.toBe(id);
+    // 名称追加 (copy)，rawJson / 构建脚本 / 启用状态一致
+    expect(copy!.name).toBe('WF-src (copy)');
+    expect(copy!.rawJson).toBe('{"1":{"inputs":{}}}');
+    expect(copy!.buildScript).toBe('export default {}');
+    expect(copy!.buildScriptEnabled).toBe(1);
+
+    // 参数已复制
+    const params = env.workflowService.getParams(newId);
+    expect(params).toHaveLength(1);
+    expect(params[0].alias).toBe('prompt');
+    expect(params[0].label).toBe('提示词');
+    expect(params[0].paramType).toBe('text');
+
+    // 附件已复制（文件名与内容一致，storedName 不同）
+    const attachments = env.attachmentService.list(newId);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].filename).toBe('note.txt');
+    expect(attachments[0].storedName).not.toBe(attachment.storedName);
+    expect(env.attachmentService.readBuffer(attachments[0]).toString()).toBe(`content-of-${id}`);
+
+    // 源工作流不受影响
+    expect(env.workflowService.getById(id)).toBeDefined();
+    expect(env.attachmentService.list(id)).toHaveLength(1);
+  });
+
+  it('duplicate returns null for nonexistent workflow', () => {
+    const env = createEnv();
+    expect(env.ioService.duplicate('missing')).toBeNull();
+  });
 });

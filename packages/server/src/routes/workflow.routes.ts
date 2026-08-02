@@ -25,6 +25,7 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   router.get('/:id', auth, controller.getById);
   router.put('/:id', auth, controller.update);
   router.delete('/:id', auth, controller.delete);
+  router.post('/:id/duplicate', auth, controller.duplicate);
   router.post('/:id/params', auth, controller.addParam);
   router.put('/:id/params/:paramId', auth, controller.updateParam);
   router.delete('/:id/params/:paramId', auth, controller.deleteParam);

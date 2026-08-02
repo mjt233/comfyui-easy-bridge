@@ -193,6 +193,22 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       res.status(204).send();
     },
 
+    /** 复制工作流：克隆本体、参数、动态构建脚本与附件，名称追加 " (copy)" */
+    duplicate(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      const wf = workflowIOService.duplicate(id);
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      res.status(201).json(wf);
+    },
+
     addParam(req: Request, res: Response): void {
       const id = req.params.id as string;
       const existing = workflowService.getById(id);

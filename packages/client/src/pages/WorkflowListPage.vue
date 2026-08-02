@@ -122,6 +122,15 @@
             variant="text"
             size="small"
             class="mr-2"
+            @click.stop="handleDuplicate(wf.id)"
+          >
+            <v-icon>mdi-content-copy</v-icon>
+          </v-btn>
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            class="mr-2"
             @click.stop="handleApiDocs(wf.id, wf.name)"
           >
             <v-icon>mdi-code-tags</v-icon>
@@ -314,6 +323,7 @@ import {
   executeWorkflow,
   exportWorkflows,
   importWorkflows,
+  duplicateWorkflow,
 } from '@/api/workflows';
 import type { Workflow, WorkflowParam } from '@/types';
 import { authEnabled } from '@/api/auth-status';
@@ -543,6 +553,20 @@ async function load() {
 function handleDelete(id: string) {
   deleteTarget.value = id;
   deleteDialog.value = true;
+}
+
+/**
+ * 复制工作流：调用后端克隆接口后刷新列表
+ * @param id 工作流 ID
+ */
+async function handleDuplicate(id: string) {
+  try {
+    await duplicateWorkflow(id);
+    snackbar.value = { show: true, text: '已复制', color: 'success' };
+    await load();
+  } catch {
+    snackbar.value = { show: true, text: '复制失败', color: 'error' };
+  }
 }
 
 async function confirmDelete() {
