@@ -21,6 +21,29 @@
         <div><strong>ID:</strong> {{ workflow?.id }}</div>
         <div><strong>名称:</strong> {{ workflow?.name }}</div>
         <div><strong>创建时间:</strong> {{ workflow?.createdAt }}</div>
+
+        <!-- 备注说明：有内容时提供展开/收起，渲染 Markdown -->
+        <template v-if="workflow?.description">
+          <v-divider class="my-2" />
+          <div class="d-flex align-center">
+            <span class="text-subtitle-2">备注说明</span>
+            <v-spacer />
+            <v-btn
+              size="small"
+              variant="text"
+              color="primary"
+              :prepend-icon="showDescription ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+              @click="showDescription = !showDescription"
+            >
+              {{ showDescription ? '收起说明' : '展开说明' }}
+            </v-btn>
+          </div>
+          <v-expand-transition>
+            <div v-show="showDescription" class="mt-2">
+              <MarkdownView :source="workflow.description" />
+            </div>
+          </v-expand-transition>
+        </template>
       </v-card-text>
       <v-card-actions>
         <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">
@@ -365,6 +388,7 @@ import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
+import MarkdownView from '@/components/MarkdownView.vue';
 
 /**
  * 节点字段展示信息
@@ -415,6 +439,9 @@ const deletingOrphanId = ref<number | null>(null);
 const clearingOrphans = ref(false);
 
 const viewMode = ref<'chip' | 'list'>('chip');
+
+/** 备注说明是否展开 */
+const showDescription = ref(false);
 
 /** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本） */
 const section = ref<'canvas' | 'config' | 'build'>('config');

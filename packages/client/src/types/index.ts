@@ -2,6 +2,8 @@ export interface Workflow {
   id: string;
   name: string;
   rawJson: string;
+  /** 备注说明（Markdown 格式）；空串表示未填写 */
+  description: string;
   createdAt: string;
   updatedAt: string;
 }

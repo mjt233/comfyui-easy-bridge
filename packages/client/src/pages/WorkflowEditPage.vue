@@ -42,6 +42,16 @@
         />
 
         <v-textarea
+          v-model="form.description"
+          label="备注说明（Markdown）"
+          hint="支持 Markdown 语法，可在工作流详情页与执行对话框中展开渲染展示"
+          variant="outlined"
+          rows="4"
+          auto-grow
+          class="mb-3"
+        />
+
+        <v-textarea
           v-model="form.rawJson"
           label="ComfyUI API JSON"
           variant="outlined"
@@ -165,7 +175,7 @@ const route = useRoute();
 const router = useRouter();
 const isEdit = computed(() => !!route.params.id);
 
-const form = ref({ id: '', name: '', rawJson: '' });
+const form = ref({ id: '', name: '', rawJson: '', description: '' });
 const error = ref('');
 const saving = ref(false);
 const snackbar = ref({ show: false, text: '', color: 'success' });
@@ -210,6 +220,7 @@ async function handleSave() {
       const payload: Record<string, string> = {
         name: form.value.name,
         rawJson: form.value.rawJson,
+        description: form.value.description,
       };
       if (form.value.id !== route.params.id) {
         payload.id = form.value.id;
@@ -332,7 +343,7 @@ onMounted(async () => {
   if (isEdit.value) {
     try {
       const wf = await getWorkflow(route.params.id as string);
-      form.value = { id: wf.id, name: wf.name, rawJson: wf.rawJson };
+      form.value = { id: wf.id, name: wf.name, rawJson: wf.rawJson, description: wf.description ?? '' };
     } catch {
       error.value = '工作流不存在';
     }

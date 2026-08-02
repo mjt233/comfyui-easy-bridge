@@ -24,6 +24,7 @@ db.run(`
     raw_json TEXT NOT NULL,
     build_script TEXT NOT NULL DEFAULT '',
     build_script_enabled INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )

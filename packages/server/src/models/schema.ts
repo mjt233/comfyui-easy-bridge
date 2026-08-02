@@ -8,6 +8,8 @@ export const workflows = sqliteTable('workflows', {
   buildScript: text('build_script').notNull().default(''),
   /** 是否启用动态构建（0/1） */
   buildScriptEnabled: integer('build_script_enabled').notNull().default(0),
+  /** 备注说明（Markdown 格式）；空串表示未填写 */
+  description: text('description').notNull().default(''),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });

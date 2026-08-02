@@ -175,7 +175,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(400).json({ error: 'id, name, and rawJson are required', code: 'missing_parameter' });
         return;
       }
-      const wf = workflowService.create({ id, name, rawJson });
+      // description 可选（Markdown 文本），非字符串时忽略
+      const description = typeof req.body.description === 'string' ? req.body.description : '';
+      const wf = workflowService.create({ id, name, rawJson, description });
       res.status(201).json(wf);
     },
 

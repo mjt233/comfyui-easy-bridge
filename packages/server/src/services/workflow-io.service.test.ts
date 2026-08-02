@@ -17,7 +17,7 @@ process.env.DATA_DIR = tempDataDir;
 
 /** 建表 SQL（与 db.ts 保持一致） */
 const DDL = `
-  CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE workflow_params (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -120,6 +120,19 @@ describe('WorkflowIOService', () => {
     expect(attachments).toHaveLength(1);
     expect(attachments[0].filename).toBe('note.txt');
     expect(envB.attachmentService.readBuffer(attachments[0]).toString()).toBe(`content-of-${id}`);
+  });
+
+  it('export then import round-trips workflow description', async () => {
+    const envA = createEnv();
+    const { id } = seedWorkflow(envA, 'wf-desc');
+    // 更新备注说明（Markdown 文本）
+    envA.workflowService.update(id, { description: '# 备注\nMarkdown **说明**' });
+
+    const zipBuffer = await envA.ioService.exportWorkflows([id]);
+    const envB = createEnv();
+    const result = await envB.ioService.importWorkflows(zipBuffer);
+    expect(result.imported).toBe(1);
+    expect(envB.workflowService.getById(id)?.description).toBe('# 备注\nMarkdown **说明**');
   });
 
   it('import renames workflow when ID conflicts', async () => {

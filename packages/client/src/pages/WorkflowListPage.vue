@@ -146,6 +146,27 @@
       <v-card>
         <v-card-title>执行工作流</v-card-title>
         <v-card-text>
+          <!-- 备注说明：有内容时提供展开/收起，渲染 Markdown -->
+          <template v-if="executeDescription">
+            <div class="d-flex align-center mb-1">
+              <span class="text-subtitle-2">备注说明</span>
+              <v-spacer />
+              <v-btn
+                size="small"
+                variant="text"
+                color="primary"
+                :prepend-icon="showExecuteDescription ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                @click="showExecuteDescription = !showExecuteDescription"
+              >
+                {{ showExecuteDescription ? '收起说明' : '展开说明' }}
+              </v-btn>
+            </div>
+            <v-expand-transition>
+              <div v-show="showExecuteDescription" class="mb-3">
+                <MarkdownView :source="executeDescription" />
+              </div>
+            </v-expand-transition>
+          </template>
           <v-alert
             v-if="executeFields.length === 0 && !executeLoading"
             type="info"
@@ -338,6 +359,7 @@ import {
 import type { Workflow, WorkflowParam } from '@/types';
 import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
+import MarkdownView from '@/components/MarkdownView.vue';
 
 interface ExecuteField {
   alias: string;
@@ -463,6 +485,10 @@ const executeTarget = ref<string | null>(null);
 const executeLoading = ref(false);
 const submitting = ref(false);
 const executeFields = ref<ExecuteField[]>([]);
+/** 执行对话框中展示的工作流备注说明（Markdown 源文本） */
+const executeDescription = ref('');
+/** 执行对话框中备注说明是否展开 */
+const showExecuteDescription = ref(false);
 /** 执行表单值：boolean 为布尔，其余为字符串 */
 const executeForm = reactive<Record<string, string | boolean>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
@@ -602,6 +628,8 @@ async function handleExecute(id: string) {
   executeDialog.value = true;
   executeLoading.value = true;
   executeFields.value = [];
+  executeDescription.value = '';
+  showExecuteDescription.value = false;
   // 清空旧表单数据
   Object.keys(executeForm).forEach(k => delete executeForm[k]);
   Object.keys(executeFiles).forEach(k => delete executeFiles[k]);
@@ -612,6 +640,8 @@ async function handleExecute(id: string) {
   try {
     const detail = await getWorkflow(id);
     const workflow = JSON.parse(detail.rawJson);
+    // 填充备注说明（Markdown 源文本）
+    executeDescription.value = detail.description ?? '';
 
     const fields: ExecuteField[] = [];
     // 仅展示可调用的非空别名参数（仅默认值覆盖不可传参）

@@ -11,12 +11,12 @@ export async function getWorkflow(id: string): Promise<WorkflowDetail> {
   return res.data;
 }
 
-export async function createWorkflow(data: { id: string; name: string; rawJson: string }): Promise<Workflow> {
+export async function createWorkflow(data: { id: string; name: string; rawJson: string; description?: string }): Promise<Workflow> {
   const res = await client.post<Workflow>('/workflows', data);
   return res.data;
 }
 
-export async function updateWorkflow(id: string, data: Partial<{ id: string; name: string; rawJson: string }>): Promise<Workflow> {
+export async function updateWorkflow(id: string, data: Partial<{ id: string; name: string; rawJson: string; description: string }>): Promise<Workflow> {
   const res = await client.put<Workflow>(`/workflows/${id}`, data);
   return res.data;
 }

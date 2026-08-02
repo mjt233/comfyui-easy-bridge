@@ -29,6 +29,8 @@ interface ExportWorkflow {
   name: string;
   /** 原始 JSON 字符串 */
   rawJson: string;
+  /** 备注说明（Markdown） */
+  description: string;
   /** 创建时间 */
   createdAt: string;
   /** 更新时间 */
@@ -113,6 +115,7 @@ export class WorkflowIOService {
         id: wf.id,
         name: wf.name,
         rawJson: wf.rawJson,
+        description: wf.description ?? '',
         createdAt: wf.createdAt,
         updatedAt: wf.updatedAt,
         params: params.map((p) => ({
@@ -168,11 +171,12 @@ export class WorkflowIOService {
           result.renamed.push({ old: entry.id, new: newId });
         }
 
-        // 创建 workflow（保留原始时间戳）
+        // 创建 workflow（保留原始时间戳）；旧版导出无 description 时回退空串
         this.db.insert(schema.workflows).values({
           id: newId,
           name: entry.name,
           rawJson: entry.rawJson,
+          description: entry.description ?? '',
           createdAt: entry.createdAt ?? new Date().toISOString(),
           updatedAt: entry.updatedAt ?? new Date().toISOString(),
         }).run();
@@ -248,13 +252,14 @@ export class WorkflowIOService {
     // 生成唯一新 ID（-copy- 后缀，冲突时重试）
     const newId = this.generateUniqueId(id, 'copy');
 
-    // ① 复制工作流本体：rawJson + 动态构建脚本与启用状态，名称追加 " (copy)"
+    // ① 复制工作流本体：rawJson + 动态构建脚本与启用状态 + 备注说明，名称追加 " (copy)"
     this.db.insert(schema.workflows).values({
       id: newId,
       name: `${existing.name} (copy)`,
       rawJson: existing.rawJson,
       buildScript: existing.buildScript,
       buildScriptEnabled: existing.buildScriptEnabled,
+      description: existing.description ?? '',
       createdAt: now,
       updatedAt: now,
     }).run();

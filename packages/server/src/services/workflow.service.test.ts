@@ -12,7 +12,7 @@ describe('WorkflowService', () => {
     sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -149,6 +149,20 @@ describe('WorkflowService', () => {
     const wf = service.getById('test');
     expect(wf!.name).toBe('New Name');
     expect(wf!.rawJson).toBe('{"b":2}');
+  });
+
+  it('creates workflow with description and updates it', () => {
+    service.create({ id: 'desc-flow', name: 'Desc', rawJson: '{}', description: '## 说明\n正文' });
+    expect(service.getById('desc-flow')!.description).toBe('## 说明\n正文');
+
+    service.update('desc-flow', { description: '新说明' });
+    expect(service.getById('desc-flow')!.description).toBe('新说明');
+  });
+
+  it('keeps description when renaming workflow ID', () => {
+    service.create({ id: 'old-id', name: 'Old', rawJson: '{}', description: '保留说明' });
+    service.update('old-id', { id: 'new-id' });
+    expect(service.getById('new-id')!.description).toBe('保留说明');
   });
 
   it('updates ID along with name', () => {
