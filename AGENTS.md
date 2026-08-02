@@ -66,8 +66,11 @@ pnpm --filter server test:watch    # vitest watch 模式
 ## 数据库
 
 - SQLite 文件: `data/bridge.db` (已 gitignore)
-- 表在首次启动时通过 `CREATE TABLE IF NOT EXISTS` 自动创建 (见 `packages/server/src/models/db.ts`)
-- Drizzle schema 定义在 `schema.ts` (三表: `workflows`, `workflow_params`, `settings`)
+- 初始建表与后续 schema 变更统一走**版本化迁移**：`packages/server/src/models/migrations/`（引擎 `runner.ts`、注册表 `index.ts`、迁移 `vN-xxx.ts`）
+- 已应用迁移记录在 `schema_migrations` 表；每个迁移在独立事务中执行，失败自动回滚
+- 旧库启动时自动补齐缺失列（迁移 1 幂等兼容），无需人工干预
+- Drizzle schema 定义在 `schema.ts`（五表: `workflows`, `workflow_params`, `workflow_attachments`, `settings`, `task_logs`）
+- 新增 schema 变更：在 `migrations/` 新建 `vN-xxx.ts` 并在 `index.ts` 注册表中追加，同步更新设计文档
 - 测试使用 `:memory:` 数据库，不依赖磁盘文件
 - 可以通过 `DATA_DIR` 环境变量覆盖数据库路径
 
