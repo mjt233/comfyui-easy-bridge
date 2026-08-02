@@ -73,9 +73,31 @@ export interface Settings {
 }
 
 /**
+ * 运行时参数声明（脚本声明返回）
+ */
+export interface RuntimeParam {
+  /** 节点 ID */
+  nodeId: string;
+  /** 节点 inputs 字段名 */
+  fieldName: string;
+  /** 对外别名；null 表示不暴露为可传参字段 */
+  alias: string | null;
+  /** 展示标签 */
+  label: string | null;
+  /** 参数类型 text/boolean/number/image/video/audio */
+  paramType: string;
+  /** 默认值覆盖；null 表示使用 rawJson 原值 */
+  defaultValue: string | null;
+  /** 媒体参数：取 files[alias][fileIndex]，缺省 0 */
+  fileIndex?: number;
+}
+
+/**
  * 模拟构建结果
  */
 export interface SimulateResult {
   /** 构建并应用参数后的最终工作流 JSON 字符串 */
   json: string;
+  /** 脚本声明的有效参数配置 */
+  params: RuntimeParam[];
 }

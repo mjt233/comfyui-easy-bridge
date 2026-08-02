@@ -9,6 +9,7 @@ import {
   applyAliases,
   processMediaParams,
   resolveSubmittedAliasValues,
+  toRuntimeParams,
 } from '../services/executor.service';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
@@ -76,7 +77,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
     },
 
-    /** 模拟构建：脚本构建 + 应用已保存参数配置，返回最终 JSON 字符串 */
+    /** 模拟构建：脚本构建 + 按声明配置上传媒体 + 注入，返回最终 JSON 与参数配置 */
     async simulateBuild(req: Request, res: Response, next: NextFunction): Promise<void> {
       try {
         const id = req.params.id as string;
@@ -85,7 +86,31 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
           return;
         }
-        const body = req.body as { script?: unknown; params?: unknown };
+        // multipart 或 JSON：script/params 与上传文件
+        const isMultipart = req.is('multipart/form-data');
+        let body: { script?: unknown; params?: unknown };
+        const filesMeta: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]> = {};
+        if (isMultipart) {
+          // 与 execute 一致：params 字段为 JSON 序列化的别名值
+          body = {
+            script: req.body.script,
+            params: JSON.parse(req.body.params || '{}') as Record<string, unknown>,
+          };
+          const multerFiles = (req.files as Express.Multer.File[]) || [];
+          for (const f of multerFiles) {
+            if (!filesMeta[f.fieldname]) filesMeta[f.fieldname] = [];
+            filesMeta[f.fieldname].push({
+              buffer: f.buffer,
+              originalname: f.originalname,
+              mimetype: f.mimetype,
+              // size 供动态构建脚本 filesMeta 使用（FileMeta 要求）
+              size: f.size,
+            });
+          }
+        } else {
+          body = req.body as { script?: unknown; params?: unknown };
+        }
+
         if (typeof body.script !== 'string' || body.script.trim() === '') {
           res.status(400).json({ error: 'script is required', code: 'missing_parameter' });
           return;
@@ -94,16 +119,33 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           ? body.params as Record<string, unknown>
           : {};
 
-        // 脚本构建（作用于 rawJson 的深拷贝）
-        const buildResult = await runBuildScript(body.script, aliasParams, JSON.parse(wf.rawJson) as ComfyWorkflow);
+        const baseUrl = settingsService.get('comfyui_base_url');
+        if (!baseUrl) {
+          res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
+          return;
+        }
+        const baseParams = toRuntimeParams(workflowService.getParams(id));
+
+        // 脚本构建（声明工作流与参数配置）
+        const buildResult = await runBuildScript(
+          body.script,
+          aliasParams,
+          JSON.parse(wf.rawJson) as ComfyWorkflow,
+          baseParams,
+          filesMeta,
+        );
         if (!buildResult.ok) {
           res.status(400).json({ error: buildResult.error, code: buildResult.code });
           return;
         }
-        // 应用已保存参数配置（与真实执行顺序一致）
-        const workflowParams = workflowService.getParams(id);
-        const finalJson = applyAliases(JSON.stringify(buildResult.workflow), workflowParams, aliasParams);
-        res.json({ json: finalJson });
+        const effectiveParams = buildResult.params ?? baseParams;
+
+        // 按声明配置上传媒体（真实上传，模拟与真实执行一致）
+        const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, baseUrl);
+
+        // 注入并返回
+        const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);
+        res.json({ json: finalJson, params: effectiveParams });
       } catch (err) {
         next(err);
       }
@@ -244,7 +286,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 解析 multipart 或 JSON 请求（值可能是 string/number/boolean）
         const isMultipart = req.is('multipart/form-data');
         let aliasValues: Record<string, unknown>;
-        let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>;
+        let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]>;
 
         if (isMultipart) {
           aliasValues = JSON.parse(req.body.params || '{}') as Record<string, unknown>;
@@ -256,6 +298,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
               buffer: f.buffer,
               originalname: f.originalname,
               mimetype: f.mimetype,
+              // size 供动态构建脚本 filesMeta 使用（FileMeta 要求）
+              size: f.size,
             });
           }
         } else {
@@ -263,23 +307,26 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           uploadedFiles = {};
         }
 
-        // 处理媒体文件上传
-        const finalAliasValues = await processMediaParams(params, aliasValues, uploadedFiles, baseUrl);
+        // 静态参数转运行时形态（脚本声明的基底）
+        const baseParams = toRuntimeParams(params);
 
-        // 【动态构建】上传完成后、别名替换前执行脚本（仅当已保存且启用）
+        // 【动态构建】先运行脚本，声明工作流与参数配置（仅当已保存且启用）
         let buildSource = wf.rawJson;
+        let effectiveParams = baseParams;
         if (wf.buildScriptEnabled && wf.buildScript) {
           const buildResult = await runBuildScript(
             wf.buildScript,
-            finalAliasValues,
+            aliasValues,
             JSON.parse(wf.rawJson) as ComfyWorkflow,
+            baseParams,
+            uploadedFiles,
           );
           if (!buildResult.ok) {
             // 构建失败：记录 failed 任务，不提交 ComfyUI
             const failedTask = taskService.create({
               workflowId: wf.id,
               workflowName: wf.name,
-              aliasValues: JSON.stringify(finalAliasValues),
+              aliasValues: JSON.stringify(aliasValues),
               comfyuiUrl: `${baseUrl}/prompt`,
               comfyuiRequestBody: null,
               comfyuiResponse: null,
@@ -293,13 +340,17 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             return;
           }
           buildSource = JSON.stringify(buildResult.workflow);
+          effectiveParams = buildResult.params ?? baseParams;
         }
 
+        // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
+        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, baseUrl);
+
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
-        const modifiedJson = applyAliases(buildSource, params, finalAliasValues);
+        const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);
 
         // 任务日志记录转换后、实际提交到 ComfyUI 的别名参数
-        const submittedAliasValues = resolveSubmittedAliasValues(params, finalAliasValues);
+        const submittedAliasValues = resolveSubmittedAliasValues(effectiveParams, finalAliasValues);
         const submittedAliasValuesJson = JSON.stringify(submittedAliasValues);
 
         // 检查并发数
@@ -328,7 +379,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
 
-        const result = await executeWorkflow(buildSource, params, finalAliasValues, baseUrl);
+        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, baseUrl);
 
         const task = taskService.create({
           workflowId: wf.id,

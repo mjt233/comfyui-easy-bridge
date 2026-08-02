@@ -29,12 +29,36 @@
             />
           </div>
 
+          <!-- 媒体参数：文件选择（多文件，脚本按 files[alias] 读取） -->
+          <div v-if="mediaParams.length > 0" class="mb-3">
+            <p class="text-subtitle-2 mb-2">
+              媒体文件
+            </p>
+            <v-file-input
+              v-for="p in mediaParams"
+              :key="p.alias!"
+              v-model="mediaFiles[p.alias!]"
+              :label="paramLabel(p)"
+              :accept="acceptType(p.paramType)"
+              multiple
+              variant="outlined"
+              density="compact"
+              hide-details
+              class="mb-2"
+            />
+          </div>
+
           <v-divider class="my-3" />
 
           <div class="d-flex align-center mb-2">
             <span class="text-subtitle-2">自定义字段</span>
             <v-spacer />
-            <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="addFreeField">
+            <v-btn
+              size="small"
+              variant="tonal"
+              prepend-icon="mdi-plus"
+              @click="addFreeField"
+            >
               添加自定义字段
             </v-btn>
           </div>
@@ -53,21 +77,40 @@
             />
             <v-select
               v-model="f.type"
-              :items="['text', 'number', 'boolean']"
+              :items="['text', 'number', 'boolean', 'image', 'video', 'audio']"
               label="类型"
               density="compact"
               variant="outlined"
               hide-details
               style="max-width: 130px"
             />
+            <!-- 媒体类型：单文件选择；其余：文本输入 -->
+            <v-file-input
+              v-if="isMediaType(f.type)"
+              v-model="f.file"
+              :label="'选择文件'"
+              density="compact"
+              variant="outlined"
+              hide-details
+              :show-size="false"
+              :accept="acceptType(f.type)"
+              class="flex-grow-1"
+            />
             <v-text-field
+              v-else
               v-model="f.value"
               label="值"
               density="compact"
               variant="outlined"
               hide-details
+              class="flex-grow-1"
             />
-            <v-btn icon="mdi-close" size="small" variant="text" @click="freeFields.splice(i, 1)" />
+            <v-btn
+              icon="mdi-close"
+              size="small"
+              variant="text"
+              @click="freeFields.splice(i, 1)"
+            />
           </div>
         </template>
 
@@ -85,9 +128,15 @@
 
           <template v-else>
             <v-tabs v-model="resultTab" color="primary">
-              <v-tab value="table">节点与参数表</v-tab>
-              <v-tab value="canvas">画布</v-tab>
-              <v-tab value="json">JSON</v-tab>
+              <v-tab value="table">
+                节点与参数表
+              </v-tab>
+              <v-tab value="canvas">
+                画布
+              </v-tab>
+              <v-tab value="json">
+                JSON
+              </v-tab>
             </v-tabs>
 
             <v-window v-model="resultTab" class="mt-3">
@@ -196,9 +245,21 @@ const builtJson = ref('');
 /** 结果视图 tab */
 const resultTab = ref('table');
 
-/** 可传参的别名参数（alias 非空） */
+/** 可传参的别名参数（alias 非空；媒体类型由下方文件选择器单独处理） */
 const aliasParams = computed<WorkflowParam[]>(() =>
-  props.workflow.params.filter((p) => p.alias != null && p.alias !== ''),
+  props.workflow.params.filter(
+    (p) =>
+      p.alias != null &&
+      p.alias !== '' &&
+      !['image', 'video', 'audio'].includes(p.paramType),
+  ),
+);
+
+/** 媒体类型且带别名的参数（用于文件选择） */
+const mediaParams = computed<WorkflowParam[]>(() =>
+  props.workflow.params.filter(
+    (p) => p.alias != null && p.alias !== '' && ['image', 'video', 'audio'].includes(p.paramType),
+  ),
 );
 
 /** 文本/数字参数值（key 为别名） */
@@ -207,16 +268,21 @@ const stringValues = ref<Record<string, string>>({});
 /** 布尔参数值（key 为别名） */
 const booleanValues = ref<Record<string, boolean>>({});
 
+/** 媒体参数文件（key 为别名，支持多文件） */
+const mediaFiles = ref<Record<string, File[]>>({});
+
 /**
  * 用户自定义的自由字段行
  */
 interface FreeField {
   /** 字段名 */
   key: string;
-  /** 字段类型 text/number/boolean */
+  /** 字段类型 text/number/boolean/image/video/audio */
   type: string;
-  /** 字段值（字符串输入） */
+  /** 字段值（字符串输入，媒体类型不使用） */
   value: string;
+  /** 媒体类型所选文件（单文件） */
+  file: File | null;
 }
 const freeFields = ref<FreeField[]>([]);
 
@@ -225,9 +291,31 @@ function paramLabel(p: WorkflowParam): string {
   return p.label ? `${p.alias}（${p.label}）` : (p.alias ?? '');
 }
 
+/**
+ * 媒体文件 accept 类型
+ * @param paramType 参数类型
+ */
+function acceptType(paramType: string): string {
+  switch (paramType) {
+    case 'image': return 'image/*';
+    case 'video': return 'video/*';
+    case 'audio': return 'audio/*';
+    default: return '*/*';
+  }
+}
+
+/**
+ * 判断类型是否为媒体类型（image/video/audio）
+ * @param type 字段类型
+ * @returns 是否为媒体类型
+ */
+function isMediaType(type: string): boolean {
+  return ['image', 'video', 'audio'].includes(type);
+}
+
 /** 添加一行自定义字段 */
 function addFreeField(): void {
-  freeFields.value.push({ key: '', type: 'text', value: '' });
+  freeFields.value.push({ key: '', type: 'text', value: '', file: null });
 }
 
 /** 关闭对话框并复位 */
@@ -254,7 +342,7 @@ function buildParams(): Record<string, unknown> {
       result[p.alias] = stringValues.value[p.alias] ?? '';
     }
   }
-  // 自定义自由字段：同样按类型转换
+  // 自定义自由字段：按类型转换（媒体类型由文件映射承载，不并入参数）
   for (const f of freeFields.value) {
     const key = f.key.trim();
     if (!key) continue;
@@ -263,11 +351,36 @@ function buildParams(): Record<string, unknown> {
       result[key] = ['true', '1', 'yes', 'on'].includes(s);
     } else if (f.type === 'number') {
       result[key] = f.value === '' ? '' : Number(f.value);
-    } else {
+    } else if (!isMediaType(f.type)) {
       result[key] = f.value;
     }
   }
   return result;
+}
+
+/**
+ * 组装媒体文件：静态媒体参数取该别名下全部选中文件；媒体自由字段包成单元素数组
+ * @returns 按别名/字段名分组的文件数组映射；无文件时返回 undefined
+ */
+function buildFiles(): Record<string, File[]> | undefined {
+  const files: Record<string, File[]> = {};
+  // 静态媒体参数：每别名保留全部选中文件（同别名多文件 → N 个 LoadImage 节点）
+  for (const p of mediaParams.value) {
+    if (!p.alias) continue;
+    const arr = mediaFiles.value[p.alias];
+    if (arr && arr.length > 0) {
+      files[p.alias] = arr;
+    }
+  }
+  // 媒体自由字段：key 为字段名，单文件包成数组
+  for (const f of freeFields.value) {
+    const key = f.key.trim();
+    if (!key || !isMediaType(f.type)) continue;
+    if (f.file) {
+      files[key] = [f.file];
+    }
+  }
+  return Object.keys(files).length > 0 ? files : undefined;
 }
 
 /**
@@ -290,10 +403,13 @@ async function runSimulate(): Promise<void> {
   simulating.value = true;
   errorText.value = '';
   try {
-    const res = await simulateBuild(props.workflow.id, {
-      script: props.script,
-      params: buildParams(),
-    });
+    // 媒体文件按别名分组；无文件时不传（走 JSON 请求）
+    const files = buildFiles();
+    const res = await simulateBuild(
+      props.workflow.id,
+      { script: props.script, params: buildParams() },
+      files,
+    );
     builtJson.value = res.json;
     step.value = 2;
   } catch (err) {
@@ -379,10 +495,24 @@ watch(show, (val) => {
       }
     }
     freeFields.value = [];
+    mediaFiles.value = {};
     step.value = 1;
     errorText.value = '';
     builtJson.value = '';
     resultTab.value = 'table';
   }
 });
+
+// 自定义字段类型切换：离开媒体类型时清除已选文件，避免残留脏文件
+watch(
+  freeFields,
+  (fields) => {
+    for (const f of fields) {
+      if (!isMediaType(f.type) && f.file) {
+        f.file = null;
+      }
+    }
+  },
+  { deep: true },
+);
 </script>

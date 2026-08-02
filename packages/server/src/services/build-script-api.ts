@@ -4,6 +4,9 @@
  * 其行为必须与本文件导出的类型声明保持一致，由 build.service.test.ts 锁定。
  */
 
+// FileMeta 仅出现在下方 d.ts 模板字符串内（非真实 TS 类型位置），导入会触发 noUnusedLocals（TS6196），故只导入 RuntimeParam
+import type { RuntimeParam } from './param.types';
+
 /** ComfyUI API 工作流节点 */
 export interface ComfyNode {
   inputs: Record<string, unknown>;
@@ -13,6 +16,12 @@ export interface ComfyNode {
 
 /** ComfyUI API 工作流（节点 ID → 节点） */
 export type ComfyWorkflow = Record<string, ComfyNode>;
+
+/** 脚本返回：工作流 + 完整参数配置 */
+export interface BuildResult {
+  workflow: ComfyWorkflow;
+  params: RuntimeParam[];
+}
 
 /** d.ts 头部：节点与工作流基础声明 */
 export const BUILD_SCRIPT_DTS_HEADER = `/** ComfyUI API 工作流节点 */
@@ -40,6 +49,10 @@ declare interface BuildContext {
   workflow: ComfyWorkflow;
   /** 用户提交的参数（别名字段 + 自由添加字段） */
   params: Record<string, unknown>;
+  /** 上传文件元数据（按别名）；脚本据此判断文件数量 */
+  files: Record<string, FileMeta[]>;
+  /** DB 静态参数配置副本（可作为声明返回的起点） */
+  baseParams: RuntimeParam[];
   /** 新增节点；节点 ID 已存在时抛错 */
   ${addNodeSig}
   /** 删除节点；自动清理指向它的连线 */
@@ -62,6 +75,41 @@ declare interface BuildContext {
 `;
 }
 
+/** RuntimeParam 与 FileMeta 的 d.ts 声明（前端 Monaco 注册） */
+export const RUNTIME_PARAM_DTS = `/** 运行时参数声明（当次执行有效） */
+declare interface RuntimeParam {
+  /** 节点 ID */
+  nodeId: string;
+  /** 节点 inputs 字段名 */
+  fieldName: string;
+  /** 对外别名；null 表示不暴露为可传参字段 */
+  alias: string | null;
+  /** 展示标签 */
+  label: string | null;
+  /** 参数类型 text/boolean/number/image/video/audio */
+  paramType: string;
+  /** 默认值覆盖；null 表示使用 rawJson 原值 */
+  defaultValue: string | null;
+  /** 媒体参数：取 files[alias][fileIndex]，缺省 0 */
+  fileIndex?: number;
+}
+
+/** 上传文件元数据（脚本构建阶段可见） */
+declare interface FileMeta {
+  originalname: string;
+  mimetype: string;
+  size: number;
+}
+`;
+
+/** BuildResult 的 d.ts 声明（脚本返回值） */
+export const BUILD_RESULT_DTS = `/** 脚本返回：工作流 + 完整参数配置 */
+declare interface BuildResult {
+  workflow: ComfyWorkflow;
+  params: RuntimeParam[];
+}
+`;
+
 /** 静态版 BuildContext 声明（classType: string） */
 const STATIC_BUILD_CONTEXT_DTS = buildBuildContextDts(
   'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
@@ -74,19 +122,23 @@ const STATIC_BUILD_CONTEXT_DTS = buildBuildContextDts(
  * 注：与旧版硬编码文本相比，去除了开头的多余换行，消费方均以子串断言，无影响。
  */
 export const BUILD_SCRIPT_API_DTS = `${BUILD_SCRIPT_DTS_HEADER}
+${RUNTIME_PARAM_DTS}
+${BUILD_RESULT_DTS}
 ${STATIC_BUILD_CONTEXT_DTS}`;
 
 /**
  * 编辑器"默认导出模板"片段：一键插入到脚本中。
  */
-export const DEFAULT_BUILD_SCRIPT_TEMPLATE = `export default async function build(ctx: BuildContext): Promise<ComfyWorkflow> {
-  const { workflow, params } = ctx;
-  // 在这里根据 params 动态调整工作流。
+export const DEFAULT_BUILD_SCRIPT_TEMPLATE = `export default async function build(ctx: BuildContext): Promise<BuildResult> {
+  const { workflow, params, files, baseParams } = ctx;
+  // 在这里根据 params / files 动态调整工作流与参数配置。
   // 示例：
-  // if (params.mode === 'upscale') {
-  //   ctx.addNode('9', 'UpscaleModelLoader', { model_name: '4x-UltraSharp.pth' });
-  //   ctx.connect('9', 0, '4', 'model');
+  // const count = (files.ref_images ?? []).length;
+  // for (let i = 0; i < count; i++) {
+  //   const nodeId = 'load_' + i;
+  //   ctx.addNode(nodeId, 'LoadImage', { image: '' });
+  //   baseParams.push({ nodeId, fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: i });
   // }
-  return workflow;
+  return { workflow, params: baseParams };
 }
 `;

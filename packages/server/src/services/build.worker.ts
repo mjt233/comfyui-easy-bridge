@@ -25,13 +25,17 @@ function cloneWorkflow(workflow) {
  * 创建构建上下文：深拷贝 workflow + 辅助函数。
  * @param {object} workflow 原始工作流
  * @param {object} params 用户提交参数
+ * @param {object} files 上传文件元数据（按别名分组）
+ * @param {Array} baseParams DB 静态参数配置副本（可作为声明返回的起点）
  * @returns {object} BuildContext
  */
-function createContext(workflow, params) {
+function createContext(workflow, params, files, baseParams) {
   const wf = cloneWorkflow(workflow);
   return {
     workflow: wf,
     params,
+    files,
+    baseParams,
     addNode(nodeId, classType, inputs) {
       if (Object.prototype.hasOwnProperty.call(wf, nodeId)) {
         throw new Error('addNode: node "' + nodeId + '" already exists');
@@ -85,7 +89,7 @@ function createContext(workflow, params) {
 /** 运行用户脚本并回传结果 */
 async function run() {
   try {
-    const { jsCode, params, workflow } = workerData;
+    const { jsCode, params, workflow, baseParams, filesMeta } = workerData;
     const tmpFile = path.join(
       os.tmpdir(),
       'comfy-build-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.cjs',
@@ -102,13 +106,17 @@ async function run() {
       parentPort.postMessage({ ok: false, error: '脚本必须通过 export default 导出一个构建函数' });
       return;
     }
-    const ctx = createContext(workflow, params);
+    const ctx = createContext(workflow, params, filesMeta, baseParams);
     const result = await buildFn(ctx);
-    if (!result || typeof result !== 'object' || Array.isArray(result)) {
-      parentPort.postMessage({ ok: false, error: '构建函数必须返回工作流对象' });
+    // 声明式返回：{ workflow, params }；workflow 必须对象，params 缺省时保持 undefined（由主线程回退 DB 参数）
+    const workflowResult = result && typeof result === 'object' && !Array.isArray(result) ? result.workflow : null;
+    if (!workflowResult || typeof workflowResult !== 'object' || Array.isArray(workflowResult)) {
+      parentPort.postMessage({ ok: false, error: '构建函数必须返回 { workflow, params }，且 workflow 必须是工作流对象' });
       return;
     }
-    parentPort.postMessage({ ok: true, workflow: result });
+    // params 必须是数组；脚本省略时返回 undefined，由主线程回退 baseParams（避免误丢全部静态参数）
+    const paramsResult = Array.isArray(result.params) ? result.params : undefined;
+    parentPort.postMessage({ ok: true, workflow: workflowResult, params: paramsResult });
   } catch (err) {
     // 使用完整 stack（首行已含 "Error: message"），避免消息重复
     const msg = (err && err.stack) ? err.stack : String(err);

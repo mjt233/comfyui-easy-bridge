@@ -184,15 +184,84 @@
               variant="outlined"
               density="compact"
               class="mb-2"
+              multiple
               :accept="acceptType(field.paramType)"
               @update:model-value="(v: File | File[] | null) => {
                 if (v) {
-                  executeFiles[field.alias] = Array.isArray(v) ? v[0] : v;
+                  executeFiles[field.alias] = Array.isArray(v) ? v : [v];
                 } else {
                   delete executeFiles[field.alias];
                 }
               }"
             />
+          </template>
+
+          <!-- 手动添加的自定义字段 -->
+          <template v-if="!executeLoading">
+            <v-divider class="my-2" />
+            <div class="d-flex align-center mb-2">
+              <span class="text-subtitle-2">自定义字段</span>
+              <v-spacer />
+              <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="addManualField">
+                添加自定义字段
+              </v-btn>
+            </div>
+            <div
+              v-for="(f, i) in manualFields"
+              :key="i"
+              class="d-flex align-center ga-2 mb-2"
+            >
+              <v-text-field
+                v-model="f.key"
+                label="字段名"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 170px"
+              />
+              <v-select
+                v-model="f.type"
+                :items="['text', 'number', 'boolean', 'image', 'video', 'audio']"
+                label="类型"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 120px"
+              />
+              <!-- 布尔类型：开关；媒体类型：单文件选择；其余：文本输入 -->
+              <v-switch
+                v-if="f.type === 'boolean'"
+                v-model="f.booleanValue"
+                label="值"
+                density="compact"
+                hide-details
+              />
+              <v-file-input
+                v-else-if="['image', 'video', 'audio'].includes(f.type)"
+                :accept="acceptType(f.type)"
+                density="compact"
+                variant="outlined"
+                hide-details
+                class="flex-grow-1"
+                @update:model-value="(v: File | File[] | null) => {
+                  if (v) {
+                    manualFiles[f.key] = Array.isArray(v) ? v : [v];
+                  } else {
+                    delete manualFiles[f.key];
+                  }
+                }"
+              />
+              <v-text-field
+                v-else
+                v-model="f.value"
+                label="值"
+                density="compact"
+                variant="outlined"
+                hide-details
+                class="flex-grow-1"
+              />
+              <v-btn icon="mdi-close" size="small" variant="text" @click="manualFields.splice(i, 1)" />
+            </div>
           </template>
         </v-card-text>
         <v-card-actions>
@@ -376,7 +445,34 @@ const submitting = ref(false);
 const executeFields = ref<ExecuteField[]>([]);
 /** 执行表单值：boolean 为布尔，其余为字符串 */
 const executeForm = reactive<Record<string, string | boolean>>({});
-const executeFiles = reactive<Record<string, File>>({});
+/** 已配置媒体参数的文件（key 为别名，支持多文件） */
+const executeFiles = reactive<Record<string, File[]>>({});
+
+/**
+ * 手动添加的自定义字段行
+ */
+interface ManualField {
+  /** 字段名 */
+  key: string;
+  /** 字段类型 text/number/boolean/image/video/audio */
+  type: string;
+  /** 文本/数字字段值 */
+  value: string;
+  /** 布尔字段值 */
+  booleanValue: boolean;
+}
+
+/** 手动添加的自定义字段列表 */
+const manualFields = ref<ManualField[]>([]);
+/** 手动添加的媒体文件（key 为字段名，媒体自由字段单文件以数组承载） */
+const manualFiles = ref<Record<string, File[]>>({});
+
+/**
+ * 添加一行手动自定义字段
+ */
+function addManualField(): void {
+  manualFields.value.push({ key: '', type: 'text', value: '', booleanValue: false });
+}
 
 /**
  * 是否为文本类参数（非媒体上传、非 boolean 开关）
@@ -475,6 +571,9 @@ async function handleExecute(id: string) {
   // 清空旧表单数据
   Object.keys(executeForm).forEach(k => delete executeForm[k]);
   Object.keys(executeFiles).forEach(k => delete executeFiles[k]);
+  // 清空手动添加的自定义字段
+  manualFields.value = [];
+  manualFiles.value = {};
 
   try {
     const detail = await getWorkflow(id);
@@ -522,7 +621,7 @@ async function confirmExecute() {
   if (!executeTarget.value) return;
   submitting.value = true;
   try {
-    const aliasValues: Record<string, string | boolean> = {};
+    const aliasValues: Record<string, string | number | boolean> = {};
     for (const field of executeFields.value) {
       // 媒体参数由 files 承载；表单中可能无对应文本值
       if (field.paramType === 'image' || field.paramType === 'video' || field.paramType === 'audio') {
@@ -535,8 +634,30 @@ async function confirmExecute() {
         aliasValues[field.alias] = String(val ?? '');
       }
     }
-    const files = Object.keys(executeFiles).length > 0 ? { ...executeFiles } : undefined;
-    const result = await executeWorkflow(executeTarget.value, aliasValues, files);
+    const files: Record<string, File[]> = {};
+    // 已配置媒体参数的文件（每个别名一个数组，支持多文件）
+    for (const [alias, fileList] of Object.entries(executeFiles)) {
+      files[alias] = fileList;
+    }
+    // 手动添加的自定义字段：非媒体并入 aliasValues（boolean/number 转换），媒体并入 files
+    for (const f of manualFields.value) {
+      const key = f.key.trim();
+      if (!key) continue;
+      if (f.type === 'boolean') {
+        aliasValues[key] = f.booleanValue;
+      } else if (f.type === 'number') {
+        aliasValues[key] = f.value === '' ? '' : Number(f.value);
+      } else if (f.type === 'image' || f.type === 'video' || f.type === 'audio') {
+        const fileList = manualFiles.value[key];
+        if (fileList && fileList.length > 0) {
+          files[key] = fileList;
+        }
+      } else {
+        aliasValues[key] = f.value;
+      }
+    }
+    const hasFiles = Object.keys(files).length > 0;
+    const result = await executeWorkflow(executeTarget.value, aliasValues, hasFiles ? files : undefined);
     snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
   } catch {

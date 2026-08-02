@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   BUILD_SCRIPT_API_DTS,
   BUILD_SCRIPT_DTS_HEADER,
+  BUILD_RESULT_DTS,
+  RUNTIME_PARAM_DTS,
   buildBuildContextDts,
   DEFAULT_BUILD_SCRIPT_TEMPLATE,
 } from './build-script-api';
@@ -26,9 +28,9 @@ describe('build-script-api', () => {
     }
   });
 
-  it('default template references BuildContext and ComfyWorkflow', () => {
+  it('default template references BuildContext and BuildResult', () => {
     expect(DEFAULT_BUILD_SCRIPT_TEMPLATE).toContain('BuildContext');
-    expect(DEFAULT_BUILD_SCRIPT_TEMPLATE).toContain('ComfyWorkflow');
+    expect(DEFAULT_BUILD_SCRIPT_TEMPLATE).toContain('BuildResult');
     expect(DEFAULT_BUILD_SCRIPT_TEMPLATE).toContain('export default async function build');
   });
 
@@ -42,11 +44,19 @@ describe('build-script-api', () => {
     expect(BUILD_SCRIPT_API_DTS).toContain(BUILD_SCRIPT_DTS_HEADER.trim());
     // 精确锁定拼装结构（唯一允许的差异是头部前导换行被去除）
     expect(BUILD_SCRIPT_API_DTS).toBe(
-      `${BUILD_SCRIPT_DTS_HEADER}\n${buildBuildContextDts(
+      `${BUILD_SCRIPT_DTS_HEADER}\n${RUNTIME_PARAM_DTS}\n${BUILD_RESULT_DTS}\n${buildBuildContextDts(
         'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
         'findNodesByClass(classType: string): string[];',
       )}`,
     );
+  });
+
+  it('includes RuntimeParam/FileMeta/BuildResult declarations and files/baseParams in BuildContext', () => {
+    expect(BUILD_SCRIPT_API_DTS).toContain('declare interface RuntimeParam');
+    expect(BUILD_SCRIPT_API_DTS).toContain('declare interface FileMeta');
+    expect(BUILD_SCRIPT_API_DTS).toContain('declare interface BuildResult');
+    expect(BUILD_SCRIPT_API_DTS).toContain('files: Record<string, FileMeta[]>;');
+    expect(BUILD_SCRIPT_API_DTS).toContain('baseParams: RuntimeParam[];');
   });
 
   it('buildBuildContextDts injects custom signatures', () => {

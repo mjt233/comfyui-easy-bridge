@@ -6,6 +6,7 @@ import {
   submitPrompt,
   COMFYUI_CLIENT_ID,
 } from './executor.service';
+import type { RuntimeParam } from './param.types';
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -89,6 +90,16 @@ describe('executor.service', () => {
       { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'img_desc', label: null, paramType: 'text', defaultValue: null },
     ];
     const result = applyAliases(sampleJson, params, {});
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('original prompt');
+  });
+
+  it('applyAliases skips injection when fileIndex is out of range for array value', () => {
+    // 数组别名值 + 越界 fileIndex → 跳过注入，保持节点原值，不写入空字符串
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'imgs', label: null, paramType: 'text', defaultValue: null, fileIndex: 5 },
+    ];
+    const result = applyAliases(sampleJson, params, { imgs: ['a.png', 'b.png'] });
     const parsed = JSON.parse(result);
     expect(parsed['30:19'].inputs.value).toBe('original prompt');
   });
@@ -259,6 +270,69 @@ describe('processMediaParams', () => {
     const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
     expect(mockFetch).not.toHaveBeenCalled();
     expect(result).toEqual({});
+  });
+
+  it('processMediaParams returns array for multi-file alias and applyAliases injects per fileIndex', async () => {
+    // 模拟 ComfyUI 原样返回上传时使用的文件名
+    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
+      const formData = options.body;
+      const file = formData.get('image') as File;
+      return {
+        ok: true,
+        json: async () => ({ name: file.name }),
+      };
+    });
+
+    // 两个参数同 alias 'ref_images'（fileIndex 0/1）→ 同别名多文件，processMediaParams 返回数组
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
+      { nodeId: 'load2', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 1 },
+    ];
+    const files = {
+      ref_images: [
+        { buffer: Buffer.from('a'), originalname: 'a.png', mimetype: 'image/png' },
+        { buffer: Buffer.from('b'), originalname: 'b.png', mimetype: 'image/png' },
+      ],
+    };
+
+    // 同别名多参数 → 上传全部文件，result[alias] 为按上传顺序的数组
+    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    expect(Array.isArray(uploaded.ref_images)).toBe(true);
+    const arr = uploaded.ref_images as string[];
+    expect(arr).toHaveLength(2);
+
+    // 同别名只上传一次（2 参数 × 2 文件 → 2 次上传，而非 4 次）
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    // applyAliases 按 fileIndex 注入不同文件名到对应节点（同别名多文件核心：两个节点不再共用同一文件）
+    const rawJson = JSON.stringify({
+      'load1': { inputs: { image: '' }, class_type: 'LoadImage' },
+      'load2': { inputs: { image: '' }, class_type: 'LoadImage' },
+    });
+    const injected = applyAliases(rawJson, params, uploaded);
+    const parsed = JSON.parse(injected) as Record<string, { inputs: { image: string } }>;
+    expect(parsed['load1'].inputs.image).toBe(arr[0]);
+    expect(parsed['load2'].inputs.image).toBe(arr[1]);
+  });
+
+  it('processMediaParams keeps string for single-file alias (backward compatible)', async () => {
+    // 模拟 ComfyUI 原样返回上传时使用的文件名
+    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
+      const formData = options.body;
+      const file = formData.get('image') as File;
+      return {
+        ok: true,
+        json: async () => ({ name: file.name }),
+      };
+    });
+
+    // 单参数 + 单文件 → 保持 string，兼容既有行为
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
+    ];
+    const files = { ref_images: [{ buffer: Buffer.from('a'), originalname: 'a.png', mimetype: 'image/png' }] };
+    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    expect(typeof uploaded.ref_images).toBe('string');
   });
 });
 

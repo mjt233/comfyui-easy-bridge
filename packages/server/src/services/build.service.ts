@@ -2,6 +2,7 @@ import { Worker } from 'worker_threads';
 import ts from 'typescript';
 import { BUILD_WORKER_SOURCE } from './build.worker';
 import type { ComfyWorkflow } from './build-script-api';
+import type { RuntimeParam, FileMeta } from './param.types';
 
 /** 构建脚本最大结果体积（字节） */
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
@@ -12,6 +13,8 @@ export interface BuildScriptResult {
   ok: boolean;
   /** 构建后的工作流对象（ok=true 时） */
   workflow?: ComfyWorkflow;
+  /** 脚本声明的参数配置（ok=true 时；脚本未返回时为 undefined，由调用方回退 DB 静态参数） */
+  params?: RuntimeParam[];
   /** 错误信息（ok=false 时） */
   error?: string;
   /** 错误码 */
@@ -25,6 +28,8 @@ export interface BuildScriptResult {
  * @param script 用户 TS 脚本源码
  * @param params 用户提交参数
  * @param workflow 原始工作流对象（将被深拷贝）
+ * @param baseParams DB 静态参数配置副本（脚本可据此声明返回）
+ * @param filesMeta 上传文件元数据（按别名分组，脚本据此判断文件数量）
  * @param timeoutMs 超时毫秒数，默认 5000
  * @returns 构建结果
  */
@@ -32,6 +37,8 @@ export function runBuildScript(
   script: string,
   params: Record<string, unknown>,
   workflow: ComfyWorkflow,
+  baseParams: RuntimeParam[],
+  filesMeta: Record<string, FileMeta[]>,
   timeoutMs = 5000,
 ): Promise<BuildScriptResult> {
   return new Promise<BuildScriptResult>((resolve) => {
@@ -75,7 +82,7 @@ export function runBuildScript(
     try {
       worker = new Worker(BUILD_WORKER_SOURCE, {
         eval: true,
-        workerData: { jsCode, params, workflow },
+        workerData: { jsCode, params, workflow, baseParams, filesMeta },
       });
     } catch (err) {
       resolve({
@@ -93,7 +100,7 @@ export function runBuildScript(
       resolve({ ok: false, code: 'build_script_timeout', error: 'Script execution timed out' });
     }, timeoutMs);
 
-    worker.on('message', (msg: { ok: boolean; workflow?: ComfyWorkflow; error?: string }) => {
+    worker.on('message', (msg: { ok: boolean; workflow?: ComfyWorkflow; params?: RuntimeParam[]; error?: string }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -111,7 +118,8 @@ export function runBuildScript(
         resolve({ ok: false, code: 'build_script_error', error: 'Build result is not serializable' });
         return;
       }
-      resolve({ ok: true, workflow: msg.workflow });
+      // params 可能为 undefined（脚本省略 params 时），由调用方回退 baseParams
+      resolve({ ok: true, workflow: msg.workflow, params: msg.params });
     });
 
     worker.on('error', (err) => {
