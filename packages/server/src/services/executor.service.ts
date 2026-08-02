@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { uploadFileToComfyUI } from './upload.service';
+import type { RuntimeParam } from './param.types';
 
 /**
  * 本服务连接 ComfyUI 时使用的稳定 client_id。
@@ -28,6 +29,23 @@ export interface WorkflowParam {
   paramType: string;
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: string | null;
+}
+
+/**
+ * 将 DB 静态配置行转换为运行时参数。
+ * @param baseParams DB 行列表
+ * @returns 运行时参数列表（fileIndex 默认 0）
+ */
+export function toRuntimeParams(baseParams: WorkflowParam[]): RuntimeParam[] {
+  return baseParams.map((p) => ({
+    nodeId: p.nodeId,
+    fieldName: p.fieldName,
+    alias: p.alias,
+    label: p.label,
+    paramType: p.paramType,
+    defaultValue: p.defaultValue,
+    fileIndex: 0,
+  }));
 }
 
 /** 执行工作流的结果 */
@@ -96,7 +114,7 @@ export function coerceParamValue(paramType: string, raw: unknown): unknown {
  */
 export function applyAliases(
   rawJson: string,
-  params: WorkflowParam[],
+  params: RuntimeParam[],
   aliasValues: Record<string, unknown>,
 ): string {
   const workflow = JSON.parse(rawJson);
@@ -136,7 +154,7 @@ export function applyAliases(
  * @returns 转换后的别名 → 值映射（用于任务日志）
  */
 export function resolveSubmittedAliasValues(
-  params: WorkflowParam[],
+  params: RuntimeParam[],
   aliasValues: Record<string, unknown>,
 ): Record<string, unknown> {
   const submitted: Record<string, unknown> = {};
@@ -241,7 +259,7 @@ export async function submitPrompt(
  * @returns 合并上传结果后的别名值
  */
 export async function processMediaParams(
-  params: WorkflowParam[],
+  params: RuntimeParam[],
   aliasValues: Record<string, unknown>,
   files: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>,
   comfyuiBaseUrl: string,
@@ -253,7 +271,8 @@ export async function processMediaParams(
     // 无别名的参数不参与对外媒体上传
     if (param.alias == null || param.alias === '') continue;
     const fileList = files[param.alias];
-    const file = fileList?.[0];
+    // fileIndex 支持同别名多文件（默认取第 0 个）
+    const file = fileList?.[param.fileIndex ?? 0];
     if (file) {
       const filename = await uploadFileToComfyUI(
         file,

@@ -6,6 +6,7 @@ import {
   submitPrompt,
   COMFYUI_CLIENT_ID,
 } from './executor.service';
+import type { RuntimeParam } from './param.types';
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -259,6 +260,35 @@ describe('processMediaParams', () => {
     const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
     expect(mockFetch).not.toHaveBeenCalled();
     expect(result).toEqual({});
+  });
+
+  it('processMediaParams supports fileIndex for same-alias multiple files', async () => {
+    // 模拟 ComfyUI 原样返回上传时使用的文件名
+    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
+      const formData = options.body;
+      const file = formData.get('image') as File;
+      return {
+        ok: true,
+        json: async () => ({ name: file.name }),
+      };
+    });
+
+    // 两个参数同 alias 'ref_images'，fileIndex 0/1 分别取第一个/第二个文件
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
+      { nodeId: 'load2', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 1 },
+    ];
+    const files = {
+      ref_images: [
+        { buffer: Buffer.from('a'), originalname: 'a.png', mimetype: 'image/png' },
+        { buffer: Buffer.from('b'), originalname: 'b.png', mimetype: 'image/png' },
+      ],
+    };
+
+    // 后写者覆盖，最终 ref_images 应为第二个文件（b 开头）的唯一文件名
+    const result = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    expect(result.ref_images).toBeTruthy();
+    expect(result.ref_images).toMatch(/^b_/);
   });
 });
 
