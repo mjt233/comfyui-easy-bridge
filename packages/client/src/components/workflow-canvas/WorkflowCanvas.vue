@@ -4,6 +4,7 @@ import { VueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/co
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { MiniMap } from '@vue-flow/minimap';
+import GroupNode from './GroupNode.vue';
 import WorkflowNode from './WorkflowNode.vue';
 import { useWorkflowGraph } from './useWorkflowGraph';
 
@@ -26,7 +27,7 @@ const emit = defineEmits<{
  * markRaw 标记组件，避免 vue-flow 把 nodeTypes 存入响应式 store 时
  * 将组件对象包成 reactive，从而触发 "Component was made a reactive object" 警告。
  */
-const nodeTypes = { comfy: markRaw(WorkflowNode) };
+const nodeTypes = { comfy: markRaw(WorkflowNode), group: markRaw(GroupNode) };
 
 /** 响应式 rawJson */
 const rawJsonRef = computed(() => props.rawJson);
