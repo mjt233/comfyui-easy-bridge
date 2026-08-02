@@ -79,7 +79,7 @@
             />
             <!-- 媒体类型：单文件选择；其余：文本输入 -->
             <v-file-input
-              v-else-if="isMediaType(f.type)"
+              v-if="isMediaType(f.type)"
               v-model="f.file"
               :label="'选择文件'"
               density="compact"
