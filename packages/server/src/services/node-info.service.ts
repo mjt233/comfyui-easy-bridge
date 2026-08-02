@@ -32,6 +32,54 @@ export interface NodeClassInfo {
 }
 
 /**
+ * 节点速查条目（前端节点速查表用）：输入按数组保序，便于表格渲染。
+ */
+export interface NodeReference {
+  /** 类名（class_type） */
+  name: string;
+  /** 展示名；缺省回退类名 */
+  display_name: string;
+  /** 分类；缺省 null */
+  category: string | null;
+  /** 必填输入（hidden 已剔除） */
+  required_inputs: Array<{ name: string; type: string; options?: string[] }>;
+  /** 可选输入 */
+  optional_inputs: Array<{ name: string; type: string; options?: string[] }>;
+  /** 输出类型列表 */
+  outputs: string[];
+  /** 输出名列表 */
+  output_names: string[];
+}
+
+/**
+ * 将节点类摘要转换为排序后的速查条目数组（按类名字母序）。
+ * 输入映射由 Record 转为保序数组，便于前端直接渲染。
+ * @param nodeInfo 节点类摘要
+ * @returns 节点速查条目数组
+ */
+export function toNodeReferenceList(nodeInfo: Record<string, NodeClassInfo>): NodeReference[] {
+  return Object.entries(nodeInfo)
+    .map(([name, info]): NodeReference => {
+      const toFieldArray = (map: Record<string, NodeFieldSpec>): Array<{ name: string; type: string; options?: string[] }> =>
+        Object.entries(map).map(([fieldName, spec]) => ({
+          name: fieldName,
+          type: spec.type,
+          ...(spec.options && spec.options.length > 0 ? { options: spec.options } : {}),
+        }));
+      return {
+        name,
+        display_name: info.display_name,
+        category: info.category,
+        required_inputs: toFieldArray(info.required_inputs),
+        optional_inputs: toFieldArray(info.optional_inputs),
+        outputs: info.outputs,
+        output_names: info.output_names,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
  * 可测试配置：测试可覆盖 fetchImpl 与 now。
  * 模式同 task.controller.ts 的 outputHistoryBackfillConfig。
  */

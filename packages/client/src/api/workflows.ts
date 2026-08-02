@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference } from '@/types';
 
 export async function listWorkflows(): Promise<Workflow[]> {
   const res = await client.get<Workflow[]>('/workflows');
@@ -115,6 +115,16 @@ export async function executeWorkflow(
 export async function getBuildApiTypes(): Promise<string> {
   const res = await client.get<string>('/workflows/build-api.d.ts');
   return res.data;
+}
+
+/**
+ * 拉取 ComfyUI 节点速查表（按类名字母序排序）
+ * ComfyUI 未配置/不可达时后端返回 503，由调用方展示错误
+ * @returns 节点速查条目数组
+ */
+export async function getNodeInfo(): Promise<ComfyNodeReference[]> {
+  const res = await client.get<{ nodes: ComfyNodeReference[] }>('/workflows/node-info');
+  return res.data.nodes;
 }
 
 /**

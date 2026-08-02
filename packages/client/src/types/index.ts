@@ -101,3 +101,35 @@ export interface SimulateResult {
   /** 脚本声明的有效参数配置 */
   params: RuntimeParam[];
 }
+
+/**
+ * 节点输入字段速查条目
+ */
+export interface ComfyNodeField {
+  /** 字段名 */
+  name: string;
+  /** ComfyUI 类型名：INT/FLOAT/STRING/COMBO/IMAGE/... */
+  type: string;
+  /** COMBO 可选值（如有） */
+  options?: string[];
+}
+
+/**
+ * ComfyUI 节点速查条目（构建脚本编辑器节点速查表用）
+ */
+export interface ComfyNodeReference {
+  /** 类名（class_type） */
+  name: string;
+  /** 展示名 */
+  display_name: string;
+  /** 分类 */
+  category: string | null;
+  /** 必填输入 */
+  required_inputs: ComfyNodeField[];
+  /** 可选输入 */
+  optional_inputs: ComfyNodeField[];
+  /** 输出类型列表 */
+  outputs: string[];
+  /** 输出名列表 */
+  output_names: string[];
+}

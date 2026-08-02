@@ -16,6 +16,14 @@
       <v-btn size="small" variant="tonal" @click="insertTemplate">
         插入模板
       </v-btn>
+      <v-btn
+        size="small"
+        variant="tonal"
+        prepend-icon="mdi-database-search"
+        @click="nodeRefOpen = true"
+      >
+        节点速查
+      </v-btn>
       <v-btn size="small" variant="tonal" @click="resetToSaved">
         重置
       </v-btn>
@@ -47,6 +55,9 @@
       :workflow="workflow"
       :script="editorValue"
     />
+
+    <!-- 节点速查对话框：选择节点后插入 addNode 片段到光标处 -->
+    <NodeReferenceDialog v-model="nodeRefOpen" @insert="insertAtCursor" />
   </div>
 </template>
 
@@ -57,6 +68,7 @@ import { getBuildApiTypes, saveBuildScript } from '@/api/workflows';
 import { monaco, registerBuildApiTypes } from './monaco';
 import { DEFAULT_BUILD_SCRIPT_TEMPLATE } from './buildScriptTemplate';
 import BuildSimulateDialog from './BuildSimulateDialog.vue';
+import NodeReferenceDialog from './NodeReferenceDialog.vue';
 
 /** 组件 props：完整工作流详情（含 params 与 buildScript） */
 const props = defineProps<{
@@ -82,6 +94,8 @@ const dirty = ref(false);
 const saving = ref(false);
 /** 模拟构建对话框开关 */
 const simulateOpen = ref(false);
+/** 节点速查对话框开关 */
+const nodeRefOpen = ref(false);
 
 // 脚本内容或启用开关任一与已保存状态不一致即为未保存
 watch([editorValue, enabled], ([val, en]) => {
@@ -107,6 +121,29 @@ function resetToSaved(): void {
   editor.setValue(savedScript.value);
   enabled.value = savedEnabled.value;
   dirty.value = false;
+}
+
+/**
+ * 将节点速查片段插入到光标处（当前行非空时先换行）。
+ * @param text 要插入的代码片段
+ */
+function insertAtCursor(text: string): void {
+  if (!editor) return;
+  const position = editor.getPosition();
+  if (!position) {
+    // 无光标信息时追加到末尾
+    editor.setValue(`${editor.getValue()}\n${text}\n`);
+    return;
+  }
+  const model = editor.getModel();
+  // 当前行非空时先换行，保证片段独占一行
+  const currentLine = model?.getLineContent(position.lineNumber) ?? '';
+  const prefix = currentLine.trim() === '' ? '' : '\n';
+  editor.executeEdits('node-reference-insert', [{
+    range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column),
+    text: `${prefix}${text}\n`,
+  }]);
+  editor.focus();
 }
 
 /** 保存脚本与启用状态 */

@@ -13,7 +13,7 @@ import {
 } from '../services/executor.service';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
-import { getNodeInfoCached, generateBuildDts } from '../services/node-info.service';
+import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
@@ -31,6 +31,24 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 有 object_info 时返回动态版（含节点类补全），否则降级为静态版
         const nodeInfo = await getNodeInfoCached(db);
         res.type('text/plain').send(nodeInfo ? generateBuildDts(nodeInfo) : BUILD_SCRIPT_API_DTS);
+      } catch (err) {
+        next(err);
+      }
+    },
+
+    /** 返回 ComfyUI 节点速查表（供构建脚本编辑器搜索节点类型） */
+    async getNodeReference(_req: Request, res: Response, next: NextFunction): Promise<void> {
+      try {
+        const nodeInfo = await getNodeInfoCached(db);
+        // ComfyUI 未配置/不可达时返回 503，前端据此提示
+        if (!nodeInfo) {
+          res.status(503).json({
+            error: 'ComfyUI 节点信息不可用：请确认已在设置中配置 ComfyUI 地址且服务可达',
+            code: 'comfyui_unreachable',
+          });
+          return;
+        }
+        res.json({ nodes: toNodeReferenceList(nodeInfo) });
       } catch (err) {
         next(err);
       }

@@ -10,6 +10,7 @@ import {
   generateBuildDts,
   getNodeInfoCached,
   fetchNodeInfo,
+  toNodeReferenceList,
   clearNodeInfoCache,
   nodeInfoServiceConfig,
 } from './node-info.service';
@@ -69,6 +70,37 @@ describe('summarizeNodeInfo', () => {
     // COMBO config.options 形态
     expect(result['SaveVideo']!.required_inputs.format).toEqual({ type: 'COMBO', options: ['auto', 'mp4'] });
     expect(result['SaveVideo']!.display_name).toBe('Save Video');
+  });
+});
+
+describe('toNodeReferenceList', () => {
+  it('flattens records into sorted arrays with preserved field order', () => {
+    const nodeInfo = summarizeNodeInfo(sampleObjectInfo);
+    const list = toNodeReferenceList(nodeInfo);
+
+    // 按类名字母序排序：KSampler 在 SaveVideo 前
+    expect(list.map((n) => n.name)).toEqual(['KSampler', 'SaveVideo']);
+
+    const ks = list[0]!;
+    expect(ks.display_name).toBe('KSampler');
+    expect(ks.category).toBe('sampling');
+    expect(ks.required_inputs).toEqual([
+      { name: 'model', type: 'MODEL' },
+      { name: 'seed', type: 'INT' },
+      { name: 'sampler_name', type: 'COMBO', options: ['euler', 'heun'] },
+    ]);
+    expect(ks.optional_inputs).toEqual([{ name: 'denoise', type: 'FLOAT' }]);
+    expect(ks.outputs).toEqual(['LATENT']);
+    expect(ks.output_names).toEqual(['LATENT']);
+
+    const saveVideo = list[1]!;
+    expect(saveVideo.required_inputs).toEqual([
+      { name: 'format', type: 'COMBO', options: ['auto', 'mp4'] },
+    ]);
+  });
+
+  it('handles empty node info', () => {
+    expect(toNodeReferenceList({})).toEqual([]);
   });
 });
 

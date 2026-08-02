@@ -528,6 +528,82 @@ describe('Workflow API', () => {
     expect(res.text).not.toContain('ComfyClassType');
   });
 
+  it('GET /api/workflows/node-info returns sorted node reference list', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 配置 comfyui_base_url 并注入假 object_info
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    nodeInfoServiceConfig.fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          SaveVideo: {
+            input: { required: { format: ['COMBO', { options: ['auto', 'mp4'] }] } },
+            display_name: 'Save Video',
+            category: 'image',
+            output: ['VIDEO'],
+            output_name: ['video'],
+          },
+          KSampler: {
+            input: {
+              required: { seed: ['INT', {}] },
+              optional: { denoise: ['FLOAT', {}] },
+            },
+            display_name: 'KSampler',
+            category: 'sampling',
+            output: ['LATENT'],
+            output_name: ['LATENT'],
+          },
+        });
+      },
+    }) as unknown as Response;
+
+    const res = await supertest(app)
+      .get('/api/workflows/node-info')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    // 按类名字母序排序
+    expect(res.body.nodes.map((n: { name: string }) => n.name)).toEqual(['KSampler', 'SaveVideo']);
+    const ks = res.body.nodes[0] as {
+      display_name: string;
+      category: string | null;
+      required_inputs: Array<{ name: string; type: string; options?: string[] }>;
+      optional_inputs: Array<{ name: string; type: string; options?: string[] }>;
+      outputs: string[];
+    };
+    expect(ks.display_name).toBe('KSampler');
+    expect(ks.category).toBe('sampling');
+    expect(ks.required_inputs).toEqual([{ name: 'seed', type: 'INT' }]);
+    expect(ks.optional_inputs).toEqual([{ name: 'denoise', type: 'FLOAT' }]);
+    expect(ks.outputs).toEqual(['LATENT']);
+    const saveVideo = res.body.nodes[1] as { required_inputs: Array<{ name: string; type: string; options?: string[] }> };
+    expect(saveVideo.required_inputs).toEqual([{ name: 'format', type: 'COMBO', options: ['auto', 'mp4'] }]);
+  });
+
+  it('GET /api/workflows/node-info without auth returns 401', async () => {
+    const res = await supertest(app).get('/api/workflows/node-info');
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/workflows/node-info returns 503 when no base url', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 确保未配置 comfyui_base_url
+    new SettingsService(db).set('comfyui_base_url', '');
+
+    const res = await supertest(app)
+      .get('/api/workflows/node-info')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('comfyui_unreachable');
+  });
+
   it('PUT /api/workflows/:id/build-script saves script and enabled flag', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
