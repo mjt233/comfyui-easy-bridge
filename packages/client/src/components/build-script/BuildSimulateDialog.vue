@@ -31,7 +31,9 @@
 
           <!-- 媒体参数：文件选择（多文件，脚本按 files[alias] 读取） -->
           <div v-if="mediaParams.length > 0" class="mb-3">
-            <p class="text-subtitle-2 mb-2">媒体文件</p>
+            <p class="text-subtitle-2 mb-2">
+              媒体文件
+            </p>
             <v-file-input
               v-for="p in mediaParams"
               :key="p.alias!"
@@ -51,7 +53,12 @@
           <div class="d-flex align-center mb-2">
             <span class="text-subtitle-2">自定义字段</span>
             <v-spacer />
-            <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="addFreeField">
+            <v-btn
+              size="small"
+              variant="tonal"
+              prepend-icon="mdi-plus"
+              @click="addFreeField"
+            >
               添加自定义字段
             </v-btn>
           </div>
@@ -98,7 +105,12 @@
               hide-details
               class="flex-grow-1"
             />
-            <v-btn icon="mdi-close" size="small" variant="text" @click="freeFields.splice(i, 1)" />
+            <v-btn
+              icon="mdi-close"
+              size="small"
+              variant="text"
+              @click="freeFields.splice(i, 1)"
+            />
           </div>
         </template>
 
@@ -116,9 +128,15 @@
 
           <template v-else>
             <v-tabs v-model="resultTab" color="primary">
-              <v-tab value="table">节点与参数表</v-tab>
-              <v-tab value="canvas">画布</v-tab>
-              <v-tab value="json">JSON</v-tab>
+              <v-tab value="table">
+                节点与参数表
+              </v-tab>
+              <v-tab value="canvas">
+                画布
+              </v-tab>
+              <v-tab value="json">
+                JSON
+              </v-tab>
             </v-tabs>
 
             <v-window v-model="resultTab" class="mt-3">
