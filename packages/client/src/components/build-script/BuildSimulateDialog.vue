@@ -175,6 +175,7 @@
                   v-if="builtJson && resultTab === 'canvas'"
                   :raw-json="builtJson"
                   :height="'460px'"
+                  @node-click="handleCanvasNodeClick"
                 />
               </v-window-item>
 
@@ -215,6 +216,9 @@
       </v-card-actions>
     </v-card>
   </v-dialog>
+
+  <!-- 节点详情对话框：点击画布节点时展示该节点全部参数 -->
+  <NodeDetailsDialog v-model="nodeDetailsOpen" :node="selectedNode" />
 </template>
 
 <script setup lang="ts">
@@ -224,6 +228,7 @@ import axios from 'axios';
 import { simulateBuild } from '@/api/workflows';
 import { parseWorkflowGraph, type GraphNode } from '../workflow-canvas/workflowGraph';
 import WorkflowCanvas from '../workflow-canvas/WorkflowCanvas.vue';
+import NodeDetailsDialog from './NodeDetailsDialog.vue';
 
 /** 对话框显示控制（v-model） */
 const show = defineModel<boolean>({ required: true });
@@ -244,6 +249,12 @@ const errorText = ref('');
 const builtJson = ref('');
 /** 结果视图 tab */
 const resultTab = ref('table');
+
+/** 节点详情对话框是否打开 */
+const nodeDetailsOpen = ref(false);
+
+/** 当前选中的节点（供节点详情对话框展示） */
+const selectedNode = ref<GraphNode | null>(null);
 
 /** 可传参的别名参数（alias 非空；媒体类型由下方文件选择器单独处理） */
 const aliasParams = computed<WorkflowParam[]>(() =>
@@ -325,6 +336,19 @@ function close(): void {
   errorText.value = '';
   builtJson.value = '';
   resultTab.value = 'table';
+  nodeDetailsOpen.value = false;
+  selectedNode.value = null;
+}
+
+/**
+ * 画布节点点击 → 在结果节点中查找并打开节点详情对话框
+ * @param nodeId 被点击节点 ID
+ */
+function handleCanvasNodeClick(nodeId: string): void {
+  const node = graphNodes.value.find((n) => n.id === nodeId);
+  if (!node) return;
+  selectedNode.value = node;
+  nodeDetailsOpen.value = true;
 }
 
 /** 组装请求参数（含类型转换） */
@@ -500,6 +524,8 @@ watch(show, (val) => {
     errorText.value = '';
     builtJson.value = '';
     resultTab.value = 'table';
+    nodeDetailsOpen.value = false;
+    selectedNode.value = null;
   }
 });
 
