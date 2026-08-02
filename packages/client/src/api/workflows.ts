@@ -117,16 +117,32 @@ export async function saveBuildScript(
 }
 
 /**
- * 模拟构建：脚本 + 参数 → 构建后的最终 JSON
+ * 模拟构建：脚本 + 参数 + 可选媒体文件 → 构建后的最终 JSON 与参数配置
  * @param workflowId 工作流 ID
  * @param data 脚本源码与参数
+ * @param files 按别名分组的媒体文件（可选）
  * @returns 模拟结果
  */
 export async function simulateBuild(
   workflowId: string,
   data: { script: string; params: Record<string, unknown> },
+  files?: Record<string, File>,
 ): Promise<SimulateResult> {
-  const res = await client.post<SimulateResult>(`/workflows/${workflowId}/build/simulate`, data);
+  // 无媒体文件时走普通 JSON 请求
+  if (!files || Object.keys(files).length === 0) {
+    const res = await client.post<SimulateResult>(`/workflows/${workflowId}/build/simulate`, data);
+    return res.data;
+  }
+  // 有媒体文件时走 multipart：script/params 为文本字段，文件以别名为字段名
+  const formData = new FormData();
+  formData.append('script', data.script);
+  formData.append('params', JSON.stringify(data.params));
+  for (const [alias, file] of Object.entries(files)) {
+    formData.append(alias, file);
+  }
+  const res = await client.post<SimulateResult>(`/workflows/${workflowId}/build/simulate`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
   return res.data;
 }
 

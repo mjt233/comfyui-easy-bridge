@@ -29,6 +29,23 @@
             />
           </div>
 
+          <!-- 媒体参数：文件选择（多文件，脚本按 files[alias] 读取） -->
+          <div v-if="mediaParams.length > 0" class="mb-3">
+            <p class="text-subtitle-2 mb-2">媒体文件</p>
+            <v-file-input
+              v-for="p in mediaParams"
+              :key="p.alias!"
+              v-model="mediaFiles[p.alias!]"
+              :label="paramLabel(p)"
+              :accept="acceptType(p.paramType)"
+              multiple
+              variant="outlined"
+              density="compact"
+              hide-details
+              class="mb-2"
+            />
+          </div>
+
           <v-divider class="my-3" />
 
           <div class="d-flex align-center mb-2">
@@ -196,9 +213,21 @@ const builtJson = ref('');
 /** 结果视图 tab */
 const resultTab = ref('table');
 
-/** 可传参的别名参数（alias 非空） */
+/** 可传参的别名参数（alias 非空；媒体类型由下方文件选择器单独处理） */
 const aliasParams = computed<WorkflowParam[]>(() =>
-  props.workflow.params.filter((p) => p.alias != null && p.alias !== ''),
+  props.workflow.params.filter(
+    (p) =>
+      p.alias != null &&
+      p.alias !== '' &&
+      !['image', 'video', 'audio'].includes(p.paramType),
+  ),
+);
+
+/** 媒体类型且带别名的参数（用于文件选择） */
+const mediaParams = computed<WorkflowParam[]>(() =>
+  props.workflow.params.filter(
+    (p) => p.alias != null && p.alias !== '' && ['image', 'video', 'audio'].includes(p.paramType),
+  ),
 );
 
 /** 文本/数字参数值（key 为别名） */
@@ -206,6 +235,9 @@ const stringValues = ref<Record<string, string>>({});
 
 /** 布尔参数值（key 为别名） */
 const booleanValues = ref<Record<string, boolean>>({});
+
+/** 媒体参数文件（key 为别名，支持多文件） */
+const mediaFiles = ref<Record<string, File[]>>({});
 
 /**
  * 用户自定义的自由字段行
@@ -223,6 +255,19 @@ const freeFields = ref<FreeField[]>([]);
 /** 参数展示标签：别名 + 可选 label */
 function paramLabel(p: WorkflowParam): string {
   return p.label ? `${p.alias}（${p.label}）` : (p.alias ?? '');
+}
+
+/**
+ * 媒体文件 accept 类型
+ * @param paramType 参数类型
+ */
+function acceptType(paramType: string): string {
+  switch (paramType) {
+    case 'image': return 'image/*';
+    case 'video': return 'video/*';
+    case 'audio': return 'audio/*';
+    default: return '*/*';
+  }
 }
 
 /** 添加一行自定义字段 */
@@ -271,6 +316,22 @@ function buildParams(): Record<string, unknown> {
 }
 
 /**
+ * 组装媒体文件：每别名取第一个文件
+ * @returns 按别名分组的文件映射；无文件时返回 undefined
+ */
+function buildFiles(): Record<string, File> | undefined {
+  const files: Record<string, File> = {};
+  for (const p of mediaParams.value) {
+    if (!p.alias) continue;
+    const arr = mediaFiles.value[p.alias];
+    if (arr && arr.length > 0) {
+      files[p.alias] = arr[0];
+    }
+  }
+  return Object.keys(files).length > 0 ? files : undefined;
+}
+
+/**
  * 从异常中提取可展示的错误信息。
  * axios 的 message 是通用 "Request failed with status code xxx"，
  * 需优先读取后端返回的 { error } 字段。
@@ -290,10 +351,13 @@ async function runSimulate(): Promise<void> {
   simulating.value = true;
   errorText.value = '';
   try {
-    const res = await simulateBuild(props.workflow.id, {
-      script: props.script,
-      params: buildParams(),
-    });
+    // 媒体文件按别名分组；无文件时不传（走 JSON 请求）
+    const files = buildFiles();
+    const res = await simulateBuild(
+      props.workflow.id,
+      { script: props.script, params: buildParams() },
+      files,
+    );
     builtJson.value = res.json;
     step.value = 2;
   } catch (err) {
@@ -379,6 +443,7 @@ watch(show, (val) => {
       }
     }
     freeFields.value = [];
+    mediaFiles.value = {};
     step.value = 1;
     errorText.value = '';
     builtJson.value = '';
