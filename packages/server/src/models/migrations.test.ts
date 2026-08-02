@@ -1,30 +1,145 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
-import { ensureWorkflowBuildColumns } from './migrations';
+import { runMigrations, type Migration } from './migrations/runner';
+import { migrations } from './migrations';
 
-describe('ensureWorkflowBuildColumns', () => {
-  let sqlite: Database.Database;
+describe('runMigrations', () => {
+  it('creates all business tables and schema_migrations on a fresh database', () => {
+    const sqlite = new Database(':memory:');
 
-  beforeEach(() => {
-    sqlite = new Database(':memory:');
-    // 模拟旧版本库：workflows 表没有 build_script / build_script_enabled 列
+    const applied = runMigrations(sqlite);
+    expect(applied).toHaveLength(migrations.length);
+
+    // 5 张业务表 + 版本记录表齐全
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as Array<{ name: string }>;
+    const names = tables.map((t) => t.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'workflows',
+        'workflow_params',
+        'workflow_attachments',
+        'settings',
+        'task_logs',
+        'schema_migrations',
+      ]),
+    );
+
+    // workflows 含动态构建列
+    const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['build_script', 'build_script_enabled']),
+    );
+  });
+
+  it('upgrades an old database by adding missing columns and keeping data', () => {
+    const sqlite = new Database(':memory:');
+    // 模拟旧库：workflows 表无 build_script / build_script_enabled 列，且已有数据
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO workflows (id, name, raw_json, created_at, updated_at)
+        VALUES ('w1', 'test', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
     `);
+
+    const applied = runMigrations(sqlite);
+    expect(applied).toHaveLength(migrations.length);
+
+    // 缺列被补齐
+    const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
+    expect(cols.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['build_script', 'build_script_enabled']),
+    );
+
+    // 原有数据保留
+    const row = sqlite
+      .prepare('SELECT id, name FROM workflows WHERE id = ?')
+      .get('w1') as { id: string; name: string };
+    expect(row).toEqual({ id: 'w1', name: 'test' });
   });
 
-  it('adds build_script and build_script_enabled columns to an old table', () => {
-    ensureWorkflowBuildColumns(sqlite);
-    const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
-    const names = cols.map((c) => c.name);
-    expect(names).toContain('build_script');
-    expect(names).toContain('build_script_enabled');
+  it('is idempotent when run twice', () => {
+    const sqlite = new Database(':memory:');
+
+    const first = runMigrations(sqlite);
+    const second = runMigrations(sqlite);
+    expect(first).toHaveLength(migrations.length);
+    expect(second).toHaveLength(0);
+
+    // 记录表仅写入一次
+    const count = sqlite.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as {
+      n: number;
+    };
+    expect(count.n).toBe(migrations.length);
   });
 
-  it('is idempotent when called twice', () => {
-    ensureWorkflowBuildColumns(sqlite);
-    ensureWorkflowBuildColumns(sqlite);
-    const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
-    expect(cols.filter((c) => c.name === 'build_script')).toHaveLength(1);
+  it('rolls back a failing migration and does not record it', () => {
+    const sqlite = new Database(':memory:');
+    const bad: Migration = {
+      version: 999,
+      name: 'failing migration',
+      up: (db) => {
+        db.exec('CREATE TABLE should_rollback (id INTEGER)');
+        throw new Error('boom');
+      },
+    };
+
+    expect(() => runMigrations(sqlite, [bad])).toThrow('boom');
+
+    // 副作用被回滚，记录未写入
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as Array<{ name: string }>;
+    expect(tables.map((t) => t.name)).not.toContain('should_rollback');
+    const count = sqlite.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as {
+      n: number;
+    };
+    expect(count.n).toBe(0);
+  });
+
+  it('keeps previously applied migrations when a later one fails', () => {
+    const sqlite = new Database(':memory:');
+    const good: Migration = {
+      version: 1,
+      name: 'good',
+      up: (db) => db.exec('CREATE TABLE good_table (id INTEGER)'),
+    };
+    const bad: Migration = {
+      version: 2,
+      name: 'bad',
+      up: (db) => {
+        db.exec('CREATE TABLE bad_table (id INTEGER)');
+        throw new Error('boom');
+      },
+    };
+
+    expect(() => runMigrations(sqlite, [good, bad])).toThrow('boom');
+
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as Array<{ name: string }>;
+    const names = tables.map((t) => t.name);
+    expect(names).toContain('good_table');
+    expect(names).not.toContain('bad_table');
+
+    // 仅成功迁移被记录
+    const rows = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
+    expect(rows).toEqual([{ version: 1, name: 'good' }]);
+  });
+
+  it('records applied migrations with version and name', () => {
+    const sqlite = new Database(':memory:');
+
+    runMigrations(sqlite);
+
+    const rows = sqlite.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all();
+    expect(rows).toHaveLength(migrations.length);
+    expect(rows[0]).toEqual({ version: 1, name: migrations[0].name });
   });
 });
