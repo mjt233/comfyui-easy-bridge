@@ -184,10 +184,11 @@
               variant="outlined"
               density="compact"
               class="mb-2"
+              multiple
               :accept="acceptType(field.paramType)"
               @update:model-value="(v: File | File[] | null) => {
                 if (v) {
-                  executeFiles[field.alias] = Array.isArray(v) ? v[0] : v;
+                  executeFiles[field.alias] = Array.isArray(v) ? v : [v];
                 } else {
                   delete executeFiles[field.alias];
                 }
@@ -244,7 +245,7 @@
                 class="flex-grow-1"
                 @update:model-value="(v: File | File[] | null) => {
                   if (v) {
-                    manualFiles[f.key] = Array.isArray(v) ? v[0] : v;
+                    manualFiles[f.key] = Array.isArray(v) ? v : [v];
                   } else {
                     delete manualFiles[f.key];
                   }
@@ -444,7 +445,8 @@ const submitting = ref(false);
 const executeFields = ref<ExecuteField[]>([]);
 /** 执行表单值：boolean 为布尔，其余为字符串 */
 const executeForm = reactive<Record<string, string | boolean>>({});
-const executeFiles = reactive<Record<string, File>>({});
+/** 已配置媒体参数的文件（key 为别名，支持多文件） */
+const executeFiles = reactive<Record<string, File[]>>({});
 
 /**
  * 手动添加的自定义字段行
@@ -462,8 +464,8 @@ interface ManualField {
 
 /** 手动添加的自定义字段列表 */
 const manualFields = ref<ManualField[]>([]);
-/** 手动添加的媒体文件（key 为字段名） */
-const manualFiles = ref<Record<string, File>>({});
+/** 手动添加的媒体文件（key 为字段名，媒体自由字段单文件以数组承载） */
+const manualFiles = ref<Record<string, File[]>>({});
 
 /**
  * 添加一行手动自定义字段
@@ -632,10 +634,10 @@ async function confirmExecute() {
         aliasValues[field.alias] = String(val ?? '');
       }
     }
-    const files: Record<string, File> = {};
-    // 已配置媒体参数的文件
-    for (const [alias, file] of Object.entries(executeFiles)) {
-      files[alias] = file;
+    const files: Record<string, File[]> = {};
+    // 已配置媒体参数的文件（每个别名一个数组，支持多文件）
+    for (const [alias, fileList] of Object.entries(executeFiles)) {
+      files[alias] = fileList;
     }
     // 手动添加的自定义字段：非媒体并入 aliasValues（boolean/number 转换），媒体并入 files
     for (const f of manualFields.value) {
@@ -646,9 +648,9 @@ async function confirmExecute() {
       } else if (f.type === 'number') {
         aliasValues[key] = f.value === '' ? '' : Number(f.value);
       } else if (f.type === 'image' || f.type === 'video' || f.type === 'audio') {
-        const file = manualFiles.value[key];
-        if (file) {
-          files[key] = file;
+        const fileList = manualFiles.value[key];
+        if (fileList && fileList.length > 0) {
+          files[key] = fileList;
         }
       } else {
         aliasValues[key] = f.value;

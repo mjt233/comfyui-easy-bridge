@@ -341,25 +341,25 @@ function buildParams(): Record<string, unknown> {
 }
 
 /**
- * 组装媒体文件：静态媒体参数取第一个文件；媒体自由字段取所选文件
- * @returns 按别名/字段名分组的文件映射；无文件时返回 undefined
+ * 组装媒体文件：静态媒体参数取该别名下全部选中文件；媒体自由字段包成单元素数组
+ * @returns 按别名/字段名分组的文件数组映射；无文件时返回 undefined
  */
-function buildFiles(): Record<string, File> | undefined {
-  const files: Record<string, File> = {};
-  // 静态媒体参数：每别名取第一个文件
+function buildFiles(): Record<string, File[]> | undefined {
+  const files: Record<string, File[]> = {};
+  // 静态媒体参数：每别名保留全部选中文件（同别名多文件 → N 个 LoadImage 节点）
   for (const p of mediaParams.value) {
     if (!p.alias) continue;
     const arr = mediaFiles.value[p.alias];
     if (arr && arr.length > 0) {
-      files[p.alias] = arr[0];
+      files[p.alias] = arr;
     }
   }
-  // 媒体自由字段：key 为字段名，取当前所选文件
+  // 媒体自由字段：key 为字段名，单文件包成数组
   for (const f of freeFields.value) {
     const key = f.key.trim();
     if (!key || !isMediaType(f.type)) continue;
     if (f.file) {
-      files[key] = f.file;
+      files[key] = [f.file];
     }
   }
   return Object.keys(files).length > 0 ? files : undefined;
