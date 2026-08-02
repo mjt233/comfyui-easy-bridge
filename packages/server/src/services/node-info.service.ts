@@ -1,7 +1,7 @@
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { SettingsService } from './settings.service';
-import { BUILD_SCRIPT_DTS_HEADER, buildBuildContextDts } from './build-script-api';
+import { BUILD_SCRIPT_DTS_HEADER, BUILD_RESULT_DTS, RUNTIME_PARAM_DTS, buildBuildContextDts } from './build-script-api';
 
 /**
  * 节点输入字段摘要（d.ts 用）
@@ -261,6 +261,8 @@ export function generateBuildDts(nodeInfo: Record<string, NodeClassInfo>): strin
     'findNodesByClass(classType: ComfyClassType): string[];',
   );
   return `${BUILD_SCRIPT_DTS_HEADER}
+${RUNTIME_PARAM_DTS}
+${BUILD_RESULT_DTS}
 ${generateNodeClassDts(nodeInfo)}
 ${contextDts}`;
 }

@@ -521,7 +521,7 @@ describe('Workflow API', () => {
       .post('/api/workflows/sim-flow/build/simulate')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 42); return ctx.workflow; }',
+        script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 42); return { workflow: ctx.workflow, params: [] }; }',
         params: {},
       });
     expect(res.status).toBe(200);
@@ -557,7 +557,7 @@ describe('Workflow API', () => {
     await supertest(app)
       .put('/api/workflows/exec-flow/build-script')
       .set('Authorization', `Bearer ${token}`)
-      .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return ctx.workflow; }', enabled: true });
+      .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return { workflow: ctx.workflow, params: [] }; }', enabled: true });
     // 设置 ComfyUI base URL
     await supertest(app)
       .put('/api/settings')

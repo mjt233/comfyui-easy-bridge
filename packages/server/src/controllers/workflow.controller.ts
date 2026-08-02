@@ -94,8 +94,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           ? body.params as Record<string, unknown>
           : {};
 
-        // 脚本构建（作用于 rawJson 的深拷贝）
-        const buildResult = await runBuildScript(body.script, aliasParams, JSON.parse(wf.rawJson) as ComfyWorkflow);
+        // 脚本构建（作用于 rawJson 的深拷贝）；baseParams/filesMeta 由 Task 3 接入真实值
+        const buildResult = await runBuildScript(body.script, aliasParams, JSON.parse(wf.rawJson) as ComfyWorkflow, [], {});
         if (!buildResult.ok) {
           res.status(400).json({ error: buildResult.error, code: buildResult.code });
           return;
@@ -273,6 +273,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             wf.buildScript,
             finalAliasValues,
             JSON.parse(wf.rawJson) as ComfyWorkflow,
+            // baseParams/filesMeta 由 Task 3 接入真实值（DB 静态配置 / 上传文件元数据）
+            [],
+            {},
           );
           if (!buildResult.ok) {
             // 构建失败：记录 failed 任务，不提交 ComfyUI
