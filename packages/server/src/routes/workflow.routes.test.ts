@@ -516,6 +516,11 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-flow', name: 'Sim', rawJson: JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } }) });
+    // simulate 会按声明配置上传媒体，需先配置 ComfyUI base URL
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
 
     const res = await supertest(app)
       .post('/api/workflows/sim-flow/build/simulate')
@@ -527,6 +532,8 @@ describe('Workflow API', () => {
     expect(res.status).toBe(200);
     const parsed = JSON.parse(res.body.json as string) as { '1': { inputs: { seed: number } } };
     expect(parsed['1'].inputs.seed).toBe(42);
+    // simulate 返回 { json, params }
+    expect(Array.isArray(res.body.params)).toBe(true);
   });
 
   it('POST simulate returns error for failing script', async () => {
@@ -536,6 +543,11 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-bad', name: 'Bad', rawJson: '{}' });
+    // simulate 需要 ComfyUI base URL 已配置（baseUrl 检查在脚本执行之前）
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
 
     const res = await supertest(app)
       .post('/api/workflows/sim-bad/build/simulate')
@@ -599,5 +611,50 @@ describe('Workflow API', () => {
     expect(task?.status).toBe('failed');
     expect(task?.errorMessage).toContain('Dynamic build failed');
     expect(task?.errorMessage).toContain('broken');
+  });
+
+  it('simulate with multipart media upload returns json and params', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'sim-multi', name: 'SimMulti', rawJson: JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } }) });
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+
+    // 模拟 ComfyUI 上传成功（返回确定文件名），避免依赖 9999 可达性
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ name: 'uploaded-ref.png' }),
+    })) as unknown as typeof fetch;
+    try {
+      const res = await supertest(app)
+        .post('/api/workflows/sim-multi/build/simulate')
+        .set('Authorization', `Bearer ${token}`)
+        .field('script', `
+          export default function build(ctx: any) {
+            return {
+              workflow: ctx.workflow,
+              params: [{ nodeId: '1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 }],
+            };
+          }
+        `)
+        .field('params', JSON.stringify({}))
+        .attach('ref_images', Buffer.from('fakeimage'), 'photo.png');
+      // 脚本声明配置生效：simulate 返回 { json, params }
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.params)).toBe(true);
+      expect(res.body.params[0]).toMatchObject({ nodeId: '1', alias: 'ref_images', paramType: 'image' });
+      // 上传的文件名已注入到脚本声明的媒体参数对应节点
+      const built = JSON.parse(res.body.json as string) as { '1': { inputs: { image: string } } };
+      expect(built['1'].inputs.image).toBe('uploaded-ref.png');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

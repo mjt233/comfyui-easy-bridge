@@ -130,7 +130,10 @@ export function applyAliases(
 
     // 1) 请求值优先（仅当 alias 非空且出现在请求中）
     if (param.alias != null && param.alias !== '' && Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
-      node.inputs[param.fieldName] = coerceParamValue(param.paramType, aliasValues[param.alias]);
+      // 媒体多文件时 aliasValues[alias] 为数组，按 fileIndex 取对应文件
+      const raw = aliasValues[param.alias];
+      const value = Array.isArray(raw) ? raw[param.fileIndex ?? 0] : raw;
+      node.inputs[param.fieldName] = coerceParamValue(param.paramType, value);
       continue;
     }
 
@@ -163,9 +166,11 @@ export function resolveSubmittedAliasValues(
     // 无别名的参数不对外传参，不记入提交参数日志
     if (param.alias == null || param.alias === '') continue;
 
-    // 1) 请求中带了该别名 → 转换后记录
+    // 1) 请求中带了该别名 → 转换后记录（媒体多文件为数组时按 fileIndex 取元素）
     if (Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
-      submitted[param.alias] = coerceParamValue(param.paramType, aliasValues[param.alias]);
+      const raw = aliasValues[param.alias];
+      const value = Array.isArray(raw) ? raw[param.fileIndex ?? 0] : raw;
+      submitted[param.alias] = coerceParamValue(param.paramType, value);
       continue;
     }
 
@@ -252,11 +257,13 @@ export async function submitPrompt(
 /**
  * 处理媒体参数：将上传的文件发送到 ComfyUI，返回最终 aliasValues。
  * 无别名的参数不参与对外媒体上传。
+ * 同别名被多个参数引用（或该别名文件数 > 1）时，result[alias] 为文件名数组
+ * （按 files[alias] 上传顺序），供 applyAliases 按 fileIndex 分别注入；否则为单文件名 string。
  * @param params 参数配置列表
  * @param aliasValues 请求传入的别名值
  * @param files 按别名分组的上传文件
  * @param comfyuiBaseUrl ComfyUI 服务地址
- * @returns 合并上传结果后的别名值
+ * @returns 合并上传结果后的别名值（媒体多文件时值为 string[]）
  */
 export async function processMediaParams(
   params: RuntimeParam[],
@@ -265,15 +272,38 @@ export async function processMediaParams(
   comfyuiBaseUrl: string,
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = { ...aliasValues };
+
+  // 统计每个媒体别名被多少个参数引用（决定单文件返回 string 还是数组）
+  const mediaAliasCount: Record<string, number> = {};
+  for (const param of params) {
+    if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
+    if (param.alias == null || param.alias === '') continue;
+    mediaAliasCount[param.alias] = (mediaAliasCount[param.alias] ?? 0) + 1;
+  }
+
   for (const param of params) {
     // 仅处理媒体类型；boolean/number/text 不走上传
     if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
     // 无别名的参数不参与对外媒体上传
     if (param.alias == null || param.alias === '') continue;
     const fileList = files[param.alias];
-    // fileIndex 支持同别名多文件（默认取第 0 个）
-    const file = fileList?.[param.fileIndex ?? 0];
-    if (file) {
+    if (!fileList || fileList.length === 0) continue;
+
+    // 同别名多参数或多文件 → 上传全部文件返回数组；否则返回单文件名（兼容既有行为）
+    const multi = mediaAliasCount[param.alias] > 1 || fileList.length > 1;
+    if (multi) {
+      const names: string[] = [];
+      for (const file of fileList) {
+        const filename = await uploadFileToComfyUI(
+          file,
+          param.paramType as 'image' | 'video' | 'audio',
+          comfyuiBaseUrl,
+        );
+        names.push(filename);
+      }
+      result[param.alias] = names;
+    } else {
+      const file = fileList[0];
       const filename = await uploadFileToComfyUI(
         file,
         param.paramType as 'image' | 'video' | 'audio',
@@ -301,7 +331,7 @@ export async function interruptPrompt(comfyuiBaseUrl: string): Promise<boolean> 
  */
 export async function executeWorkflow(
   rawJson: string,
-  params: WorkflowParam[],
+  params: RuntimeParam[],
   aliasValues: Record<string, unknown>,
   comfyuiBaseUrl: string,
 ): Promise<ExecutionResult> {

@@ -262,7 +262,7 @@ describe('processMediaParams', () => {
     expect(result).toEqual({});
   });
 
-  it('processMediaParams supports fileIndex for same-alias multiple files', async () => {
+  it('processMediaParams returns array for multi-file alias and applyAliases injects per fileIndex', async () => {
     // 模拟 ComfyUI 原样返回上传时使用的文件名
     mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
       const formData = options.body;
@@ -273,7 +273,7 @@ describe('processMediaParams', () => {
       };
     });
 
-    // 两个参数同 alias 'ref_images'，fileIndex 0/1 分别取第一个/第二个文件
+    // 两个参数同 alias 'ref_images'（fileIndex 0/1）→ 同别名多文件，processMediaParams 返回数组
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
       { nodeId: 'load2', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 1 },
@@ -285,10 +285,41 @@ describe('processMediaParams', () => {
       ],
     };
 
-    // 后写者覆盖，最终 ref_images 应为第二个文件（b 开头）的唯一文件名
-    const result = await processMediaParams(params, {}, files, 'http://comfy:8188');
-    expect(result.ref_images).toBeTruthy();
-    expect(result.ref_images).toMatch(/^b_/);
+    // 同别名多参数 → 上传全部文件，result[alias] 为按上传顺序的数组
+    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    expect(Array.isArray(uploaded.ref_images)).toBe(true);
+    const arr = uploaded.ref_images as string[];
+    expect(arr).toHaveLength(2);
+
+    // applyAliases 按 fileIndex 注入不同文件名到对应节点（同别名多文件核心：两个节点不再共用同一文件）
+    const rawJson = JSON.stringify({
+      'load1': { inputs: { image: '' }, class_type: 'LoadImage' },
+      'load2': { inputs: { image: '' }, class_type: 'LoadImage' },
+    });
+    const injected = applyAliases(rawJson, params, uploaded);
+    const parsed = JSON.parse(injected) as Record<string, { inputs: { image: string } }>;
+    expect(parsed['load1'].inputs.image).toBe(arr[0]);
+    expect(parsed['load2'].inputs.image).toBe(arr[1]);
+  });
+
+  it('processMediaParams keeps string for single-file alias (backward compatible)', async () => {
+    // 模拟 ComfyUI 原样返回上传时使用的文件名
+    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
+      const formData = options.body;
+      const file = formData.get('image') as File;
+      return {
+        ok: true,
+        json: async () => ({ name: file.name }),
+      };
+    });
+
+    // 单参数 + 单文件 → 保持 string，兼容既有行为
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
+    ];
+    const files = { ref_images: [{ buffer: Buffer.from('a'), originalname: 'a.png', mimetype: 'image/png' }] };
+    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    expect(typeof uploaded.ref_images).toBe('string');
   });
 });
 
