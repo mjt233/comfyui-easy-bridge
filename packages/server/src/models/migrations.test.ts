@@ -142,4 +142,15 @@ describe('runMigrations', () => {
     expect(rows).toHaveLength(migrations.length);
     expect(rows[0]).toEqual({ version: 1, name: migrations[0].name });
   });
+
+  it('throws when migration versions are duplicated', () => {
+    const sqlite = new Database(':memory:');
+    const dup: Migration = {
+      version: 1,
+      name: 'dup',
+      up: (db) => db.exec('CREATE TABLE dup_table (id INTEGER)'),
+    };
+
+    expect(() => runMigrations(sqlite, [dup, dup])).toThrow(/duplicated/);
+  });
 });

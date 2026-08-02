@@ -43,6 +43,15 @@ export function runMigrations(
     .sort((a, b) => a.version - b.version)
     .filter((m) => m.version > row.maxVersion);
 
+  // 校验版本号唯一性：重复版本会导致后一个迁移被静默跳过，直接报错避免迁移丢失
+  const seen = new Set<number>();
+  for (const m of pending) {
+    if (seen.has(m.version)) {
+      throw new Error(`Migration version ${m.version} is duplicated in the migration list`);
+    }
+    seen.add(m.version);
+  }
+
   // 4. 每个迁移在独立事务中执行并写入记录
   const insertRecord = sqlite.prepare(
     'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
