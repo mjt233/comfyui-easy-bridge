@@ -177,6 +177,14 @@ describe('runBuildScript', () => {
     expect(result.params?.[2]).toMatchObject({ nodeId: 'load_1', alias: 'ref_images', paramType: 'image', fileIndex: 1 });
   });
 
+  it('keeps params undefined when script returns { workflow } only (caller falls back to baseParams)', async () => {
+    const script = 'export default function build(ctx: any) { return { workflow: ctx.workflow }; }';
+    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    expect(result.ok).toBe(true);
+    // 脚本省略 params → undefined（不得被归一化为 []，否则 effectiveParams ?? baseParams 永不触发）
+    expect(result.params).toBeUndefined();
+  });
+
   it('rejects legacy return ctx.workflow (declarative required)', async () => {
     const script = 'export default function build(ctx: any) { return ctx.workflow; }';
     const result = await runBuildScript(script, {}, baseWorkflow, [], {});

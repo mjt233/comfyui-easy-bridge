@@ -13,7 +13,7 @@ export interface BuildScriptResult {
   ok: boolean;
   /** 构建后的工作流对象（ok=true 时） */
   workflow?: ComfyWorkflow;
-  /** 脚本声明的参数配置（ok=true 时；脚本未返回时为空数组） */
+  /** 脚本声明的参数配置（ok=true 时；脚本未返回时为 undefined，由调用方回退 DB 静态参数） */
   params?: RuntimeParam[];
   /** 错误信息（ok=false 时） */
   error?: string;
@@ -118,7 +118,8 @@ export function runBuildScript(
         resolve({ ok: false, code: 'build_script_error', error: 'Build result is not serializable' });
         return;
       }
-      resolve({ ok: true, workflow: msg.workflow, params: msg.params ?? [] });
+      // params 可能为 undefined（脚本省略 params 时），由调用方回退 baseParams
+      resolve({ ok: true, workflow: msg.workflow, params: msg.params });
     });
 
     worker.on('error', (err) => {

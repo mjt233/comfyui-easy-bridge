@@ -108,13 +108,14 @@ async function run() {
     }
     const ctx = createContext(workflow, params, filesMeta, baseParams);
     const result = await buildFn(ctx);
-    // 声明式返回：{ workflow, params }；workflow 必须对象，params 必须是数组（缺省回退 []）
+    // 声明式返回：{ workflow, params }；workflow 必须对象，params 缺省时保持 undefined（由主线程回退 DB 参数）
     const workflowResult = result && typeof result === 'object' && !Array.isArray(result) ? result.workflow : null;
     if (!workflowResult || typeof workflowResult !== 'object' || Array.isArray(workflowResult)) {
       parentPort.postMessage({ ok: false, error: '构建函数必须返回 { workflow, params }，且 workflow 必须是工作流对象' });
       return;
     }
-    const paramsResult = Array.isArray(result.params) ? result.params : [];
+    // params 必须是数组；脚本省略时返回 undefined，由主线程回退 baseParams（避免误丢全部静态参数）
+    const paramsResult = Array.isArray(result.params) ? result.params : undefined;
     parentPort.postMessage({ ok: true, workflow: workflowResult, params: paramsResult });
   } catch (err) {
     // 使用完整 stack（首行已含 "Error: message"），避免消息重复
