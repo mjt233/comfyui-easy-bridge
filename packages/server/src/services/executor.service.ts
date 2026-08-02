@@ -132,6 +132,8 @@ export function applyAliases(
     if (param.alias != null && param.alias !== '' && Object.prototype.hasOwnProperty.call(aliasValues, param.alias)) {
       // 媒体多文件时 aliasValues[alias] 为数组，按 fileIndex 取对应文件
       const raw = aliasValues[param.alias];
+      // 数组且目标索引越界（取到 undefined）时跳过注入，保持节点原值，避免写入空字符串
+      if (Array.isArray(raw) && raw[param.fileIndex ?? 0] === undefined) continue;
       const value = Array.isArray(raw) ? raw[param.fileIndex ?? 0] : raw;
       node.inputs[param.fieldName] = coerceParamValue(param.paramType, value);
       continue;
@@ -281,13 +283,19 @@ export async function processMediaParams(
     mediaAliasCount[param.alias] = (mediaAliasCount[param.alias] ?? 0) + 1;
   }
 
+  // 已处理的媒体别名（每个别名只上传一次，避免同别名多参数重复上传同一批文件）
+  const processedAliases = new Set<string>();
+
   for (const param of params) {
     // 仅处理媒体类型；boolean/number/text 不走上传
     if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
     // 无别名的参数不参与对外媒体上传
     if (param.alias == null || param.alias === '') continue;
+    // 该别名已被前面的参数上传过，跳过（同一别名只上传一次）
+    if (processedAliases.has(param.alias)) continue;
     const fileList = files[param.alias];
     if (!fileList || fileList.length === 0) continue;
+    processedAliases.add(param.alias);
 
     // 同别名多参数或多文件 → 上传全部文件返回数组；否则返回单文件名（兼容既有行为）
     const multi = mediaAliasCount[param.alias] > 1 || fileList.length > 1;
@@ -303,9 +311,8 @@ export async function processMediaParams(
       }
       result[param.alias] = names;
     } else {
-      const file = fileList[0];
       const filename = await uploadFileToComfyUI(
-        file,
+        fileList[0],
         param.paramType as 'image' | 'video' | 'audio',
         comfyuiBaseUrl,
       );

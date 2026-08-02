@@ -94,6 +94,16 @@ describe('executor.service', () => {
     expect(parsed['30:19'].inputs.value).toBe('original prompt');
   });
 
+  it('applyAliases skips injection when fileIndex is out of range for array value', () => {
+    // 数组别名值 + 越界 fileIndex → 跳过注入，保持节点原值，不写入空字符串
+    const params = [
+      { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'imgs', label: null, paramType: 'text', defaultValue: null, fileIndex: 5 },
+    ];
+    const result = applyAliases(sampleJson, params, { imgs: ['a.png', 'b.png'] });
+    const parsed = JSON.parse(result);
+    expect(parsed['30:19'].inputs.value).toBe('original prompt');
+  });
+
   it('applyAliases coerces string "false" to boolean false', () => {
     const params = [
       { id: 1, workflowId: 'test', nodeId: '30:19', fieldName: 'value', alias: 'flag', label: null, paramType: 'boolean', defaultValue: null },
@@ -290,6 +300,9 @@ describe('processMediaParams', () => {
     expect(Array.isArray(uploaded.ref_images)).toBe(true);
     const arr = uploaded.ref_images as string[];
     expect(arr).toHaveLength(2);
+
+    // 同别名只上传一次（2 参数 × 2 文件 → 2 次上传，而非 4 次）
+    expect(mockFetch).toHaveBeenCalledTimes(2);
 
     // applyAliases 按 fileIndex 注入不同文件名到对应节点（同别名多文件核心：两个节点不再共用同一文件）
     const rawJson = JSON.stringify({
