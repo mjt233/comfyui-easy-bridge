@@ -70,19 +70,33 @@
             />
             <v-select
               v-model="f.type"
-              :items="['text', 'number', 'boolean']"
+              :items="['text', 'number', 'boolean', 'image', 'video', 'audio']"
               label="类型"
               density="compact"
               variant="outlined"
               hide-details
               style="max-width: 130px"
             />
+            <!-- 媒体类型：单文件选择；其余：文本输入 -->
+            <v-file-input
+              v-else-if="isMediaType(f.type)"
+              v-model="f.file"
+              :label="'选择文件'"
+              density="compact"
+              variant="outlined"
+              hide-details
+              :show-size="false"
+              :accept="acceptType(f.type)"
+              class="flex-grow-1"
+            />
             <v-text-field
+              v-else
               v-model="f.value"
               label="值"
               density="compact"
               variant="outlined"
               hide-details
+              class="flex-grow-1"
             />
             <v-btn icon="mdi-close" size="small" variant="text" @click="freeFields.splice(i, 1)" />
           </div>
@@ -245,10 +259,12 @@ const mediaFiles = ref<Record<string, File[]>>({});
 interface FreeField {
   /** 字段名 */
   key: string;
-  /** 字段类型 text/number/boolean */
+  /** 字段类型 text/number/boolean/image/video/audio */
   type: string;
-  /** 字段值（字符串输入） */
+  /** 字段值（字符串输入，媒体类型不使用） */
   value: string;
+  /** 媒体类型所选文件（单文件） */
+  file: File | null;
 }
 const freeFields = ref<FreeField[]>([]);
 
@@ -270,9 +286,18 @@ function acceptType(paramType: string): string {
   }
 }
 
+/**
+ * 判断类型是否为媒体类型（image/video/audio）
+ * @param type 字段类型
+ * @returns 是否为媒体类型
+ */
+function isMediaType(type: string): boolean {
+  return ['image', 'video', 'audio'].includes(type);
+}
+
 /** 添加一行自定义字段 */
 function addFreeField(): void {
-  freeFields.value.push({ key: '', type: 'text', value: '' });
+  freeFields.value.push({ key: '', type: 'text', value: '', file: null });
 }
 
 /** 关闭对话框并复位 */
@@ -299,7 +324,7 @@ function buildParams(): Record<string, unknown> {
       result[p.alias] = stringValues.value[p.alias] ?? '';
     }
   }
-  // 自定义自由字段：同样按类型转换
+  // 自定义自由字段：按类型转换（媒体类型由文件映射承载，不并入参数）
   for (const f of freeFields.value) {
     const key = f.key.trim();
     if (!key) continue;
@@ -308,7 +333,7 @@ function buildParams(): Record<string, unknown> {
       result[key] = ['true', '1', 'yes', 'on'].includes(s);
     } else if (f.type === 'number') {
       result[key] = f.value === '' ? '' : Number(f.value);
-    } else {
+    } else if (!isMediaType(f.type)) {
       result[key] = f.value;
     }
   }
@@ -316,16 +341,25 @@ function buildParams(): Record<string, unknown> {
 }
 
 /**
- * 组装媒体文件：每别名取第一个文件
- * @returns 按别名分组的文件映射；无文件时返回 undefined
+ * 组装媒体文件：静态媒体参数取第一个文件；媒体自由字段取所选文件
+ * @returns 按别名/字段名分组的文件映射；无文件时返回 undefined
  */
 function buildFiles(): Record<string, File> | undefined {
   const files: Record<string, File> = {};
+  // 静态媒体参数：每别名取第一个文件
   for (const p of mediaParams.value) {
     if (!p.alias) continue;
     const arr = mediaFiles.value[p.alias];
     if (arr && arr.length > 0) {
       files[p.alias] = arr[0];
+    }
+  }
+  // 媒体自由字段：key 为字段名，取当前所选文件
+  for (const f of freeFields.value) {
+    const key = f.key.trim();
+    if (!key || !isMediaType(f.type)) continue;
+    if (f.file) {
+      files[key] = f.file;
     }
   }
   return Object.keys(files).length > 0 ? files : undefined;
@@ -450,4 +484,17 @@ watch(show, (val) => {
     resultTab.value = 'table';
   }
 });
+
+// 自定义字段类型切换：离开媒体类型时清除已选文件，避免残留脏文件
+watch(
+  freeFields,
+  (fields) => {
+    for (const f of fields) {
+      if (!isMediaType(f.type) && f.file) {
+        f.file = null;
+      }
+    }
+  },
+  { deep: true },
+);
 </script>
