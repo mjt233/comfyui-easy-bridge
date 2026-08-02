@@ -153,4 +153,19 @@ describe('runMigrations', () => {
 
     expect(() => runMigrations(sqlite, [dup, dup])).toThrow(/duplicated/);
   });
+
+  it('includes version and name in the failure error message', () => {
+    const sqlite = new Database(':memory:');
+    const bad: Migration = {
+      version: 7,
+      name: 'bad migration',
+      up: () => {
+        throw new Error('underlying failure');
+      },
+    };
+
+    expect(() => runMigrations(sqlite, [bad])).toThrow(
+      /Migration v7 \(bad migration\) failed: underlying failure/,
+    );
+  });
 });

@@ -57,7 +57,13 @@ export function runMigrations(
     'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)',
   );
   const runOne = sqlite.transaction((m: Migration) => {
-    m.up(sqlite);
+    try {
+      m.up(sqlite);
+    } catch (err) {
+      // 带上版本号与名称，便于在启动日志中定位失败迁移
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`Migration v${m.version} (${m.name}) failed: ${detail}`);
+    }
     insertRecord.run(m.version, m.name, new Date().toISOString());
   });
   for (const m of pending) {
