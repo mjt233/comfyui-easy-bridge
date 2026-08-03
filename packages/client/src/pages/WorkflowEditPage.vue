@@ -51,13 +51,24 @@
           class="mb-3"
         />
 
-        <v-textarea
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-1">ComfyUI API JSON</span>
+          <v-spacer />
+          <v-btn
+            size="small"
+            variant="tonal"
+            prepend-icon="mdi-format-json"
+            @click="formatRawJson"
+          >
+            格式化
+          </v-btn>
+        </div>
+        <!-- 工作流 JSON 统一用 Monaco 编辑器呈现，支持语法高亮/折叠/校验 -->
+        <MonacoEditor
           v-model="form.rawJson"
-          label="ComfyUI API JSON"
-          variant="outlined"
-          rows="12"
+          language="json"
+          height="360px"
           class="mb-3"
-          :clearable="true"
         />
 
         <v-file-input
@@ -170,6 +181,7 @@ import {
   deleteAttachment,
 } from '@/api/workflows';
 import type { WorkflowAttachment } from '@/types';
+import MonacoEditor from '@/components/MonacoEditor.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -206,6 +218,17 @@ function handleFileUpload(files: File | File[]) {
     form.value.rawJson = reader.result as string;
   };
   reader.readAsText(file);
+}
+
+/**
+ * 格式化工作流 JSON（缩进美化）；JSON 无效时保持原样并通过 snackbar 提示
+ */
+function formatRawJson(): void {
+  try {
+    form.value.rawJson = JSON.stringify(JSON.parse(form.value.rawJson), null, 2);
+  } catch {
+    snackbar.value = { show: true, text: 'JSON 格式不正确，无法格式化', color: 'error' };
+  }
 }
 
 async function handleSave() {

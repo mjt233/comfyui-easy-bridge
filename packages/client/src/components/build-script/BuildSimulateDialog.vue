@@ -180,11 +180,13 @@
               </v-window-item>
 
               <v-window-item value="json">
-                <v-textarea
+                <!-- 仅 JSON Tab 激活时挂载：避免隐藏容器中 Monaco 尺寸异常（与画布 Tab 一致的模式） -->
+                <MonacoEditor
+                  v-if="resultTab === 'json'"
                   :model-value="formattedJson"
+                  language="json"
                   readonly
-                  rows="16"
-                  variant="outlined"
+                  height="440px"
                   class="mb-2"
                 />
                 <v-btn color="primary" variant="tonal" @click="downloadJson">
@@ -228,6 +230,7 @@ import axios from 'axios';
 import { simulateBuild } from '@/api/workflows';
 import { parseWorkflowGraph, type GraphNode } from '../workflow-canvas/workflowGraph';
 import WorkflowCanvas from '../workflow-canvas/WorkflowCanvas.vue';
+import MonacoEditor from '../MonacoEditor.vue';
 import NodeDetailsDialog from './NodeDetailsDialog.vue';
 
 /** 对话框显示控制（v-model） */
