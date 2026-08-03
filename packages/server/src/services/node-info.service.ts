@@ -305,7 +305,7 @@ declare type ComfyNodeInfoMap = { [K in ComfyClassType]: ComfyNodeClassInfo };
 export function generateBuildDts(nodeInfo: Record<string, NodeClassInfo>): string {
   // 先拼好升级签名后的 BuildContext 片段，避免模板字面量内出现多行表达式
   const contextDts = buildBuildContextDts(
-    'addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]>, title?: string): ComfyNode;',
+    'addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]> & Record<string, unknown>, title?: string): ComfyNode;',
     'findNodesByClass(classType: ComfyClassType): string[];',
   );
   return `${BUILD_SCRIPT_DTS_HEADER}

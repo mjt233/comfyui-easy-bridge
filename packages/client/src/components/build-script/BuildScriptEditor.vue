@@ -188,6 +188,30 @@ onMounted(async () => {
   editor.onDidChangeModelContent(() => {
     editorValue.value = editor?.getValue() ?? '';
   });
+
+  // 补全触发增强：TS 语言服务的补全 triggerCharacters 只有 "."，输入单引号不会自动弹出候选。
+  // 这里在 addNode / findNodesByClass 调用内输入 ' 或 " 时手动触发补全，复用 TS 语言服务
+  // 基于 d.ts 中 ComfyClassType 联合类型提供的节点类名候选（getCompletionsAtPosition 已实测返回类名）。
+  // 注：onDidType 事件在运行时存在（codeEditorWidget 内部 _onDidType），但未暴露在 monaco 公开类型定义中，需类型断言。
+  type TypingEmitter = { onDidType(listener: (text: string) => void): monaco.IDisposable };
+  (editor as monaco.editor.IStandaloneCodeEditor & TypingEmitter).onDidType((text) => {
+    if (text !== "'" && text !== '"') return;
+    const model = editor?.getModel();
+    const position = editor?.getPosition();
+    if (!model || !position) return;
+    // 光标前（不含刚输入的单引号）的文本尾部；最后一行是 // 注释时不触发（模板示例行）
+    const offset = model.getOffsetAt(position) - text.length;
+    const tail = model.getValue().slice(0, offset).slice(-800);
+    const lineTail = tail.split('\n').pop() ?? '';
+    if (lineTail.includes('//')) return;
+    // 仍处于 addNode/findNodesByClass 调用语句内才触发：
+    // - addNode 需已传入第一个参数（出现逗号），命中第二/后续参数（classType）位置
+    // - findNodesByClass 仅一个 classType 参数，命中其首个参数位置
+    // - 语句未以 ; 结束，说明仍在该调用语句内
+    if (/(?:addNode\s*\([^;]*,[^;]*|findNodesByClass\s*\([^;]*)$/.test(tail)) {
+      editor?.trigger('build-script-editor', 'editor.action.triggerSuggest', {});
+    }
+  });
 });
 
 onBeforeUnmount(() => {

@@ -53,7 +53,7 @@ declare interface BuildContext {
   files: Record<string, FileMeta[]>;
   /** DB 静态参数配置副本（可作为声明返回的起点） */
   baseParams: RuntimeParam[];
-  /** 新增节点；节点 ID 已存在时抛错。返回节点实例；title 可选，一并设置 _meta.title */
+  /** 新增节点；节点 ID 已存在时抛错。返回节点实例；title 可选，一并设置 _meta.title；inputs 允许未在 object_info 声明的动态 key（如 'resize_type.width'） */
   ${addNodeSig}
   /** 删除节点；自动清理指向它的连线 */
   removeNode(nodeId: string): void;

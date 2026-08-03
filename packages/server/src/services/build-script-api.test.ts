@@ -61,7 +61,7 @@ describe('build-script-api', () => {
 
   it('buildBuildContextDts injects custom signatures', () => {
     const dts = buildBuildContextDts(
-      'addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]>, title?: string): ComfyNode;',
+      'addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]> & Record<string, unknown>, title?: string): ComfyNode;',
       'findNodesByClass(classType: ComfyClassType): string[];',
     );
     expect(dts).toContain('addNode<K extends ComfyClassType>');
