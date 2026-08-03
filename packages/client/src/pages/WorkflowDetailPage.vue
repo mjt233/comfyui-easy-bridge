@@ -375,6 +375,9 @@
       </v-card>
     </v-dialog>
 
+    <!-- 节点详情对话框：点击画布节点时展示该节点全部输入/输出（与模拟构建画布行为一致） -->
+    <NodeDetailsDialog v-model="nodeDetailsOpen" :node="selectedNode" />
+
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
     </v-snackbar>
@@ -388,7 +391,9 @@ import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
+import NodeDetailsDialog from '@/components/build-script/NodeDetailsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
+import { parseWorkflowGraph, type GraphNode } from '@/components/workflow-canvas/workflowGraph';
 
 /**
  * 节点字段展示信息
@@ -445,6 +450,12 @@ const showDescription = ref(false);
 
 /** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本） */
 const section = ref<'canvas' | 'config' | 'build'>('config');
+
+/** 节点详情对话框是否打开 */
+const nodeDetailsOpen = ref(false);
+
+/** 当前选中的节点（供节点详情对话框展示） */
+const selectedNode = ref<GraphNode | null>(null);
 
 /**
  * 将节点字段平铺为列表视图数据
@@ -652,18 +663,17 @@ function openDialog(node: NodeField, info: FieldInfo) {
 }
 
 /**
- * 画布节点点击 → 打开该节点可配置字段的编辑对话框
+ * 画布节点点击 → 打开节点详情对话框（与动态构建脚本-模拟构建结果中的画布行为一致）
  * @param nodeId 节点 ID
  */
-function handleCanvasNodeClick(nodeId: string) {
-  const node = nodes.value.find(n => n.nodeId === nodeId);
-  if (!node || node.fields.length === 0) {
-    snackbar.value = { show: true, text: '该节点没有可配置字段', color: 'warning' };
-    return;
-  }
-  // 优先打开已配置过别名的字段，否则打开第一个可配置字段
-  const configured = node.fields.find(f => f.paramId != null);
-  openDialog(node, configured ?? node.fields[0]!);
+function handleCanvasNodeClick(nodeId: string): void {
+  if (!workflow.value) return;
+  // 从 rawJson 解析节点图，按被点击的节点 ID 查找节点
+  const parsed = parseWorkflowGraph(workflow.value.rawJson);
+  const node = parsed.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+  selectedNode.value = node;
+  nodeDetailsOpen.value = true;
 }
 
 /**
