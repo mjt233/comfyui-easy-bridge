@@ -53,7 +53,7 @@ declare interface BuildContext {
   files: Record<string, FileMeta[]>;
   /** DB 静态参数配置副本（可作为声明返回的起点） */
   baseParams: RuntimeParam[];
-  /** 新增节点；节点 ID 已存在时抛错 */
+  /** 新增节点；节点 ID 已存在时抛错。返回节点实例；title 可选，一并设置 _meta.title */
   ${addNodeSig}
   /** 删除节点；自动清理指向它的连线 */
   removeNode(nodeId: string): void;
@@ -112,7 +112,7 @@ declare interface BuildResult {
 
 /** 静态版 BuildContext 声明（classType: string） */
 const STATIC_BUILD_CONTEXT_DTS = buildBuildContextDts(
-  'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>): void;',
+  'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>, title?: string): ComfyNode;',
   'findNodesByClass(classType: string): string[];',
 );
 

@@ -26,6 +26,21 @@ describe('runBuildScript', () => {
     expect(result.workflow?.['9'].class_type).toBe('UpscaleModelLoader');
   });
 
+  it('addNode returns the node instance and supports setting _meta.title via title param', async () => {
+    const script = `
+      export default function build(ctx: any) {
+        const node = ctx.addNode('9', 'UpscaleModelLoader', { model_name: '4x.pth' }, '超分模型');
+        // 返回值即存入 workflow 的同一实例：直接改 inputs 应生效
+        node.inputs.model_name = '4x-UltraSharp.pth';
+        return { workflow: ctx.workflow, params: [] };
+      }
+    `;
+    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    expect(result.ok).toBe(true);
+    expect(result.workflow?.['9']._meta?.title).toBe('超分模型');
+    expect(result.workflow?.['9'].inputs.model_name).toBe('4x-UltraSharp.pth');
+  });
+
   it('supports async default export and reads params', async () => {
     const script = `
       export default async function build(ctx: any) {

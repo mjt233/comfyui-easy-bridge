@@ -116,7 +116,7 @@ describe('generateNodeClassDts / generateBuildDts', () => {
     const full = generateBuildDts(summarizeNodeInfo(sampleObjectInfo));
     expect(full).toContain('declare interface ComfyNode');
     expect(full).toContain('declare type ComfyNodeInputs = {');
-    expect(full).toContain('addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]>): void;');
+    expect(full).toContain('addNode<K extends ComfyClassType>(nodeId: string, classType: K, inputs?: Partial<ComfyNodeInputs[K]>, title?: string): ComfyNode;');
     expect(full).toContain('findNodesByClass(classType: ComfyClassType): string[];');
     // 新契约：动态版 d.ts 同样包含 RuntimeParam/FileMeta/BuildResult 与 files/baseParams
     expect(full).toContain('declare interface RuntimeParam');

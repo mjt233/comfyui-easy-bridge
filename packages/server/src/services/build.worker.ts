@@ -36,11 +36,18 @@ function createContext(workflow, params, files, baseParams) {
     params,
     files,
     baseParams,
-    addNode(nodeId, classType, inputs) {
+    addNode(nodeId, classType, inputs, title) {
       if (Object.prototype.hasOwnProperty.call(wf, nodeId)) {
         throw new Error('addNode: node "' + nodeId + '" already exists');
       }
-      wf[nodeId] = { inputs: Object.assign({}, inputs || {}), class_type: classType };
+      const node = { inputs: Object.assign({}, inputs || {}), class_type: classType };
+      // 第 4 个参数 title 可选：一并设置 _meta.title，免去二次 setTitle
+      if (title !== undefined) {
+        node._meta = { title };
+      }
+      wf[nodeId] = node;
+      // 返回节点实例，方便脚本继续修改该节点
+      return node;
     },
     removeNode(nodeId) {
       if (!wf[nodeId]) throw new Error('removeNode: node "' + nodeId + '" not found');
