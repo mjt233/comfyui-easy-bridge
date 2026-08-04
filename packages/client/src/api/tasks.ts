@@ -7,6 +7,8 @@ export interface TaskLog {
   workflowName: string;
   promptId: string | null;
   aliasValues: string;
+  /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */
+  originalForm: string | null;
   comfyuiUrl: string;
   comfyuiRequestBody: string | null;
   comfyuiResponse: string | null;

@@ -92,7 +92,7 @@
       </v-data-table>
     </v-card>
 
-    <v-dialog v-model="detailDialog" max-width="800">
+    <v-dialog v-model="detailDialog" max-width="960">
       <v-card v-if="selectedTask">
         <v-card-title>任务详情</v-card-title>
         <v-card-text>
@@ -139,72 +139,168 @@
             </v-list-item>
           </v-list>
 
-          <v-expansion-panels class="mt-4">
-            <v-expansion-panel title="提交参数">
-              <v-expansion-panel-text>
-                <pre class="detail-pre">{{ formatJson(selectedTask.aliasValues) }}</pre>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-            <v-expansion-panel title="请求 URL">
-              <v-expansion-panel-text>
-                <pre class="detail-pre">{{ selectedTask.comfyuiUrl }}</pre>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-            <v-expansion-panel title="请求体">
-              <v-expansion-panel-text>
-                <pre class="detail-pre">{{ selectedTask.comfyuiRequestBody ? formatJson(selectedTask.comfyuiRequestBody) : '-' }}</pre>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-            <v-expansion-panel title="ComfyUI 响应">
-              <v-expansion-panel-text>
-                <pre class="detail-pre">{{ selectedTask.comfyuiResponse ? formatJson(selectedTask.comfyuiResponse) : '-' }}</pre>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-            <v-expansion-panel title="输出文件">
-              <v-expansion-panel-text>
-                <div v-if="outputFilesLoading" class="text-center pa-4">
-                  <v-progress-circular indeterminate size="20" />
-                </div>
-                <div v-else-if="outputFiles.length === 0" class="text-body-2 text-grey">
-                  无输出文件
-                </div>
-                <v-list v-else density="compact">
-                  <v-list-item v-for="file in outputFiles" :key="file.filename">
-                    <template #prepend>
-                      <v-icon v-if="file.fileType === 'image'" color="primary">
-                        mdi-image
-                      </v-icon>
-                      <v-icon v-else-if="file.fileType === 'video'" color="purple">
-                        mdi-film
-                      </v-icon>
-                      <v-icon v-else color="orange">
-                        mdi-music
-                      </v-icon>
+          <v-tabs v-model="detailTab" color="primary" class="mt-4">
+            <v-tab value="params">
+              提交参数
+            </v-tab>
+            <v-tab value="url">
+              请求 URL
+            </v-tab>
+            <v-tab value="body">
+              请求体
+            </v-tab>
+            <v-tab value="canvas">
+              Prompt 画布
+            </v-tab>
+            <v-tab value="response">
+              ComfyUI 响应
+            </v-tab>
+            <v-tab value="output">
+              输出文件
+            </v-tab>
+          </v-tabs>
+
+          <v-window v-model="detailTab" class="mt-2">
+            <v-window-item value="params">
+              <div class="d-flex align-start">
+                <!-- 左侧页签：切换查看原始表单 / 提交参数 -->
+                <v-tabs
+                  v-model="paramsSubTab"
+                  direction="vertical"
+                  color="primary"
+                  class="params-sub-tabs mr-3"
+                >
+                  <v-tab value="form">
+                    原始表单
+                  </v-tab>
+                  <v-tab value="submitted">
+                    提交参数
+                  </v-tab>
+                </v-tabs>
+                <v-window v-model="paramsSubTab" class="flex-grow-1">
+                  <v-window-item value="form">
+                    <!-- 原始表单：展示用户提交的参数与上传文件元数据 -->
+                    <template v-if="originalFormData">
+                      <template v-if="hasFormParams">
+                        <p class="text-subtitle-2 text-primary mb-1">
+                          表单参数
+                        </p>
+                        <pre class="detail-pre">{{ formatJson(JSON.stringify(originalFormData.params)) }}</pre>
+                      </template>
+                      <template v-if="originalFormData.files.length > 0">
+                        <p class="text-subtitle-2 text-primary mt-3 mb-1">
+                          上传文件（{{ originalFormData.files.length }}）
+                        </p>
+                        <v-table density="compact">
+                          <thead>
+                            <tr>
+                              <th style="min-width: 120px">
+                                表单 Key
+                              </th>
+                              <th>
+                                文件名
+                              </th>
+                              <th style="width: 100px">
+                                大小
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-for="(file, index) in originalFormData.files" :key="index">
+                              <td>
+                                <code>{{ file.alias }}</code>
+                              </td>
+                              <td class="text-body-2">
+                                {{ file.filename }}
+                              </td>
+                              <td class="text-body-2">
+                                {{ formatFileSize(file.size) }}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </v-table>
+                      </template>
+                      <p
+                        v-if="!hasFormParams && originalFormData.files.length === 0"
+                        class="text-body-2 text-grey"
+                      >
+                        无原始表单数据
+                      </p>
                     </template>
-                    <v-list-item-title class="text-body-2">
-                      {{ file.filename }}
-                    </v-list-item-title>
-                    <template #append>
-                      <v-btn
-                        icon="mdi-eye"
-                        size="small"
-                        variant="text"
-                        @click.stop="openPreview(file)"
-                      />
-                      <v-btn
-                        icon="mdi-download"
-                        size="small"
-                        variant="text"
-                        :href="file.url"
-                        target="_blank"
-                        @click.stop
-                      />
-                    </template>
-                  </v-list-item>
-                </v-list>
-              </v-expansion-panel-text>
-            </v-expansion-panel>
-          </v-expansion-panels>
+                    <p v-else class="text-body-2 text-grey">
+                      无原始表单数据
+                    </p>
+                  </v-window-item>
+                  <v-window-item value="submitted">
+                    <pre class="detail-pre">{{ formatJson(selectedTask.aliasValues) }}</pre>
+                  </v-window-item>
+                </v-window>
+              </div>
+            </v-window-item>
+            <v-window-item value="url">
+              <pre class="detail-pre">{{ selectedTask.comfyuiUrl }}</pre>
+            </v-window-item>
+            <v-window-item value="body">
+              <pre class="detail-pre">{{ selectedTask.comfyuiRequestBody ? formatJson(selectedTask.comfyuiRequestBody) : '-' }}</pre>
+            </v-window-item>
+            <v-window-item value="canvas">
+              <!-- 仅画布 Tab 激活时挂载：保证 vue-flow viewport 以真实尺寸初始化，避免隐藏挂载触发警告（项目既有约定） -->
+              <WorkflowCanvas
+                v-if="detailTab === 'canvas' && promptJson"
+                :raw-json="promptJson"
+                :height="'440px'"
+                @node-click="handleCanvasNodeClick"
+              />
+              <p v-else class="text-grey text-center py-6 ma-0">
+                请求体中没有可展示的 prompt 结构
+              </p>
+            </v-window-item>
+            <v-window-item value="response">
+              <pre class="detail-pre">{{ selectedTask.comfyuiResponse ? formatJson(selectedTask.comfyuiResponse) : '-' }}</pre>
+            </v-window-item>
+            <v-window-item value="output">
+              <div v-if="outputFilesLoading" class="text-center pa-4">
+                <v-progress-circular indeterminate size="20" />
+              </div>
+              <div v-else-if="outputFiles.length === 0" class="text-body-2 text-grey">
+                无输出文件
+              </div>
+              <v-list v-else density="compact">
+                <v-list-item v-for="file in outputFiles" :key="file.filename">
+                  <template #prepend>
+                    <v-icon v-if="file.fileType === 'image'" color="primary">
+                      mdi-image
+                    </v-icon>
+                    <v-icon v-else-if="file.fileType === 'video'" color="purple">
+                      mdi-film
+                    </v-icon>
+                    <v-icon v-else color="orange">
+                      mdi-music
+                    </v-icon>
+                  </template>
+                  <v-list-item-title class="text-body-2">
+                    {{ file.filename }}
+                  </v-list-item-title>
+                  <template #append>
+                    <v-btn
+                      icon="mdi-eye"
+                      size="small"
+                      variant="text"
+                      @click.stop="openPreview(file)"
+                    />
+                    <v-btn
+                      icon="mdi-download"
+                      size="small"
+                      variant="text"
+                      :href="file.url"
+                      target="_blank"
+                      @click.stop
+                    />
+                  </template>
+                </v-list-item>
+              </v-list>
+            </v-window-item>
+          </v-window>
         </v-card-text>
         <v-card-actions>
           <v-btn
@@ -345,12 +441,17 @@
         </v-card-text>
       </v-card>
     </v-dialog>
+    <!-- 节点详情对话框：点击画布节点时展示该节点全部参数 -->
+    <NodeDetailsDialog v-model="nodeDetailsOpen" :node="selectedNode" />
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { listTasks, clearCompletedTasks, submitTask, cancelTask, fetchTaskOutputFiles, type TaskLog, type OutputFile } from '@/api/tasks';
+import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
+import NodeDetailsDialog from '@/components/build-script/NodeDetailsDialog.vue';
+import { parseWorkflowGraph, type GraphNode } from '@/components/workflow-canvas/workflowGraph';
 
 const headers = [
   { title: '提交时间', key: 'createdAt' },
@@ -364,6 +465,10 @@ const headers = [
 const tasks = ref<TaskLog[]>([]);
 const loading = ref(true);
 const detailDialog = ref(false);
+/** 详情对话框当前激活的页签 */
+const detailTab = ref('params');
+/** 提交参数页签内的左侧子页签：form=原始表单 / submitted=提交参数 */
+const paramsSubTab = ref('form');
 const selectedTask = ref<TaskLog | null>(null);
 const outputFiles = ref<OutputFile[]>([]);
 const outputFilesLoading = ref(false);
@@ -372,6 +477,11 @@ const hasCompleted = ref(false);
 const previewDialog = ref(false);
 const previewFile = ref<OutputFile | null>(null);
 const previewError = ref(false);
+
+/** 节点详情对话框是否打开（画布节点点击时展示） */
+const nodeDetailsOpen = ref(false);
+/** 当前选中的节点（供节点详情对话框展示） */
+const selectedNode = ref<GraphNode | null>(null);
 
 const listOutputDialog = ref(false);
 const listOutputTaskId = ref<string | null>(null);
@@ -392,6 +502,84 @@ function formatJson(str: string): string {
     return str;
   }
 }
+
+/** 原始表单中的上传文件条目 */
+interface OriginalFormFile {
+  /** 表单 key（别名） */
+  alias: string;
+  /** 用户上传的原始文件名 */
+  filename: string;
+  /** 文件字节数 */
+  size: number;
+  /** MIME 类型 */
+  mimetype?: string;
+}
+
+/** 原始请求表单数据（解析自 originalForm JSON） */
+interface OriginalFormData {
+  /** 用户提交的非文件参数 */
+  params: Record<string, unknown>;
+  /** 上传文件元数据列表 */
+  files: OriginalFormFile[];
+}
+
+/**
+ * 解析任务原始请求表单 JSON（保留用户提交的原始值，含动态字段别名字段）。
+ * @returns 原始表单数据；字段缺失或解析失败时为 null
+ */
+const originalFormData = computed<OriginalFormData | null>(() => {
+  const raw = selectedTask.value?.originalForm;
+  if (!raw) return null;
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    const params =
+      obj.params !== null && typeof obj.params === 'object' && !Array.isArray(obj.params)
+        ? (obj.params as Record<string, unknown>)
+        : {};
+    const files = Array.isArray(obj.files) ? (obj.files as OriginalFormFile[]) : [];
+    return { params, files };
+  } catch {
+    return null;
+  }
+});
+
+/** 原始表单是否包含参数 */
+const hasFormParams = computed(() => {
+  const data = originalFormData.value;
+  return data !== null && Object.keys(data.params).length > 0;
+});
+
+/**
+ * 格式化文件大小为人类可读文本
+ * @param bytes 字节数
+ * @returns 如 "1.2 KB"
+ */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * 从请求体 JSON 中提取 prompt 子结构字符串（用于画布视图渲染）。
+ * ComfyUI /prompt 请求体结构为 { prompt: {...}, client_id: '...' }，
+ * 画布组件只接收 prompt 子结构，因此此处剥离外层字段。
+ * @returns prompt 子结构 JSON 字符串；请求体缺失、解析失败或结构不符时返回空字符串
+ */
+const promptJson = computed(() => {
+  const body = selectedTask.value?.comfyuiRequestBody;
+  if (!body) return '';
+  try {
+    const obj = JSON.parse(body) as Record<string, unknown>;
+    const prompt = obj.prompt;
+    if (prompt !== null && typeof prompt === 'object' && !Array.isArray(prompt)) {
+      return JSON.stringify(prompt);
+    }
+    return '';
+  } catch {
+    return '';
+  }
+});
 
 function statusColor(status: string): string {
   switch (status) {
@@ -415,6 +603,8 @@ function statusText(status: string): string {
 
 async function openDetail(item: TaskLog) {
   selectedTask.value = item;
+  detailTab.value = 'params';
+  paramsSubTab.value = 'form';
   detailDialog.value = true;
   outputFiles.value = [];
   if (item.status === 'completed') {
@@ -466,6 +656,20 @@ function openPreview(file: OutputFile) {
 /** Vuetify v-data-table 行点击事件处理：从事件数据中提取 item */
 function handleRowClick(_event: PointerEvent, data: { item: TaskLog }) {
   openDetail(data.item);
+}
+
+/**
+ * 画布节点点击 → 打开节点详情对话框（与工作流详情页画布行为一致）
+ * @param nodeId 节点 ID
+ */
+function handleCanvasNodeClick(nodeId: string): void {
+  if (!promptJson.value) return;
+  // 从请求体中的 prompt 结构解析节点图，按被点击的节点 ID 查找节点
+  const parsed = parseWorkflowGraph(promptJson.value);
+  const node = parsed.nodes.find(n => n.id === nodeId);
+  if (!node) return;
+  selectedNode.value = node;
+  nodeDetailsOpen.value = true;
 }
 
 async function fetchTasks() {
@@ -550,5 +754,9 @@ onUnmounted(() => {
   width: 100%;
   max-width: 600px;
   margin: 48px auto;
+}
+
+.params-sub-tabs {
+  min-width: 96px;
 }
 </style>

@@ -17,6 +17,37 @@ import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../ser
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
+/** 上传文件元数据（原始请求表单中的文件条目） */
+interface UploadedFileMeta {
+  /** 用户上传的原始文件名 */
+  originalname: string;
+  /** MIME 类型 */
+  mimetype: string;
+  /** 文件字节数 */
+  size: number;
+}
+
+/**
+ * 构建原始请求表单 JSON（用户提交的参数 + 上传文件元数据），用于任务日志。
+ * 原始表单保留用户提交的原始值（含动态构建脚本消费的动态别名字段），
+ * 文件仅记录元数据（表单 key / 原始文件名 / 大小），不保存文件内容。
+ * @param aliasValues 用户提交的非文件参数
+ * @param uploadedFiles 按表单 key 分组的上传文件
+ * @returns 原始表单 JSON 字符串
+ */
+function buildOriginalForm(
+  aliasValues: Record<string, unknown>,
+  uploadedFiles: Record<string, UploadedFileMeta[]>,
+): string {
+  const files: Array<{ alias: string; filename: string; size: number; mimetype: string }> = [];
+  for (const [alias, list] of Object.entries(uploadedFiles)) {
+    for (const f of list) {
+      files.push({ alias, filename: f.originalname, size: f.size, mimetype: f.mimetype });
+    }
+  }
+  return JSON.stringify({ params: aliasValues, files });
+}
+
 export function createWorkflowController(db: BetterSQLite3Database<typeof schema>) {
   const workflowService = new WorkflowService(db);
   const settingsService = new SettingsService(db);
@@ -343,6 +374,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           uploadedFiles = {};
         }
 
+        // 任务日志记录用户原始请求表单（保留原始值，含动态构建脚本消费的动态别名字段；文件仅记元数据）
+        const originalFormJson = buildOriginalForm(aliasValues, uploadedFiles);
+
         // 静态参数转运行时形态（脚本声明的基底）
         const baseParams = toRuntimeParams(params);
 
@@ -363,6 +397,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
               workflowId: wf.id,
               workflowName: wf.name,
               aliasValues: JSON.stringify(aliasValues),
+              originalForm: originalFormJson,
               comfyuiUrl: `${baseUrl}/prompt`,
               comfyuiRequestBody: null,
               comfyuiResponse: null,
@@ -400,6 +435,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             workflowId: wf.id,
             workflowName: wf.name,
             aliasValues: submittedAliasValuesJson,
+            originalForm: originalFormJson,
             comfyuiUrl: `${baseUrl}/prompt`,
             comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
             comfyuiResponse: null,
@@ -421,6 +457,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           workflowId: wf.id,
           workflowName: wf.name,
           aliasValues: submittedAliasValuesJson,
+          originalForm: originalFormJson,
           comfyuiUrl: `${baseUrl}/prompt`,
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,

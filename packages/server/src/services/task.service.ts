@@ -11,6 +11,8 @@ export interface CreateTaskInput {
   workflowName: string;
   /** 提交的字段参数 JSON */
   aliasValues: string;
+  /** 用户原始请求表单 JSON（参数 + 文件元数据）；旧记录可能为 null */
+  originalForm?: string | null;
   /** 请求 ComfyUI 的完整 URL */
   comfyuiUrl: string;
   /** 请求体 JSON */
@@ -62,6 +64,7 @@ export class TaskService {
       workflowId: input.workflowId,
       workflowName: input.workflowName,
       aliasValues: input.aliasValues,
+      originalForm: input.originalForm ?? null,
       comfyuiUrl: input.comfyuiUrl,
       comfyuiRequestBody: input.comfyuiRequestBody,
       comfyuiResponse: input.comfyuiResponse,

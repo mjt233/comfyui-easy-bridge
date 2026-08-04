@@ -49,7 +49,7 @@ describe('Workflow API', () => {
         mimetype TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     db = drizzle(sqlite, { schema });
@@ -730,6 +730,45 @@ describe('Workflow API', () => {
     expect(task?.status).toBe('failed');
     expect(task?.errorMessage).toContain('Dynamic build failed');
     expect(task?.errorMessage).toContain('broken');
+  });
+
+  it('execute records original request form with file metadata', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const rawJson = JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-form', name: 'ExecForm', rawJson });
+    await supertest(app)
+      .put('/api/settings')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/exec-form/execute')
+      .field('params', JSON.stringify({ width: 1280, prompt: 'hello' }))
+      .attach('frame_0', Buffer.from('fake-image-bytes'), 'frame0.png');
+    // 提交会失败（ComfyUI 不可达），但任务日志应记录用户原始请求表单
+    expect(res.status).toBe(200);
+    expect(['failed', 'queued']).toContain(res.body.status);
+
+    const tasks = await supertest(app).get('/api/tasks').set('Authorization', `Bearer ${token}`);
+    const task = (tasks.body as Array<{ workflowId: string; originalForm: string | null }>)
+      .find((t) => t.workflowId === 'exec-form');
+    expect(task).toBeTruthy();
+    const form = JSON.parse(task!.originalForm as string) as {
+      params: Record<string, unknown>;
+      files: Array<{ alias: string; filename: string; size: number }>;
+    };
+    // 原始表单保留用户提交的非文件参数
+    expect(form.params.width).toBe(1280);
+    expect(form.params.prompt).toBe('hello');
+    // 上传文件记录表单 key / 原始文件名 / 大小
+    expect(form.files).toHaveLength(1);
+    expect(form.files[0].alias).toBe('frame_0');
+    expect(form.files[0].filename).toBe('frame0.png');
+    expect(form.files[0].size).toBe(Buffer.byteLength('fake-image-bytes'));
   });
 
   it('simulate with multipart media upload returns json and params', async () => {

@@ -31,6 +31,10 @@ describe('runMigrations', () => {
     expect(cols.map((c) => c.name)).toEqual(
       expect.arrayContaining(['build_script', 'build_script_enabled']),
     );
+
+    // task_logs 含原始请求表单列
+    const taskCols = sqlite.prepare('PRAGMA table_info(task_logs)').all() as Array<{ name: string }>;
+    expect(taskCols.map((c) => c.name)).toEqual(expect.arrayContaining(['original_form']));
   });
 
   it('upgrades an old database by adding missing columns and keeping data', () => {

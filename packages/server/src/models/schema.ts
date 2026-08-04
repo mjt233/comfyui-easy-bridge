@@ -35,6 +35,8 @@ export const taskLogs = sqliteTable('task_logs', {
   workflowName: text('workflow_name').notNull(),
   promptId: text('prompt_id'),
   aliasValues: text('alias_values').notNull(),
+  /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */
+  originalForm: text('original_form'),
   comfyuiUrl: text('comfyui_url').notNull(),
   comfyuiRequestBody: text('comfyui_request_body'),
   comfyuiResponse: text('comfyui_response'),

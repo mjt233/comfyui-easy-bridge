@@ -151,6 +151,11 @@ export const v2 = {
 
 在 `migrations/index.ts` 的数组中追加，并同步更新 `docs/superpowers/specs` 与 AGENTS.md 中的说明。
 
+### 7. 已落地迁移
+
+- **迁移 1** `v1-initial-schema.ts`：5 张业务表建表 + 旧库缺列幂等补偿
+- **迁移 2** `v2-task-original-form.ts`：`task_logs` 新增 `original_form` 列，记录用户原始请求表单 JSON（参数 + 上传文件元数据：表单 key / 文件名 / 大小；旧任务为 null）
+
 ## 测试
 
 重写 `migrations.test.ts`，覆盖：
@@ -170,3 +175,5 @@ export const v2 = {
 - **新增文件**：`models/migrations/index.ts`、`models/migrations/runner.ts`、`models/migrations/v1-initial-schema.ts`
 - **不涉及**：controllers / services / routes / 前端；Drizzle schema（`schema.ts`）不变
 - **兼容性**：现有磁盘库（`data/bridge.db`）启动时自动升级，无需人工干预；`:memory:` 测试库路径不受影响
+
+> **迁移 2 追加说明（2026-08-04）**：新增 `v2-task-original-form.ts`（`task_logs.original_form`），Drizzle schema（`schema.ts`）、`TaskService.create`、execute 控制器同步更新，前端任务详情「提交参数」页签新增左侧子页签（原始表单 / 提交参数）。
