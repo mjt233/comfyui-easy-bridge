@@ -41,15 +41,20 @@
           class="mb-3"
         />
 
-        <v-textarea
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-1">备注说明（Markdown）</span>
+        </div>
+        <!-- 备注说明使用 Monaco 编辑器：Markdown 语法高亮，可拖拽调整高度 -->
+        <MonacoEditor
           v-model="form.description"
-          label="备注说明（Markdown）"
-          hint="支持 Markdown 语法，可在工作流详情页与执行对话框中展开渲染展示"
-          variant="outlined"
-          rows="4"
-          auto-grow
-          class="mb-3"
+          language="markdown"
+          height="240px"
+          resizable
+          class="mb-1"
         />
+        <div class="text-caption text-grey mb-3">
+          支持 Markdown 语法，可在工作流详情页与执行对话框中展开渲染展示
+        </div>
 
         <div class="d-flex align-center mb-2">
           <span class="text-subtitle-1">ComfyUI API JSON</span>
