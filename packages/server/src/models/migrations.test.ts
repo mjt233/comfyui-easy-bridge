@@ -26,10 +26,10 @@ describe('runMigrations', () => {
       ]),
     );
 
-    // workflows 含动态构建列
+    // workflows 含动态构建列与动态字段声明列
     const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
     expect(cols.map((c) => c.name)).toEqual(
-      expect.arrayContaining(['build_script', 'build_script_enabled']),
+      expect.arrayContaining(['build_script', 'build_script_enabled', 'declared_params']),
     );
 
     // task_logs 含原始请求表单列
@@ -58,7 +58,7 @@ describe('runMigrations', () => {
     // 缺列被补齐
     const cols = sqlite.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>;
     expect(cols.map((c) => c.name)).toEqual(
-      expect.arrayContaining(['build_script', 'build_script_enabled']),
+      expect.arrayContaining(['build_script', 'build_script_enabled', 'declared_params']),
     );
 
     // 原有数据保留

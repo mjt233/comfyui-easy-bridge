@@ -4,6 +4,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from './workflow.service';
 import { AttachmentService } from './attachment.service';
+import type { DeclaredParam } from './param.types';
 
 /**
  * 导出清单中的附件元信息
@@ -44,6 +45,8 @@ interface ExportWorkflow {
     paramType: string;
     defaultValue: string | null;
   }>;
+  /** 动态字段静态声明 */
+  declaredParams: DeclaredParam[];
   /** 附件元信息 */
   attachments: ExportAttachment[];
 }
@@ -126,6 +129,7 @@ export class WorkflowIOService {
           paramType: p.paramType,
           defaultValue: p.defaultValue,
         })),
+        declaredParams: this.workflowService.getDeclaredParams(id),
         attachments: attachments.map((a) => ({
           filename: a.filename,
           storedName: a.storedName,
@@ -176,6 +180,8 @@ export class WorkflowIOService {
           id: newId,
           name: entry.name,
           rawJson: entry.rawJson,
+          // 旧版导出无 declaredParams 时回退空数组
+          declaredParams: JSON.stringify(entry.declaredParams ?? []),
           description: entry.description ?? '',
           createdAt: entry.createdAt ?? new Date().toISOString(),
           updatedAt: entry.updatedAt ?? new Date().toISOString(),
@@ -252,13 +258,14 @@ export class WorkflowIOService {
     // 生成唯一新 ID（-copy- 后缀，冲突时重试）
     const newId = this.generateUniqueId(id, 'copy');
 
-    // ① 复制工作流本体：rawJson + 动态构建脚本与启用状态 + 备注说明，名称追加 " (copy)"
+    // ① 复制工作流本体：rawJson + 动态构建脚本与启用状态 + 动态字段声明 + 备注说明，名称追加 " (copy)"
     this.db.insert(schema.workflows).values({
       id: newId,
       name: `${existing.name} (copy)`,
       rawJson: existing.rawJson,
       buildScript: existing.buildScript,
       buildScriptEnabled: existing.buildScriptEnabled,
+      declaredParams: existing.declaredParams,
       description: existing.description ?? '',
       createdAt: now,
       updatedAt: now,

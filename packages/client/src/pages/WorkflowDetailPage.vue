@@ -135,6 +135,9 @@
         <v-tab value="build">
           动态构建脚本
         </v-tab>
+        <v-tab value="dynamic">
+          动态字段
+        </v-tab>
       </v-tabs>
 
       <v-window v-model="section">
@@ -157,6 +160,17 @@
               v-if="workflow && section === 'build'"
               :workflow="workflow"
               @saved="handleBuildScriptSaved"
+            />
+          </v-card-text>
+        </v-window-item>
+
+        <v-window-item value="dynamic">
+          <v-card-text>
+            <!-- 仅 Dynamic 页签激活时挂载编辑器，避免隐藏挂载的布局问题 -->
+            <DeclaredParamsEditor
+              v-if="workflow && section === 'dynamic'"
+              :workflow="workflow"
+              @saved="handleDeclaredParamsSaved"
             />
           </v-card-text>
         </v-window-item>
@@ -391,6 +405,7 @@ import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
+import DeclaredParamsEditor from '@/components/DeclaredParamsEditor.vue';
 import NodeDetailsDialog from '@/components/build-script/NodeDetailsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
 import { parseWorkflowGraph, type GraphNode } from '@/components/workflow-canvas/workflowGraph';
@@ -448,8 +463,8 @@ const viewMode = ref<'chip' | 'list'>('chip');
 /** 备注说明是否展开 */
 const showDescription = ref(false);
 
-/** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本） */
-const section = ref<'canvas' | 'config' | 'build'>('config');
+/** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本 / 动态字段） */
+const section = ref<'canvas' | 'config' | 'build' | 'dynamic'>('config');
 
 /** 节点详情对话框是否打开 */
 const nodeDetailsOpen = ref(false);
@@ -630,6 +645,14 @@ async function clearAllOrphans() {
  * @param updated 保存返回的最新工作流详情
  */
 function handleBuildScriptSaved(updated: WorkflowDetail): void {
+  workflow.value = updated;
+}
+
+/**
+ * 动态字段声明保存成功后刷新本地工作流
+ * @param updated 保存返回的最新工作流详情
+ */
+function handleDeclaredParamsSaved(updated: WorkflowDetail): void {
   workflow.value = updated;
 }
 

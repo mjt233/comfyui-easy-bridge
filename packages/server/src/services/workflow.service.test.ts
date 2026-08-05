@@ -12,7 +12,7 @@ describe('WorkflowService', () => {
     sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -303,5 +303,52 @@ describe('WorkflowService', () => {
     expect(renamed?.id).toBe('wf-new');
     expect(renamed?.buildScript).toBe('// keep me');
     expect(renamed?.buildScriptEnabled).toBe(1);
+  });
+
+  it('getDeclaredParams returns empty array when none configured', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    expect(service.getDeclaredParams('wf')).toEqual([]);
+    expect(service.getDeclaredParams('nonexistent')).toEqual([]);
+  });
+
+  it('updateDeclaredParams saves and loads declarations', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const list = [
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+    ];
+
+    const updated = service.updateDeclaredParams('wf', list);
+
+    expect(updated?.declaredParams).toBe(JSON.stringify(list));
+    expect(service.getDeclaredParams('wf')).toEqual(list);
+  });
+
+  it('getDeclaredParams tolerates corrupt or non-array JSON', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    // 直接写入损坏 JSON
+    sqlite.exec("UPDATE workflows SET declared_params = '{oops' WHERE id = 'wf'");
+    expect(service.getDeclaredParams('wf')).toEqual([]);
+
+    sqlite.exec("UPDATE workflows SET declared_params = '{\"a\":1}' WHERE id = 'wf'");
+    expect(service.getDeclaredParams('wf')).toEqual([]);
+
+    // 混入非法条目时仅保留合法条目
+    sqlite.exec("UPDATE workflows SET declared_params = '[{\"alias\":\"ok\",\"paramType\":\"text\"},{\"alias\":\"\"}]' WHERE id = 'wf'");
+    expect(service.getDeclaredParams('wf')).toEqual([
+      { alias: 'ok', paramType: 'text' },
+    ]);
+  });
+
+  it('update with id rename preserves declared params', () => {
+    service.create({ id: 'wf-old', name: 'Old', rawJson: '{}' });
+    service.updateDeclaredParams('wf-old', [{ alias: 'a', label: null, paramType: 'text', defaultValue: null }]);
+
+    const renamed = service.update('wf-old', { id: 'wf-new' });
+
+    expect(renamed?.id).toBe('wf-new');
+    expect(service.getDeclaredParams('wf-new')).toEqual([
+      { alias: 'a', label: null, paramType: 'text', defaultValue: null },
+    ]);
   });
 });

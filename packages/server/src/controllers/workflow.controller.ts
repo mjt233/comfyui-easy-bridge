@@ -13,6 +13,7 @@ import {
 } from '../services/executor.service';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
+import type { DeclaredParam } from '../services/param.types';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
@@ -97,7 +98,12 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       const params = workflowService.getParams(id);
-      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
+      res.json({
+        ...wf,
+        buildScriptEnabled: wf.buildScriptEnabled === 1,
+        declaredParams: workflowService.getDeclaredParams(id),
+        params,
+      });
     },
 
     /** 保存动态构建脚本与启用状态 */
@@ -123,7 +129,71 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       }
       // 与 getById 返回结构保持一致：补充 params，供前端直接作为 WorkflowDetail 使用
       const params = workflowService.getParams(id);
-      res.json({ ...wf, buildScriptEnabled: wf.buildScriptEnabled === 1, params });
+      res.json({
+        ...wf,
+        buildScriptEnabled: wf.buildScriptEnabled === 1,
+        declaredParams: workflowService.getDeclaredParams(id),
+        params,
+      });
+    },
+
+    /** 保存动态字段静态声明（整体替换；仅用于执行表单与 API 文档） */
+    saveDeclaredParams(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      const body = req.body as { params?: unknown };
+      const list = body.params;
+      if (!Array.isArray(list)) {
+        res.status(400).json({ error: 'params array is required', code: 'missing_parameter' });
+        return;
+      }
+      // 逐项校验并规范化：alias 必填非空；paramType 白名单；label/defaultValue 可选字符串
+      const ALLOWED_TYPES = new Set(['text', 'number', 'boolean', 'image', 'video', 'audio']);
+      const seen = new Set<string>();
+      const normalized: DeclaredParam[] = [];
+      for (const item of list) {
+        if (typeof item !== 'object' || item === null) {
+          res.status(400).json({ error: 'each declared param must be an object', code: 'missing_parameter' });
+          return;
+        }
+        const raw = item as Record<string, unknown>;
+        const alias = typeof raw.alias === 'string' ? raw.alias.trim() : '';
+        if (alias === '') {
+          res.status(400).json({ error: 'alias is required', code: 'missing_parameter' });
+          return;
+        }
+        if (seen.has(alias)) {
+          res.status(409).json({ error: `Duplicate alias: ${alias}`, code: 'alias_conflict' });
+          return;
+        }
+        seen.add(alias);
+        const paramType = typeof raw.paramType === 'string' && ALLOWED_TYPES.has(raw.paramType)
+          ? raw.paramType
+          : 'text';
+        normalized.push({
+          alias,
+          label: typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label.trim() : null,
+          paramType,
+          defaultValue: typeof raw.defaultValue === 'string' ? raw.defaultValue : null,
+        });
+      }
+      const wf = workflowService.updateDeclaredParams(id, normalized);
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      // 与 getById 返回结构保持一致
+      const params = workflowService.getParams(id);
+      res.json({
+        ...wf,
+        buildScriptEnabled: wf.buildScriptEnabled === 1,
+        declaredParams: normalized,
+        params,
+      });
     },
 
     /** 模拟构建：脚本构建 + 按声明配置上传媒体 + 注入，返回最终 JSON 与参数配置 */

@@ -186,7 +186,7 @@
               v-if="field.paramType === 'boolean'"
               v-model="executeForm[field.alias]"
               :label="field.label || field.alias"
-              :hint="`节点: ${field.nodeTitle} · ${field.fieldName} · boolean`"
+              :hint="fieldHint(field)"
               persistent-hint
               color="primary"
               density="compact"
@@ -197,7 +197,7 @@
               v-else-if="isTextLikeParam(field.paramType)"
               v-model="executeForm[field.alias]"
               :label="field.label || field.alias"
-              :hint="`节点: ${field.nodeTitle} · ${field.fieldName} · ${field.paramType}`"
+              :hint="fieldHint(field)"
               persistent-hint
               variant="outlined"
               density="compact"
@@ -209,7 +209,7 @@
             <v-file-input
               v-else
               :label="field.label || field.alias"
-              :hint="`节点: ${field.nodeTitle} · ${field.fieldName}`"
+              :hint="fieldHint(field)"
               persistent-hint
               variant="outlined"
               density="compact"
@@ -364,9 +364,13 @@ import MarkdownView from '@/components/MarkdownView.vue';
 interface ExecuteField {
   alias: string;
   label: string;
+  /** 节点 inputs 字段名（动态声明字段为空串） */
   fieldName: string;
+  /** 节点标题（动态声明字段为空串） */
   nodeTitle: string;
   paramType: string;
+  /** 是否为动态字段静态声明（无对应节点） */
+  dynamic?: boolean;
 }
 
 const router = useRouter();
@@ -493,6 +497,19 @@ const showExecuteDescription = ref(false);
 const executeForm = reactive<Record<string, string | boolean>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
 const executeFiles = reactive<Record<string, File[]>>({});
+
+/**
+ * 执行字段提示文本：动态声明字段显示「动态字段」，静态参数显示节点/字段/类型
+ * @param field 执行字段
+ */
+function fieldHint(field: ExecuteField): string {
+  if (field.dynamic) {
+    return `动态字段 · ${field.paramType}`;
+  }
+  const base = `节点: ${field.nodeTitle} · ${field.fieldName}`;
+  const isMedia = ['image', 'video', 'audio'].includes(field.paramType);
+  return isMedia ? base : `${base} · ${field.paramType}`;
+}
 
 /**
  * 手动添加的自定义字段行
@@ -669,6 +686,27 @@ async function handleExecute(id: string) {
         executeForm[param.alias] = parseBooleanDefault(effectiveDefault);
       } else {
         executeForm[param.alias] = String(effectiveDefault ?? '');
+      }
+    }
+
+    // 追加动态字段静态声明：与静态参数合并为一个表单（按 alias 去重，静态优先）
+    const declaredAliases = new Set(fields.map((f) => f.alias));
+    for (const dp of detail.declaredParams ?? []) {
+      if (declaredAliases.has(dp.alias)) continue;
+      declaredAliases.add(dp.alias);
+      fields.push({
+        alias: dp.alias,
+        label: dp.label || dp.alias,
+        fieldName: '',
+        nodeTitle: '',
+        paramType: dp.paramType || 'text',
+        dynamic: true,
+      });
+      // 按声明的默认值预填表单（boolean 用开关布尔值）
+      if ((dp.paramType || 'text') === 'boolean') {
+        executeForm[dp.alias] = parseBooleanDefault(dp.defaultValue);
+      } else {
+        executeForm[dp.alias] = String(dp.defaultValue ?? '');
       }
     }
 

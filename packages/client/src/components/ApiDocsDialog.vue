@@ -403,7 +403,23 @@ async function loadApiDocs() {
   apiFormat.value = 'json';
   try {
     const detail = await getWorkflow(props.workflowId);
+    // 静态参数（有别名）与动态字段声明合并为可调用参数：按 alias 去重、静态优先
     const callableParams = (detail.params ?? []).filter(hasAlias);
+    const seen = new Set(callableParams.map((p) => p.alias));
+    for (const dp of detail.declaredParams ?? []) {
+      if (seen.has(dp.alias)) continue;
+      seen.add(dp.alias);
+      callableParams.push({
+        id: 0,
+        workflowId: '',
+        nodeId: '',
+        fieldName: '',
+        alias: dp.alias,
+        label: dp.label,
+        paramType: dp.paramType || 'text',
+        defaultValue: dp.defaultValue,
+      });
+    }
     apiParams.value = callableParams;
     apiCodeRef.value = buildApiCode(props.workflowId, callableParams);
   } catch {

@@ -1,6 +1,7 @@
 import { eq, and } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
+import type { DeclaredParam } from './param.types';
 
 /**
  * 创建工作流的输入
@@ -173,6 +174,7 @@ export class WorkflowService {
           rawJson: input.rawJson ?? existing.rawJson,
           buildScript: existing.buildScript,
           buildScriptEnabled: existing.buildScriptEnabled,
+          declaredParams: existing.declaredParams,
           description: input.description ?? existing.description,
           createdAt: existing.createdAt,
           updatedAt: now,
@@ -324,6 +326,47 @@ export class WorkflowService {
       .set({
         buildScript: input.script,
         buildScriptEnabled: input.enabled ? 1 : 0,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(schema.workflows.id, id))
+      .run();
+    return this.getById(id);
+  }
+
+  /**
+   * 读取工作流的动态字段静态声明（解析 JSON 列；损坏或非法时回退空数组）
+   * @param id 工作流 ID
+   * @returns 声明列表
+   */
+  getDeclaredParams(id: string): DeclaredParam[] {
+    const wf = this.getById(id);
+    if (!wf) return [];
+    try {
+      const parsed = JSON.parse(wf.declaredParams) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      // 仅保留合法条目（alias 为非空字符串），容忍个别脏数据
+      return parsed.filter(
+        (item): item is DeclaredParam =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as { alias?: unknown }).alias === 'string' &&
+          (item as { alias: string }).alias.trim() !== '',
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 保存动态字段静态声明（整体替换）
+   * @param id 工作流 ID
+   * @param params 声明列表
+   * @returns 更新后的工作流行
+   */
+  updateDeclaredParams(id: string, params: DeclaredParam[]) {
+    this.db.update(schema.workflows)
+      .set({
+        declaredParams: JSON.stringify(params),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(schema.workflows.id, id))

@@ -30,3 +30,18 @@ export interface FileMeta {
   /** 文件字节数 */
   size: number;
 }
+
+/**
+ * 动态字段静态声明（工作流配置中手动声明）。
+ * 仅用于【执行工作流】表单构建与【API 调用说明】示例生成，不参与脚本参数注入。
+ */
+export interface DeclaredParam {
+  /** 对外参数别名（必填，工作流内唯一） */
+  alias: string;
+  /** 展示标签；可空 */
+  label: string | null;
+  /** 参数类型 text/boolean/number/image/video/audio */
+  paramType: string;
+  /** 表单默认值（文本/数字/布尔）；媒体字段无默认值 */
+  defaultValue: string | null;
+}

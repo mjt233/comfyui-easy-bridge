@@ -28,7 +28,7 @@ describe('Workflow API', () => {
     const sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -626,6 +626,86 @@ describe('Workflow API', () => {
       .get('/api/workflows/build-flow')
       .set('Authorization', `Bearer ${token}`);
     expect(detail.body.buildScriptEnabled).toBe(true);
+  });
+
+  it('PUT /api/workflows/:id/declared-params saves declarations', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'dp-flow', name: 'DP', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .put('/api/workflows/dp-flow/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        params: [
+          { alias: 'input_image', label: '输入图片', paramType: 'image' },
+          { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+        ],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.declaredParams).toEqual([
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+    ]);
+    expect(Array.isArray(res.body.params)).toBe(true);
+
+    // getById 应返回同一份声明
+    const detail = await supertest(app)
+      .get('/api/workflows/dp-flow')
+      .set('Authorization', `Bearer ${token}`);
+    expect(detail.body.declaredParams).toEqual(res.body.declaredParams);
+  });
+
+  it('PUT declared-params validates input', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'dp-validate', name: 'DP', rawJson: '{}' });
+
+    // 非数组
+    const nonArray = await supertest(app)
+      .put('/api/workflows/dp-validate/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: { alias: 'a' } });
+    expect(nonArray.status).toBe(400);
+    expect(nonArray.body.code).toBe('missing_parameter');
+
+    // 空 alias
+    const emptyAlias = await supertest(app)
+      .put('/api/workflows/dp-validate/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: [{ alias: '  ' }] });
+    expect(emptyAlias.status).toBe(400);
+    expect(emptyAlias.body.code).toBe('missing_parameter');
+
+    // 重复 alias
+    const dup = await supertest(app)
+      .put('/api/workflows/dp-validate/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: [{ alias: 'a' }, { alias: 'a' }] });
+    expect(dup.status).toBe(409);
+    expect(dup.body.code).toBe('alias_conflict');
+  });
+
+  it('PUT declared-params returns 404 for missing workflow and 401 without auth', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    const missing = await supertest(app)
+      .put('/api/workflows/no-such/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: [] });
+    expect(missing.status).toBe(404);
+
+    const noAuth = await supertest(app)
+      .put('/api/workflows/no-such/declared-params')
+      .send({ params: [] });
+    expect(noAuth.status).toBe(401);
   });
 
   it('POST /api/workflows/:id/build/simulate returns built json', async () => {

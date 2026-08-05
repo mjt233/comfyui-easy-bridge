@@ -17,7 +17,7 @@ process.env.DATA_DIR = tempDataDir;
 
 /** 建表 SQL（与 db.ts 保持一致） */
 const DDL = `
-  CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE workflow_params (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -135,6 +135,25 @@ describe('WorkflowIOService', () => {
     expect(envB.workflowService.getById(id)?.description).toBe('# 备注\nMarkdown **说明**');
   });
 
+  it('export then import round-trips declared params', async () => {
+    const envA = createEnv();
+    const { id } = seedWorkflow(envA, 'wf-dp');
+    // 写入动态字段静态声明
+    envA.workflowService.updateDeclaredParams(id, [
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+    ]);
+
+    const zipBuffer = await envA.ioService.exportWorkflows([id]);
+    const envB = createEnv();
+    const result = await envB.ioService.importWorkflows(zipBuffer);
+    expect(result.imported).toBe(1);
+    expect(envB.workflowService.getDeclaredParams(id)).toEqual([
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+    ]);
+  });
+
   it('import renames workflow when ID conflicts', async () => {
     const env = createEnv();
     const { id } = seedWorkflow(env, 'wf-dup');
@@ -180,6 +199,10 @@ describe('WorkflowIOService', () => {
     const { id, attachment } = seedWorkflow(env, 'src');
     // 附加动态构建脚本
     env.workflowService.updateBuildScript(id, { script: 'export default {}', enabled: true });
+    // 附加动态字段静态声明
+    env.workflowService.updateDeclaredParams(id, [
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+    ]);
 
     const copy = env.ioService.duplicate(id);
     expect(copy).not.toBeNull();
@@ -191,6 +214,11 @@ describe('WorkflowIOService', () => {
     expect(copy!.rawJson).toBe('{"1":{"inputs":{}}}');
     expect(copy!.buildScript).toBe('export default {}');
     expect(copy!.buildScriptEnabled).toBe(1);
+
+    // 动态字段声明已复制
+    expect(env.workflowService.getDeclaredParams(newId)).toEqual([
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+    ]);
 
     // 参数已复制
     const params = env.workflowService.getParams(newId);

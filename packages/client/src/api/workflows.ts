@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference, DeclaredParam } from '@/types';
 
 export async function listWorkflows(): Promise<Workflow[]> {
   const res = await client.get<Workflow[]>('/workflows');
@@ -138,6 +138,20 @@ export async function saveBuildScript(
   data: { script: string; enabled: boolean },
 ): Promise<WorkflowDetail> {
   const res = await client.put<WorkflowDetail>(`/workflows/${workflowId}/build-script`, data);
+  return res.data;
+}
+
+/**
+ * 保存动态字段静态声明（整体替换；仅用于执行表单与 API 文档）
+ * @param workflowId 工作流 ID
+ * @param params 声明列表
+ * @returns 更新后的工作流详情
+ */
+export async function saveDeclaredParams(
+  workflowId: string,
+  params: DeclaredParam[],
+): Promise<WorkflowDetail> {
+  const res = await client.put<WorkflowDetail>(`/workflows/${workflowId}/declared-params`, { params });
   return res.data;
 }
 
