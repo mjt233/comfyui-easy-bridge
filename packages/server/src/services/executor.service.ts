@@ -322,11 +322,80 @@ export async function processMediaParams(
   return result;
 }
 
-/** 中断 ComfyUI 当前正在执行的 prompt */
-export async function interruptPrompt(comfyuiBaseUrl: string): Promise<boolean> {
+/** 中断后确认停止的轮询间隔（ms） */
+const INTERRUPT_POLL_INTERVAL = 500;
+/** 中断后确认停止的最大轮询次数（超过后放弃等待，返回失败）；500ms × 120 ≈ 60s */
+const INTERRUPT_MAX_ATTEMPTS = 120;
+
+/** 延迟指定毫秒数，用于中断轮询的节流 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 查询指定 prompt 是否仍在 ComfyUI 执行队列中。
+ * 通过 GET /queue 检查 queue_running 中是否包含该 prompt_id；
+ * 请求失败或响应结构异常时保守返回 true（无法确认已停止）。
+ * @param comfyuiBaseUrl ComfyUI 基础 URL
+ * @param promptId 要检查的 ComfyUI prompt_id
+ * @returns 仍在执行返回 true；已离开执行队列返回 false
+ */
+export async function isPromptRunning(comfyuiBaseUrl: string, promptId: string): Promise<boolean> {
   try {
-    const response = await fetch(`${comfyuiBaseUrl}/interrupt`, { method: 'POST' });
-    return response.ok;
+    const response = await fetch(`${comfyuiBaseUrl}/queue`);
+    if (!response.ok) return true;
+    const data: unknown = await response.json();
+    const queueRunning = (data as { queue_running?: unknown }).queue_running;
+    // 响应结构异常时无法判断，保守视为仍在运行
+    if (!Array.isArray(queueRunning)) return true;
+    return queueRunning.some((entry: unknown) => {
+      // queue_running 每个条目形如 [prompt_id, workflow, extra]
+      if (!Array.isArray(entry) || entry.length < 1) return false;
+      return entry[0] === promptId;
+    });
+  } catch {
+    // 网络异常时无法确认，保守视为仍在运行
+    return true;
+  }
+}
+
+/**
+ * 中断 ComfyUI 当前正在执行的 prompt，并在中断后轮询确认其已停止执行。
+ * 轮询发现目标 prompt 仍在执行队列中时，会重新调用 /interrupt 接口，直至确认停止或超时。
+ * 仅在首次中断请求成功且提供了 promptId 时才进行轮询。
+ * @param comfyuiBaseUrl ComfyUI 基础 URL
+ * @param promptId 目标 prompt_id；为空时只发送一次中断请求、不轮询
+ * @param options 可选配置（供测试缩短轮询间隔/次数）
+ * @returns 是否已确认目标 prompt 停止执行；未提供 promptId 时等价于中断请求是否成功
+ */
+export async function interruptPrompt(
+  comfyuiBaseUrl: string,
+  promptId?: string,
+  options?: { pollIntervalMs?: number; maxAttempts?: number },
+): Promise<boolean> {
+  const pollIntervalMs = options?.pollIntervalMs ?? INTERRUPT_POLL_INTERVAL;
+  const maxAttempts = options?.maxAttempts ?? INTERRUPT_MAX_ATTEMPTS;
+  try {
+    // 1) 首次发送中断请求；失败则直接返回（无法连上 ComfyUI 时无需轮询）
+    const first = await fetch(`${comfyuiBaseUrl}/interrupt`, { method: 'POST' });
+    if (!first.ok) return false;
+    // 无 promptId 时无法定向确认是否已停止，仅中断一次
+    if (!promptId) return true;
+
+    // 2) 轮询确认目标 prompt 已离开执行队列；仍在执行则重新调用中断接口
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const stillRunning = await isPromptRunning(comfyuiBaseUrl, promptId);
+      if (!stillRunning) return true; // 已确认停止执行
+      // 仍在执行 → 重新发送中断请求（单次失败不中断轮询，下一轮会再次重试）
+      try {
+        await fetch(`${comfyuiBaseUrl}/interrupt`, { method: 'POST' });
+      } catch {
+        // 忽略单次中断失败，继续轮询
+      }
+      await sleep(pollIntervalMs);
+    }
+    // 轮询超时仍未确认停止 → 返回失败
+    return false;
   } catch {
     return false;
   }

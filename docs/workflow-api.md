@@ -136,7 +136,7 @@ POST /api/tasks/:taskId/cancel
 
 中断正在执行（`pending`）或排队中（`queued`）的任务。
 - `queued` 任务：直接标记为失败，无需通知 ComfyUI。
-- `pending` 任务：向 ComfyUI 发送 `/interrupt` 请求，再标记为失败。
+- `pending` 任务：向 ComfyUI 发送 `/interrupt` 请求，随后轮询 `GET /queue` 确认任务已停止执行；若仍在执行则重新调用 `/interrupt`，确认停止后再标记为失败。
 
 **响应** `200`:
 

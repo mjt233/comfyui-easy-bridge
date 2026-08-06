@@ -283,6 +283,10 @@ describe('Task cancel endpoint', () => {
   let pendingTaskId: string;
   let completedTaskId: string;
   let failedTaskId: string;
+  /** fetch mock，用于模拟 ComfyUI /interrupt 与 /queue 接口 */
+  const mockFetch = vi.fn();
+  /** 保存原始 fetch，用例结束后恢复 */
+  const originalFetch = globalThis.fetch;
 
   beforeAll(() => {
     const sqlite = new Database(':memory:');
@@ -341,6 +345,19 @@ describe('Task cancel endpoint', () => {
     routeApp.use(express.json());
     routeApp.use('/api/tasks', createTaskRoutes(db));
     app = routeApp;
+  });
+
+  beforeEach(() => {
+    // mock ComfyUI 接口，避免测试依赖真实服务：首次 /interrupt 成功，/queue 轮询返回空执行队列
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    mockFetch.mockReset();
+    mockFetch
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValue({ ok: true, json: async () => ({ queue_running: [], queue_pending: [] }) });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it('POST /api/tasks/:taskId/cancel cancels a queued task', async () => {

@@ -240,10 +240,11 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         });
         return;
       }
-      // pending 任务：向 ComfyUI 发送中断请求，再标记为失败
+      // pending 任务：向 ComfyUI 发送中断请求，轮询确认停止后标记为失败
       const baseUrl = settingsService.get('comfyui_base_url');
       if (baseUrl) {
-        await interruptPrompt(baseUrl);
+        // 传入 promptId：中断后轮询 /queue 确认任务已停止执行，仍在执行则重试中断
+        await interruptPrompt(baseUrl, task.promptId ?? undefined);
       }
       taskService.updateStatus(task.id, {
         status: 'failed',

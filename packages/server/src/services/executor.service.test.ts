@@ -4,6 +4,8 @@ import {
   processMediaParams,
   resolveSubmittedAliasValues,
   submitPrompt,
+  interruptPrompt,
+  isPromptRunning,
   COMFYUI_CLIENT_ID,
 } from './executor.service';
 import type { RuntimeParam } from './param.types';
@@ -378,5 +380,129 @@ describe('submitPrompt client_id', () => {
     const [, options] = mockFetch.mock.calls[0] as [string, { body: string }];
     const body = JSON.parse(options.body) as { client_id?: string };
     expect(body.client_id).toBe('custom-client');
+  });
+});
+
+/**
+ * interruptPrompt 应在中断后轮询 /queue 确认任务停止执行，仍在执行时重新调用 /interrupt。
+ * 通过 pollIntervalMs: 0 跳过真实延时，保证测试快速稳定。
+ */
+describe('interruptPrompt polling', () => {
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    mockFetch.mockReset();
+  });
+
+  it('re-interrupts while prompt is still running and confirms stop', async () => {
+    // 首次 POST /interrupt 成功；轮询1 仍在 queue_running → 重新中断；轮询2 已离开 → 确认停止
+    mockFetch
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [] }) });
+
+    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
+
+    expect(result).toBe(true);
+    // 调用顺序：interrupt → queue → interrupt → queue
+    const urls = mockFetch.mock.calls.map((c) => c[0] as string);
+    expect(urls).toEqual([
+      'http://comfy:8188/interrupt',
+      'http://comfy:8188/queue',
+      'http://comfy:8188/interrupt',
+      'http://comfy:8188/queue',
+    ]);
+  });
+
+  it('stops polling once the target prompt leaves the running queue', async () => {
+    // 轮询2 中 p1 已不在队列（即使有其他 prompt 在跑），不再继续中断
+    mockFetch
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) })
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['other', {}, {}]] }) });
+
+    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
+
+    expect(result).toBe(true);
+    const interruptCount = mockFetch.mock.calls.filter((c) => (c[0] as string).endsWith('/interrupt')).length;
+    expect(interruptCount).toBe(2);
+  });
+
+  it('sends only a single interrupt when promptId is not provided', async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+
+    const result = await interruptPrompt('http://comfy:8188');
+
+    expect(result).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when the first interrupt request fails', async () => {
+    mockFetch.mockResolvedValue({ ok: false });
+
+    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
+
+    expect(result).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when polling times out while prompt is still running', async () => {
+    // 首次中断成功后，所有轮询都报告仍在执行
+    mockFetch
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) });
+
+    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 3 });
+
+    expect(result).toBe(false);
+    // 首次中断 + maxAttempts 次轮询 + maxAttempts 次重试中断
+    expect(mockFetch).toHaveBeenCalledTimes(1 + 3 + 3);
+  });
+
+  it('keeps retrying when queue checks fail and returns false after timeout', async () => {
+    // 网络异常：轮询无法确认 → 保守视为仍在运行，持续重试中断直至超时
+    mockFetch
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValue(new Error('network down'));
+
+    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 3 });
+
+    expect(result).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1 + 3 + 3);
+  });
+});
+
+/**
+ * isPromptRunning 通过 GET /queue 判断指定 prompt 是否仍在执行队列中。
+ */
+describe('isPromptRunning', () => {
+  const mockFetch = vi.fn();
+
+  beforeEach(() => {
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    mockFetch.mockReset();
+  });
+
+  it('returns true when promptId is in queue_running', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}], ['p2', {}, {}]] }) });
+    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
+  });
+
+  it('returns false when promptId is not in queue_running', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p2', {}, {}]] }) });
+    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(false);
+  });
+
+  it('returns true when the queue request fails', async () => {
+    mockFetch.mockRejectedValue(new Error('network down'));
+    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
+  });
+
+  it('returns true when response lacks a queue_running array', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
   });
 });
