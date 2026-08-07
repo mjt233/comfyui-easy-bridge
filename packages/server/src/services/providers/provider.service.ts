@@ -92,9 +92,21 @@ export class ProviderService {
     return this.db.select().from(schema.providers).where(eq(schema.providers.id, id)).get() ?? null;
   }
 
-  /** 解析实例行的类型化配置（config 为 JSON 文本） */
-  getConfig(row: ProviderRow): ProviderConfig {
-    return JSON.parse(row.config) as ProviderConfig;
+  /**
+   * 解析实例行的类型化配置。
+   * @param row 实例行
+   * @returns 类型化配置；config 为损坏 JSON 或非普通对象时返回 null
+   */
+  getConfig(row: ProviderRow): ProviderConfig | null {
+    try {
+      const parsed = JSON.parse(row.config) as unknown;
+      // 必须为普通对象（数组/原始值视为非法配置）
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+      return parsed as ProviderConfig;
+    } catch {
+      // JSON 解析失败（config 损坏）时返回 null，由调用方兜底
+      return null;
+    }
   }
 
   /** 新建实例 */
@@ -183,6 +195,8 @@ export class ProviderService {
    */
   instantiate(row: ProviderRow): ExecutionProvider | null {
     const config = this.getConfig(row);
+    // config 非法（损坏 JSON）时无法实例化，直接返回 null
+    if (!config) return null;
     // 按类型分别构造对应的 provider 实现
     if (row.type === 'comfyui' && typeof (config as { baseUrl?: string }).baseUrl === 'string') {
       return new ComfyUIProvider(row.id, row.name, config as Extract<ProviderConfig, { baseUrl: string }>, row.concurrency);
@@ -200,24 +214,33 @@ export class ProviderService {
     return this.instantiate(row);
   }
 
-  /** 获取全局默认的实例化 provider */
+  /**
+   * 获取全局默认的实例化 provider。
+   * 默认实例被禁用时视为未配置。
+   * @returns 实例化 provider；默认缺失或已禁用时返回 null
+   */
   getDefaultProvider(): ExecutionProvider | null {
     const row = this.getDefault();
-    if (!row) return null;
+    // 默认实例缺失或已禁用时视为未配置
+    if (!row || row.enabled !== 1) return null;
     return this.instantiate(row);
   }
 
   /**
-   * 解析工作流使用的 provider：workflow.providerId 优先，其次全局默认。
+   * 解析工作流使用的 provider：workflow.providerId 优先（须为启用状态），否则回退全局默认。
+   * 工作流指定实例不存在或已禁用时回退默认；默认同样受启用规则约束（getDefaultProvider 已处理）。
    * @param workflowId 工作流 ID
-   * @returns 实例化 provider 或 null
+   * @returns 实例化 provider；无可用实例时返回 null
    */
   resolveWorkflowProvider(workflowId: string): ExecutionProvider | null {
     const wf = this.db.select().from(schema.workflows).where(eq(schema.workflows.id, workflowId)).get();
-    // 工作流显式指定了实例则优先使用；未指定或失效时回退全局默认
+    // 工作流显式指定了启用中的实例则优先使用；否则回退全局默认
     if (wf?.providerId) {
-      const p = this.getProviderById(wf.providerId);
-      if (p) return p;
+      const row = this.getById(wf.providerId);
+      if (row && row.enabled === 1) {
+        const p = this.instantiate(row);
+        if (p) return p;
+      }
     }
     return this.getDefaultProvider();
   }
@@ -306,11 +329,17 @@ export class ProviderService {
   toSummary(row: ProviderRow): ProviderSummary {
     const config = this.getConfig(row);
     const provider = this.instantiate(row);
-    let maskedConfig = config as ProviderSummary['config'];
-    if (row.type === 'runninghub') {
-      // 仅打码 apiKey，其余字段原样透出
-      const apiKey = (config as { apiKey: string }).apiKey;
-      maskedConfig = { ...(config as object), apiKey: apiKey.length <= 4 ? '****' : `${apiKey.slice(0, 4)}****` } as ProviderSummary['config'];
+    let maskedConfig: ProviderSummary['config'];
+    if (config) {
+      maskedConfig = config as ProviderSummary['config'];
+      if (row.type === 'runninghub') {
+        // 仅打码 apiKey，其余字段原样透出
+        const apiKey = (config as { apiKey: string }).apiKey;
+        maskedConfig = { ...(config as object), apiKey: apiKey.length <= 4 ? '****' : `${apiKey.slice(0, 4)}****` } as ProviderSummary['config'];
+      }
+    } else {
+      // config 非法（损坏 JSON）时输出空配置，保证摘要不崩溃
+      maskedConfig = {} as ProviderSummary['config'];
     }
     return {
       id: row.id,

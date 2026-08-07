@@ -129,4 +129,103 @@ describe('ProviderService', () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain('500');
   });
+
+  it('update changes name/config/concurrency and preserves enabled when not provided', () => {
+    const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://a' }, concurrency: 1 });
+    const updated = service.update(rec.id, { name: 'Local2', config: { baseUrl: 'http://b' }, concurrency: 4 });
+    expect(updated).not.toBeNull();
+    // 名称、并发、配置均被覆盖
+    expect(updated?.name).toBe('Local2');
+    expect(updated?.concurrency).toBe(4);
+    expect(service.getConfig(updated!)).toEqual({ baseUrl: 'http://b' });
+    // 未显式提供 enabled 时保留原值
+    expect(updated?.enabled).toBe(1);
+  });
+
+  it('update with config sets new config JSON and returns null for missing id', () => {
+    const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://a' }, concurrency: 1 });
+    const updated = service.update(rec.id, { config: { baseUrl: 'http://c' } });
+    expect(updated).not.toBeNull();
+    expect(service.getConfig(updated!)).toEqual({ baseUrl: 'http://c' });
+    // 不存在的 ID 返回 null
+    expect(service.update('missing-id', { name: 'x' })).toBeNull();
+  });
+
+  it('update toggles enabled to 0 when enabled is false', () => {
+    const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://a' }, concurrency: 1 });
+    const updated = service.update(rec.id, { enabled: false });
+    expect(updated).not.toBeNull();
+    expect(updated?.enabled).toBe(0);
+  });
+
+  it('workflow pointing to a disabled provider falls back to the default', () => {
+    // A 启用并设为默认，B 禁用但被工作流显式引用：应回退到 A
+    const a = service.create({ name: 'A', type: 'comfyui', config: { baseUrl: 'http://a' }, concurrency: 1 });
+    const b = service.create({ name: 'B', type: 'comfyui', config: { baseUrl: 'http://b' }, concurrency: 1 });
+    service.setDefault(a.id);
+    service.update(b.id, { enabled: false });
+    db.insert(schema.workflows).values({ id: 'w1', name: 'wf', rawJson: '{}', providerId: b.id, createdAt: 'x', updatedAt: 'x' }).run();
+    expect(service.resolveWorkflowProvider('w1')?.getBaseUrl()).toBe('http://a');
+  });
+
+  it('getDefaultProvider returns null when default is disabled', () => {
+    const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://a' }, concurrency: 1 });
+    service.setDefault(rec.id);
+    service.update(rec.id, { enabled: false });
+    expect(service.getDefaultProvider()).toBeNull();
+  });
+
+  it('validateInput trims baseUrl and normalizes concurrency', () => {
+    const result = service.validateInput({ name: 'x', type: 'comfyui', config: { baseUrl: ' http://x ' }, concurrency: 3 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.concurrency).toBe(3);
+      expect(result.value.config).toEqual({ baseUrl: 'http://x' });
+    }
+  });
+
+  it('validateInput falls back concurrency to 1 on NaN', () => {
+    const result = service.validateInput({ name: 'x', type: 'comfyui', config: { baseUrl: 'http://x' }, concurrency: NaN });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.concurrency).toBe(1);
+    }
+  });
+
+  it('instantiate returns null for corrupt config JSON', () => {
+    // 直接插入 config 损坏（非合法 JSON）的行
+    const now = new Date().toISOString();
+    db.insert(schema.providers).values({ id: 'bad', name: 'Bad', type: 'comfyui', config: '{not-json', concurrency: 1, enabled: 1, createdAt: now, updatedAt: now }).run();
+    const row = service.getById('bad')!;
+    expect(service.getConfig(row)).toBeNull();
+    expect(service.instantiate(row)).toBeNull();
+    // toSummary 不得崩溃，配置为空对象
+    expect(() => service.toSummary(row)).not.toThrow();
+    expect(service.toSummary(row).config).toEqual({});
+  });
+
+  it('testConnection uses runninghub proxy URL derived from gpuSize 24G', async () => {
+    // runninghub 24G → /proxy/<apiKey>/system_stats
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"system":{}}', { status: 200 })));
+    const result = await service.testConnection({ apiKey: 'key123', gpuSize: '24G' });
+    expect(result.ok).toBe(true);
+    const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(url).toBe('https://www.runninghub.cn/proxy/key123/system_stats');
+  });
+
+  it('testConnection uses proxy-plus URL for gpuSize 48G', async () => {
+    // runninghub 48G → /proxy-plus/<apiKey>/system_stats
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"system":{}}', { status: 200 })));
+    await service.testConnection({ apiKey: 'key123', gpuSize: '48G' });
+    const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
+    expect(url).toBe('https://www.runninghub.cn/proxy-plus/key123/system_stats');
+  });
+
+  it('testConnection reports network errors', async () => {
+    // fetch 拒绝（网络错误）：应报告失败且不抛异常
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+    const result = await service.testConnection({ baseUrl: 'http://localhost:8188' });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('ECONNREFUSED');
+  });
 });
