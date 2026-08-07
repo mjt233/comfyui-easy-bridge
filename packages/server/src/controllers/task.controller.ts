@@ -4,8 +4,9 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
-import { submitPrompt, interruptPrompt } from '../services/executor.service';
-import { parseHistoryOutputs } from '../services/comfyui.service';
+import { ProviderService } from '../services/providers/provider.service';
+import type { ExecutionProvider } from '../services/providers/types';
+import { parseHistoryOutputs } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
@@ -30,18 +31,16 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 从 ComfyUI /history/{promptId} 拉取并解析输出文件列表。
+ * 从执行提供商 history 拉取并解析输出文件列表。
  * 网络错误或非 2xx 时返回空数组（软失败，不抛错）。
- * @param baseUrl ComfyUI 基础 URL
- * @param promptId ComfyUI prompt_id
+ * @param provider 任务使用的执行提供商
+ * @param promptId 执行端 prompt_id
  * @returns 解析到的输出文件；失败或无输出时为 []
  */
-async function fetchOutputsFromHistory(baseUrl: string, promptId: string): Promise<OutputFile[]> {
+async function fetchOutputsFromHistory(provider: ExecutionProvider, promptId: string): Promise<OutputFile[]> {
   try {
-    // 回源 ComfyUI history，供 completed 任务本地尚未回填时补全
-    const res = await fetch(`${baseUrl}/history/${promptId}`);
-    if (!res.ok) return [];
-    const data: unknown = await res.json();
+    // 回源执行端 history，供 completed 任务本地尚未回填时补全
+    const data = await provider.fetchHistory(promptId);
     return parseHistoryOutputs(data, promptId);
   } catch {
     return [];
@@ -52,6 +51,21 @@ async function fetchOutputsFromHistory(baseUrl: string, promptId: string): Promi
 export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
   const taskService = new TaskService(db);
   const settingsService = new SettingsService(db);
+  const providerService = new ProviderService(db);
+
+  /**
+   * 按任务解析执行提供商：优先 task.providerId，回退全局默认。
+   * @param task 任务行（含 providerId）
+   * @returns 实例化 provider 或 null
+   */
+  function resolveProviderForTask(task: { providerId: string | null }): ExecutionProvider | null {
+    // 任务显式指定的实例优先（历史任务即使实例已禁用也按原实例回源/下载）；否则回退全局默认
+    if (task.providerId) {
+      const p = providerService.getProviderById(task.providerId);
+      if (p) return p;
+    }
+    return providerService.getDefaultProvider();
+  }
 
   return {
     /** 获取所有任务日志列表 */
@@ -86,7 +100,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
         return;
       }
-      const baseUrl = settingsService.get('comfyui_base_url');
+      const provider = resolveProviderForTask(task);
       const mode = settingsService.get('output_download_mode') || 'proxy';
       let files: OutputFile[] = [];
       // 优先使用本地已持久化的输出列表
@@ -99,19 +113,19 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         }
       }
 
-      // 读路径兜底：completed 且本地为空时，从 ComfyUI history 补全（最多 2 次）
+      // 读路径兜底：completed 且本地为空时，从执行端 history 补全（最多 2 次）
       if (
         files.length === 0
         && task.status === 'completed'
         && task.promptId
-        && baseUrl
+        && provider
       ) {
         // 第 1 次回源
-        files = await fetchOutputsFromHistory(baseUrl, task.promptId);
+        files = await fetchOutputsFromHistory(provider, task.promptId);
         // 首次为空则阻塞后重试一次，覆盖 history 瞬时未就绪
         if (files.length === 0) {
           await sleep(outputHistoryBackfillConfig.retryDelayMs);
-          files = await fetchOutputsFromHistory(baseUrl, task.promptId);
+          files = await fetchOutputsFromHistory(provider, task.promptId);
         }
         // 回填 DB，供后续请求与任务日志直接读取
         if (files.length > 0) {
@@ -121,8 +135,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
 
       const result = files.map(f => ({
         ...f,
-        url: mode === 'direct' && baseUrl
-          ? `${baseUrl}/view?filename=${encodeURIComponent(f.filename)}&subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`
+        url: mode === 'direct' && provider
+          ? provider.buildOutputViewUrl(f)
           : `/api/tasks/${task.id}/output-files/${encodeURIComponent(f.filename)}?subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`,
       }));
       res.json({ files: result });
@@ -135,9 +149,9 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
         return;
       }
-      const baseUrl = settingsService.get('comfyui_base_url');
-      if (!baseUrl) {
-        res.status(502).json({ error: 'ComfyUI base URL not configured', code: 'comfyui_unreachable' });
+      const provider = resolveProviderForTask(task);
+      if (!provider) {
+        res.status(502).json({ error: 'No execution provider configured', code: 'comfyui_unreachable' });
         return;
       }
 
@@ -145,7 +159,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       const subfolder = (req.query.subfolder as string) || '';
       const type = (req.query.type as string) || 'output';
 
-      const comfyUrl = `${baseUrl}/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${encodeURIComponent(type)}`;
+      const comfyUrl = provider.buildOutputViewUrl({ filename, subfolder, type });
 
       try {
         const comfyRes = await fetch(comfyUrl);
@@ -190,16 +204,16 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(400).json({ error: 'Task is not in queued status', code: 'invalid_status' });
         return;
       }
-      const baseUrl = settingsService.get('comfyui_base_url');
-      if (!baseUrl) {
-        res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
+      const provider = resolveProviderForTask(task);
+      if (!provider) {
+        res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
         return;
       }
       if (!task.comfyuiRequestBody) {
         res.status(400).json({ error: 'Task has no request body', code: 'missing_parameter' });
         return;
       }
-      const result = await submitPrompt(task.comfyuiRequestBody, baseUrl);
+      const result = await provider.submitPrompt(task.comfyuiRequestBody);
       if (result.success) {
         taskService.updateStatus(task.id, {
           status: 'pending',
@@ -240,11 +254,11 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         });
         return;
       }
-      // pending 任务：向 ComfyUI 发送中断请求，轮询确认停止后标记为失败
-      const baseUrl = settingsService.get('comfyui_base_url');
-      if (baseUrl) {
+      // pending 任务：向执行端发送中断请求，轮询确认停止后标记为失败
+      const provider = resolveProviderForTask(task);
+      if (provider) {
         // 传入 promptId：中断后轮询 /queue 确认任务已停止执行，仍在执行则重试中断
-        await interruptPrompt(baseUrl, task.promptId ?? undefined);
+        await provider.interrupt(task.promptId ?? undefined);
       }
       taskService.updateStatus(task.id, {
         status: 'failed',

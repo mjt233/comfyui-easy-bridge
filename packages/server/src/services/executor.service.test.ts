@@ -1,14 +1,53 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   applyAliases,
   processMediaParams,
   resolveSubmittedAliasValues,
-  submitPrompt,
-  interruptPrompt,
-  isPromptRunning,
-  COMFYUI_CLIENT_ID,
 } from './executor.service';
 import type { RuntimeParam } from './param.types';
+import type {
+  ExecutionProvider,
+  ExecutionResult,
+  MediaType,
+  OutputFileRef,
+  UploadFileInput,
+} from './providers/types';
+
+/**
+ * 构造测试用 provider 桩：记录上传调用。
+ * @param uploadResults 依次返回的上传文件名（缺省时返回 uploaded-{序号}）
+ * @returns provider 桩实例与上传调用记录
+ */
+function makeProviderStub(uploadResults: string[]): {
+  provider: ExecutionProvider;
+  uploadCalls: Array<{ file: UploadFileInput; mediaType: MediaType }>;
+} {
+  const uploadCalls: Array<{ file: UploadFileInput; mediaType: MediaType }> = [];
+  let idx = 0;
+  const provider: ExecutionProvider = {
+    id: 'p1',
+    name: 'stub',
+    type: 'comfyui',
+    concurrency: 1,
+    trackingMode: 'polling',
+    getBaseUrl: () => 'http://comfy:8188',
+    getDisplayBaseUrl: () => 'http://comfy:8188',
+    submitPrompt: async (_body: string): Promise<ExecutionResult> => ({
+      success: true, comfyuiResponse: null, promptId: 'pid', errorMessage: null,
+    }),
+    uploadMedia: async (file: UploadFileInput, mediaType: MediaType): Promise<string> => {
+      uploadCalls.push({ file, mediaType });
+      const name = uploadResults[idx] ?? `uploaded-${idx}`;
+      idx += 1;
+      return name;
+    },
+    fetchHistory: async () => ({}),
+    interrupt: async () => true,
+    isPromptRunning: async () => false,
+    buildOutputViewUrl: (f: OutputFileRef) => `http://comfy:8188/view?filename=${f.filename}`,
+  };
+  return { provider, uploadCalls };
+}
 
 describe('executor.service', () => {
   const sampleJson = JSON.stringify({
@@ -187,19 +226,8 @@ describe('executor.service', () => {
 });
 
 describe('processMediaParams', () => {
-  const mockFetch = vi.fn();
-
-  beforeEach(() => {
-    // 每个用例重新挂载本 suite 的 fetch mock，避免与其他 describe 互相覆盖
-    globalThis.fetch = mockFetch;
-    mockFetch.mockReset();
-  });
-
   it('uploads file for image params and overrides alias value', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ name: 'uploaded.png' }),
-    });
+    const { provider, uploadCalls } = makeProviderStub(['uploaded.png']);
 
     const params = [
       { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
@@ -208,40 +236,42 @@ describe('processMediaParams', () => {
       img: [{ buffer: Buffer.from('data'), originalname: 'photo.png', mimetype: 'image/png' }],
     };
 
-    const result = await processMediaParams(params, { img: 'old.png' }, files, 'http://localhost:8188');
+    const result = await processMediaParams(params, { img: 'old.png' }, files, provider);
     expect(result.img).toBe('uploaded.png');
+    // 上传调用被记录：文件与媒体类型正确
+    expect(uploadCalls).toHaveLength(1);
+    expect(uploadCalls[0].mediaType).toBe('image');
+    expect(uploadCalls[0].file).toBe(files.img[0]);
   });
 
   it('keeps alias value if no file uploaded for media param', async () => {
+    const { provider, uploadCalls } = makeProviderStub([]);
+
     const params = [
       { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
     ];
 
-    const result = await processMediaParams(params, { img: 'existing.png' }, {}, 'http://localhost:8188');
+    const result = await processMediaParams(params, { img: 'existing.png' }, {}, provider);
     expect(result.img).toBe('existing.png');
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(uploadCalls).toHaveLength(0);
   });
 
   it('skips text params', async () => {
+    const { provider, uploadCalls } = makeProviderStub([]);
+
     const params = [
       { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'value', alias: 'txt', label: null, paramType: 'text', defaultValue: null },
     ];
 
-    const result = await processMediaParams(params, { txt: 'hello' }, {}, 'http://localhost:8188');
+    const result = await processMediaParams(params, { txt: 'hello' }, {}, provider);
     expect(result.txt).toBe('hello');
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(uploadCalls).toHaveLength(0);
   });
 
-  it('maps duplicate originalnames to distinct ComfyUI filenames', async () => {
-    // 模拟 ComfyUI 原样返回上传时使用的文件名
-    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
-      const formData = options.body;
-      const file = formData.get('image') as File;
-      return {
-        ok: true,
-        json: async () => ({ name: file.name }),
-      };
-    });
+  it('maps each alias to its distinct uploaded filename', async () => {
+    // 同名原文件去重的职责已下沉到 provider 实现（见 comfyui.provider.test.ts）；
+    // 此处验证 processMediaParams 正确透传每个别名的上传结果
+    const { provider, uploadCalls } = makeProviderStub(['photo_a1b2c3.png', 'photo_d4e5f6.png']);
 
     const params = [
       { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: 'img1', label: null, paramType: 'image', defaultValue: null },
@@ -252,39 +282,35 @@ describe('processMediaParams', () => {
       img2: [{ buffer: Buffer.from('data2'), originalname: 'photo.png', mimetype: 'image/png' }],
     };
 
-    const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
+    const result = await processMediaParams(params, {}, files, provider);
 
     // 两个参数最终引用的文件名必须不同，否则节点会加载到同一份被覆盖的资源
-    expect(result.img1).toBeDefined();
-    expect(result.img2).toBeDefined();
+    expect(result.img1).toBe('photo_a1b2c3.png');
+    expect(result.img2).toBe('photo_d4e5f6.png');
     expect(result.img1).not.toBe(result.img2);
     expect(result.img1).toMatch(/\.png$/i);
     expect(result.img2).toMatch(/\.png$/i);
+    // 两个别名各触发一次上传，媒体类型被记录
+    expect(uploadCalls).toHaveLength(2);
+    expect(uploadCalls[0].mediaType).toBe('image');
+    expect(uploadCalls[1].mediaType).toBe('image');
   });
 
   it('skips media params without alias', async () => {
+    const { provider, uploadCalls } = makeProviderStub([]);
+
     const params = [
       { id: 1, workflowId: 'test', nodeId: '1', fieldName: 'image', alias: null, label: null, paramType: 'image', defaultValue: null },
     ];
     const files = {
       img: [{ buffer: Buffer.from('data'), originalname: 'photo.png', mimetype: 'image/png' }],
     };
-    const result = await processMediaParams(params, {}, files, 'http://localhost:8188');
-    expect(mockFetch).not.toHaveBeenCalled();
+    const result = await processMediaParams(params, {}, files, provider);
+    expect(uploadCalls).toHaveLength(0);
     expect(result).toEqual({});
   });
 
   it('processMediaParams returns array for multi-file alias and applyAliases injects per fileIndex', async () => {
-    // 模拟 ComfyUI 原样返回上传时使用的文件名
-    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
-      const formData = options.body;
-      const file = formData.get('image') as File;
-      return {
-        ok: true,
-        json: async () => ({ name: file.name }),
-      };
-    });
-
     // 两个参数同 alias 'ref_images'（fileIndex 0/1）→ 同别名多文件，processMediaParams 返回数组
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
@@ -298,13 +324,14 @@ describe('processMediaParams', () => {
     };
 
     // 同别名多参数 → 上传全部文件，result[alias] 为按上传顺序的数组
-    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    const { provider, uploadCalls } = makeProviderStub([]);
+    const uploaded = await processMediaParams(params, {}, files, provider);
     expect(Array.isArray(uploaded.ref_images)).toBe(true);
     const arr = uploaded.ref_images as string[];
     expect(arr).toHaveLength(2);
 
     // 同别名只上传一次（2 参数 × 2 文件 → 2 次上传，而非 4 次）
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(uploadCalls).toHaveLength(2);
 
     // applyAliases 按 fileIndex 注入不同文件名到对应节点（同别名多文件核心：两个节点不再共用同一文件）
     const rawJson = JSON.stringify({
@@ -318,191 +345,13 @@ describe('processMediaParams', () => {
   });
 
   it('processMediaParams keeps string for single-file alias (backward compatible)', async () => {
-    // 模拟 ComfyUI 原样返回上传时使用的文件名
-    mockFetch.mockImplementation(async (_url: string, options: { body: FormData }) => {
-      const formData = options.body;
-      const file = formData.get('image') as File;
-      return {
-        ok: true,
-        json: async () => ({ name: file.name }),
-      };
-    });
-
     // 单参数 + 单文件 → 保持 string，兼容既有行为
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
     ];
     const files = { ref_images: [{ buffer: Buffer.from('a'), originalname: 'a.png', mimetype: 'image/png' }] };
-    const uploaded = await processMediaParams(params, {}, files, 'http://comfy:8188');
+    const { provider } = makeProviderStub([]);
+    const uploaded = await processMediaParams(params, {}, files, provider);
     expect(typeof uploaded.ref_images).toBe('string');
-  });
-});
-
-/**
- * submitPrompt 应自动注入稳定 client_id，以便 ComfyUI 将 execution_error 推送到本服务 WebSocket。
- */
-describe('submitPrompt client_id', () => {
-  const mockFetch = vi.fn();
-
-  beforeEach(() => {
-    // 每个用例重新挂载本 suite 的 fetch mock，避免与其他 describe 互相覆盖
-    globalThis.fetch = mockFetch;
-    mockFetch.mockReset();
-  });
-
-  it('injects COMFYUI_CLIENT_ID into prompt request body', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: async () => JSON.stringify({ prompt_id: 'p1' }),
-    });
-
-    await submitPrompt(JSON.stringify({ prompt: { '1': {} } }), 'http://localhost:8188');
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [, options] = mockFetch.mock.calls[0] as [string, { body: string }];
-    const body = JSON.parse(options.body) as { prompt: unknown; client_id?: string };
-    expect(body.client_id).toBe(COMFYUI_CLIENT_ID);
-    expect(typeof body.client_id).toBe('string');
-    expect(body.client_id!.length).toBeGreaterThan(0);
-  });
-
-  it('preserves existing client_id if already present', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: async () => JSON.stringify({ prompt_id: 'p1' }),
-    });
-
-    await submitPrompt(
-      JSON.stringify({ prompt: { '1': {} }, client_id: 'custom-client' }),
-      'http://localhost:8188',
-    );
-
-    const [, options] = mockFetch.mock.calls[0] as [string, { body: string }];
-    const body = JSON.parse(options.body) as { client_id?: string };
-    expect(body.client_id).toBe('custom-client');
-  });
-});
-
-/**
- * interruptPrompt 应在中断后轮询 /queue 确认任务停止执行，仍在执行时重新调用 /interrupt。
- * 通过 pollIntervalMs: 0 跳过真实延时，保证测试快速稳定。
- */
-describe('interruptPrompt polling', () => {
-  const mockFetch = vi.fn();
-
-  beforeEach(() => {
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
-    mockFetch.mockReset();
-  });
-
-  it('re-interrupts while prompt is still running and confirms stop', async () => {
-    // 首次 POST /interrupt 成功；轮询1 仍在 queue_running → 重新中断；轮询2 已离开 → 确认停止
-    mockFetch
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) })
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [] }) });
-
-    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
-
-    expect(result).toBe(true);
-    // 调用顺序：interrupt → queue → interrupt → queue
-    const urls = mockFetch.mock.calls.map((c) => c[0] as string);
-    expect(urls).toEqual([
-      'http://comfy:8188/interrupt',
-      'http://comfy:8188/queue',
-      'http://comfy:8188/interrupt',
-      'http://comfy:8188/queue',
-    ]);
-  });
-
-  it('stops polling once the target prompt leaves the running queue', async () => {
-    // 轮询2 中 p1 已不在队列（即使有其他 prompt 在跑），不再继续中断
-    mockFetch
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) })
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ queue_running: [['other', {}, {}]] }) });
-
-    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
-
-    expect(result).toBe(true);
-    const interruptCount = mockFetch.mock.calls.filter((c) => (c[0] as string).endsWith('/interrupt')).length;
-    expect(interruptCount).toBe(2);
-  });
-
-  it('sends only a single interrupt when promptId is not provided', async () => {
-    mockFetch.mockResolvedValue({ ok: true });
-
-    const result = await interruptPrompt('http://comfy:8188');
-
-    expect(result).toBe(true);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns false when the first interrupt request fails', async () => {
-    mockFetch.mockResolvedValue({ ok: false });
-
-    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 10 });
-
-    expect(result).toBe(false);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns false when polling times out while prompt is still running', async () => {
-    // 首次中断成功后，所有轮询都报告仍在执行
-    mockFetch
-      .mockResolvedValueOnce({ ok: true })
-      .mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}]] }) });
-
-    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 3 });
-
-    expect(result).toBe(false);
-    // 首次中断 + maxAttempts 次轮询 + maxAttempts 次重试中断
-    expect(mockFetch).toHaveBeenCalledTimes(1 + 3 + 3);
-  });
-
-  it('keeps retrying when queue checks fail and returns false after timeout', async () => {
-    // 网络异常：轮询无法确认 → 保守视为仍在运行，持续重试中断直至超时
-    mockFetch
-      .mockResolvedValueOnce({ ok: true })
-      .mockRejectedValue(new Error('network down'));
-
-    const result = await interruptPrompt('http://comfy:8188', 'p1', { pollIntervalMs: 0, maxAttempts: 3 });
-
-    expect(result).toBe(false);
-    expect(mockFetch).toHaveBeenCalledTimes(1 + 3 + 3);
-  });
-});
-
-/**
- * isPromptRunning 通过 GET /queue 判断指定 prompt 是否仍在执行队列中。
- */
-describe('isPromptRunning', () => {
-  const mockFetch = vi.fn();
-
-  beforeEach(() => {
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
-    mockFetch.mockReset();
-  });
-
-  it('returns true when promptId is in queue_running', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p1', {}, {}], ['p2', {}, {}]] }) });
-    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
-  });
-
-  it('returns false when promptId is not in queue_running', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ queue_running: [['p2', {}, {}]] }) });
-    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(false);
-  });
-
-  it('returns true when the queue request fails', async () => {
-    mockFetch.mockRejectedValue(new Error('network down'));
-    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
-  });
-
-  it('returns true when response lacks a queue_running array', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
-    expect(await isPromptRunning('http://comfy:8188', 'p1')).toBe(true);
   });
 });

@@ -173,3 +173,42 @@ describe('runMigrations', () => {
     );
   });
 });
+
+describe('v4 execution providers migration', () => {
+  /** 构造只有 settings / workflows / task_logs 的最小旧库 */
+  function buildLegacyDb(): Database.Database {
+    const sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      INSERT INTO settings (key, value) VALUES ('comfyui_base_url', 'http://localhost:8188');
+      INSERT INTO workflows (id, name, raw_json, created_at, updated_at) VALUES ('w1', 'wf', '{}', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO task_logs (id, workflow_id, workflow_name, alias_values, comfyui_url, status, created_at) VALUES ('t1', 'w1', 'wf', '{}', 'http://localhost:8188/prompt', 'pending', '2026-01-01T00:00:00.000Z');
+    `);
+    return sqlite;
+  }
+
+  it('creates providers table and migrates legacy comfyui_base_url', () => {
+    const sqlite = buildLegacyDb();
+    runMigrations(sqlite);
+    const provider = sqlite.prepare('SELECT * FROM providers').get() as { id: string; type: string; config: string };
+    expect(provider.type).toBe('comfyui');
+    expect(JSON.parse(provider.config)).toEqual({ baseUrl: 'http://localhost:8188' });
+    const def = sqlite.prepare("SELECT value FROM settings WHERE key = 'default_provider_id'").get() as { value: string };
+    expect(def.value).toBe(provider.id);
+    const task = sqlite.prepare('SELECT provider_id FROM task_logs WHERE id = ?').get('t1') as { provider_id: string };
+    expect(task.provider_id).toBe(provider.id);
+    // workflows 列存在
+    const wf = sqlite.prepare('SELECT provider_id FROM workflows WHERE id = ?').get('w1') as { provider_id: string | null };
+    expect(wf.provider_id).toBeNull();
+  });
+
+  it('is idempotent across two runs', () => {
+    const sqlite = buildLegacyDb();
+    runMigrations(sqlite);
+    runMigrations(sqlite);
+    const count = sqlite.prepare('SELECT COUNT(*) AS c FROM providers').get() as { c: number };
+    expect(count.c).toBe(1);
+  });
+});

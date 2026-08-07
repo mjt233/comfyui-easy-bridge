@@ -3,7 +3,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import Database from 'better-sqlite3';
 import * as schema from '../models/schema';
-import { SettingsService } from './settings.service';
+import { ProviderService } from './providers/provider.service';
 import {
   summarizeNodeInfo,
   generateNodeClassDts,
@@ -131,6 +131,20 @@ describe('generateNodeClassDts / generateBuildDts', () => {
   });
 });
 
+/** 创建 comfyui 提供商并设为全局默认（复用 ProviderService 写入 providers/settings 表） */
+function setupComfyuiProvider(db: BetterSQLite3Database<typeof schema>, baseUrl = 'http://comfy:8188'): void {
+  const svc = new ProviderService(db);
+  const row = svc.create({ name: 'local comfy', type: 'comfyui', config: { baseUrl } });
+  svc.setDefault(row.id);
+}
+
+/** 创建 runninghub 提供商并设为全局默认 */
+function setupRunningHubProvider(db: BetterSQLite3Database<typeof schema>): void {
+  const svc = new ProviderService(db);
+  const row = svc.create({ name: 'runninghub', type: 'runninghub', config: { apiKey: 'rk-test', gpuSize: '24G' } });
+  svc.setDefault(row.id);
+}
+
 describe('getNodeInfoCached', () => {
   let sqlite: Database.Database;
   // 与既有测试文件一致：显式标注 Drizzle 类型
@@ -140,6 +154,7 @@ describe('getNodeInfoCached', () => {
 
   beforeEach(() => {
     sqlite = new Database(':memory:');
+    sqlite.exec('CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)');
     sqlite.exec('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     db = drizzle(sqlite, { schema });
     fetchCalls = [];
@@ -164,14 +179,45 @@ describe('getNodeInfoCached', () => {
     nodeInfoServiceConfig.fetchTimeoutMs = 10000;
   });
 
-  it('returns null when comfyui_base_url is not configured', async () => {
+  it('returns null when no comfyui provider exists', async () => {
+    const result = await getNodeInfoCached(db);
+    expect(result).toBeNull();
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('uses default provider when it is comfyui type', async () => {
+    // 默认实例为 comfyui 时直接使用它（fetch 记录其 baseUrl）
+    setupComfyuiProvider(db, 'http://default-comfy:8188');
+
+    const result = await getNodeInfoCached(db);
+    expect(result).not.toBeNull();
+    expect(result!['KSampler']).toBeDefined();
+    expect(fetchCalls).toEqual(['http://default-comfy:8188/object_info']);
+  });
+
+  it('falls back to first enabled comfyui provider when default is runninghub', async () => {
+    // 默认实例为 runninghub 时回退到第一个启用的 comfyui 实例
+    setupRunningHubProvider(db);
+    const svc = new ProviderService(db);
+    svc.create({ name: 'remote comfy', type: 'comfyui', config: { baseUrl: 'http://remote-comfy:8188' } });
+
+    const result = await getNodeInfoCached(db);
+    expect(result).not.toBeNull();
+    expect(fetchCalls).toEqual(['http://remote-comfy:8188/object_info']);
+  });
+
+  it('returns null when only runninghub providers exist', async () => {
+    // 仅有 runninghub 实例时不拉取 object_info
+    setupRunningHubProvider(db);
+    clearNodeInfoCache();
+
     const result = await getNodeInfoCached(db);
     expect(result).toBeNull();
     expect(fetchCalls).toHaveLength(0);
   });
 
   it('fetches, summarizes and caches within TTL', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
 
     const first = await getNodeInfoCached(db);
     expect(first).not.toBeNull();
@@ -184,7 +230,7 @@ describe('getNodeInfoCached', () => {
   });
 
   it('refetches after TTL expiry', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
 
     await getNodeInfoCached(db);
     expect(fetchCalls).toHaveLength(1);
@@ -196,7 +242,7 @@ describe('getNodeInfoCached', () => {
   });
 
   it('returns null on fetch failure without throwing', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
     nodeInfoServiceConfig.fetchImpl = async () => {
       throw new Error('unreachable');
     };
@@ -206,7 +252,7 @@ describe('getNodeInfoCached', () => {
   });
 
   it('negative-caches fetch failures within short TTL', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
     // 首次拉取失败（push URL 后抛错，便于统计重试次数）
     nodeInfoServiceConfig.fetchImpl = async (url: string) => {
       fetchCalls.push(url);
@@ -229,7 +275,7 @@ describe('getNodeInfoCached', () => {
   });
 
   it('deduplicates concurrent calls into a single fetch', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
 
     // 用延迟 promise 模拟慢速拉取，验证并发去重
     // 延迟 promise 的 resolve 在闭包内赋值，用 `!` 断言绕过“使用前未赋值”检查
@@ -262,7 +308,7 @@ describe('getNodeInfoCached', () => {
   });
 
   it('returns null when fetch times out (abort)', async () => {
-    new SettingsService(db).set('comfyui_base_url', 'http://comfy:8188');
+    setupComfyuiProvider(db);
     nodeInfoServiceConfig.fetchTimeoutMs = 50;
 
     // fetchImpl 永不 resolve，仅在 abort 时 reject（模拟超时）

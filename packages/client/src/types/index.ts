@@ -1,9 +1,59 @@
+/** 执行提供商类型 */
+export type ProviderType = 'comfyui' | 'runninghub';
+
+/**
+ * 提供商配置（按类型区分的判别联合）。
+ * - comfyui: { baseUrl }
+ * - runninghub: { apiKey, gpuSize }
+ */
+export type ProviderConfigInput =
+  | { baseUrl: string }
+  | { apiKey: string; gpuSize: '24G' | '48G' };
+
+/**
+ * 提供商实例摘要（API 返回；runninghub 的 apiKey 已打码）
+ */
+export interface ProviderSummary {
+  /** 实例 ID */
+  id: string;
+  /** 展示名 */
+  name: string;
+  /** 提供商类型 */
+  type: ProviderType;
+  /** 配置（apiKey 已打码） */
+  config: ProviderConfigInput;
+  /** 并发上限 */
+  concurrency: number;
+  /** 是否启用 */
+  enabled: boolean;
+  /** 解析后的执行地址 */
+  resolvedBaseUrl: string;
+  /** 任务跟踪模式 */
+  trackingMode: 'websocket' | 'polling';
+}
+
+/**
+ * 工作流解析后的提供商摘要（详情响应中返回；未解析到可用实例时为 null）
+ */
+export interface ResolvedProvider {
+  /** 实例 ID */
+  id: string;
+  /** 展示名 */
+  name: string;
+  /** 提供商类型 */
+  type: ProviderType;
+  /** 解析后的执行地址 */
+  resolvedBaseUrl: string;
+}
+
 export interface Workflow {
   id: string;
   name: string;
   rawJson: string;
   /** 备注说明（Markdown 格式）；空串表示未填写 */
   description: string;
+  /** 指定的执行提供商实例 ID；null 表示使用全局默认实例 */
+  providerId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +88,8 @@ export interface WorkflowDetail extends Workflow {
   buildScriptEnabled: boolean;
   /** 动态字段静态声明（仅用于执行表单与 API 文档） */
   declaredParams: DeclaredParam[];
+  /** 解析后的执行提供商摘要；未解析到可用实例时为 null */
+  resolvedProvider: ResolvedProvider | null;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,7 @@ import { createSettingsRoutes } from './settings.routes';
 import { createTaskRoutes } from './task.routes';
 import { nodeInfoServiceConfig, clearNodeInfoCache } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
+import { ProviderService, type ProviderRow } from '../services/providers/provider.service';
 
 // 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
@@ -28,7 +29,7 @@ describe('Workflow API', () => {
     const sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE workflow_params (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
@@ -49,7 +50,8 @@ describe('Workflow API', () => {
         mimetype TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     db = drizzle(sqlite, { schema });
@@ -64,14 +66,48 @@ describe('Workflow API', () => {
 
   beforeEach(() => {
     clearNodeInfoCache();
-    // 清空 comfyui_base_url，保证静态 d.ts 用例不受测试顺序污染
+    // 清空 comfyui_base_url 与 default_provider_id，保证静态 d.ts 用例不受测试顺序污染
     new SettingsService(db).set('comfyui_base_url', '');
+    new SettingsService(db).set('default_provider_id', '');
+    // 清空提供商，避免 node-info/build-api 用例互相污染
+    db.delete(schema.providers).run();
     // 恢复默认 fetch 实现（部分用例会覆盖它）
     nodeInfoServiceConfig.fetchImpl = async (url: string, init?: { signal?: AbortSignal }) => {
       const res = await fetch(url, init);
       return res;
     };
   });
+
+  afterEach(() => {
+    // 清除 vi.stubGlobal 的 fetch 桩，避免用例间互相污染
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 创建 comfyui 提供商（不设置默认）。
+   * @param baseUrl 提供商 baseUrl
+   * @param name 展示名，缺省 'Test Comfy'
+   * @returns 创建的提供商行
+   */
+  function setupProvider(baseUrl: string, name = 'Test Comfy'): ProviderRow {
+    return new ProviderService(db).create({
+      name,
+      type: 'comfyui',
+      config: { baseUrl },
+    });
+  }
+
+  /**
+   * 创建 comfyui 提供商并设为全局默认（execute/simulate/node-info 用例的公共前置）。
+   * @param baseUrl 提供商 baseUrl，缺省 http://comfy:8188
+   * @param name 展示名，缺省 'Test Comfy'
+   * @returns 创建的提供商行
+   */
+  function setupDefaultProvider(baseUrl = 'http://comfy:8188', name = 'Test Comfy'): ProviderRow {
+    const provider = setupProvider(baseUrl, name);
+    new ProviderService(db).setDefault(provider.id);
+    return provider;
+  }
 
   afterAll(() => {
     // 清理临时数据目录
@@ -105,11 +141,12 @@ describe('Workflow API', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  it('POST /api/workflows/:id/execute without auth returns 400 (no base URL)', async () => {
+  it('POST /api/workflows/:id/execute without auth returns 400 (no provider)', async () => {
     const res = await supertest(app)
       .post('/api/workflows/test-flow/execute')
       .send({ img_desc: 'cat' });
     expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
   });
 
   it('GET /api/workflows without auth returns 401', async () => {
@@ -485,11 +522,8 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 配置 comfyui_base_url 并注入假 object_info
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    // 创建 comfyui 提供商并设为默认，注入假 object_info
+    setupDefaultProvider('http://comfy:8188', 'local comfy');
     nodeInfoServiceConfig.fetchImpl = async () => ({
       ok: true,
       status: 200,
@@ -517,8 +551,9 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 确保未配置 comfyui_base_url（beforeEach 已清空，此处显式再清一次）
-    new SettingsService(db).set('comfyui_base_url', '');
+    // 确保无 comfyui 提供商（beforeEach 已清空，此处显式再清一次）
+    db.delete(schema.providers).run();
+    new SettingsService(db).set('default_provider_id', '');
 
     const res = await supertest(app)
       .get('/api/workflows/build-api.d.ts')
@@ -532,11 +567,8 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 配置 comfyui_base_url 并注入假 object_info
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    // 创建 comfyui 提供商并设为默认，注入假 object_info
+    setupDefaultProvider('http://comfy:8188', 'local comfy');
     nodeInfoServiceConfig.fetchImpl = async () => ({
       ok: true,
       status: 200,
@@ -594,8 +626,9 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 确保未配置 comfyui_base_url
-    new SettingsService(db).set('comfyui_base_url', '');
+    // 确保无 comfyui 提供商
+    db.delete(schema.providers).run();
+    new SettingsService(db).set('default_provider_id', '');
 
     const res = await supertest(app)
       .get('/api/workflows/node-info')
@@ -715,11 +748,8 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-flow', name: 'Sim', rawJson: JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } }) });
-    // simulate 会按声明配置上传媒体，需先配置 ComfyUI base URL
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // simulate 需先配置执行提供商（媒体上传与 URL 解析均来自提供商）
+    setupDefaultProvider();
 
     const res = await supertest(app)
       .post('/api/workflows/sim-flow/build/simulate')
@@ -742,11 +772,8 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-bad', name: 'Bad', rawJson: '{}' });
-    // simulate 需要 ComfyUI base URL 已配置（baseUrl 检查在脚本执行之前）
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // simulate 需先配置执行提供商（提供商解析在脚本执行之前）
+    setupDefaultProvider();
 
     const res = await supertest(app)
       .post('/api/workflows/sim-bad/build/simulate')
@@ -769,11 +796,8 @@ describe('Workflow API', () => {
       .put('/api/workflows/exec-flow/build-script')
       .set('Authorization', `Bearer ${token}`)
       .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return { workflow: ctx.workflow, params: [] }; }', enabled: true });
-    // 设置 ComfyUI base URL
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    setupDefaultProvider();
 
     const res = await supertest(app).post('/api/workflows/exec-flow/execute').send({});
     // 提交会失败（ComfyUI 不可达），但任务日志中应含脚本修改后的 seed
@@ -796,10 +820,8 @@ describe('Workflow API', () => {
       .put('/api/workflows/exec-bad/build-script')
       .set('Authorization', `Bearer ${token}`)
       .send({ script: 'export default function build() { throw new Error(\'broken\'); }', enabled: true });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    setupDefaultProvider();
 
     const res = await supertest(app).post('/api/workflows/exec-bad/execute').send({});
     expect(res.status).toBe(200);
@@ -812,6 +834,22 @@ describe('Workflow API', () => {
     expect(task?.errorMessage).toContain('broken');
   });
 
+  it('POST execute returns provider_not_configured when no provider exists', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-no-provider', name: 'NoProvider', rawJson: '{}' });
+
+    // 无任何提供商实例（beforeEach 已清空），执行应返回 provider_not_configured
+    const res = await supertest(app)
+      .post('/api/workflows/exec-no-provider/execute')
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
+  });
+
   it('execute records original request form with file metadata', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
@@ -820,10 +858,8 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'exec-form', name: 'ExecForm', rawJson });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    setupDefaultProvider();
 
     const res = await supertest(app)
       .post('/api/workflows/exec-form/execute')
@@ -858,12 +894,10 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-multi', name: 'SimMulti', rawJson: JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } }) });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（simulate 通过 ProviderService 解析）
+    setupDefaultProvider();
 
-    // 模拟 ComfyUI 上传成功（返回确定文件名），避免依赖 9999 可达性
+    // 模拟 ComfyUI 上传成功（返回确定文件名），避免依赖网络可达性
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({
       ok: true,
@@ -894,5 +928,99 @@ describe('Workflow API', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('execute uses workflow-level providerId over default provider', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 提供商 A 设为默认；工作流显式指定提供商 B（应优先于默认）
+    setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-provider-b', name: 'ProviderB', rawJson: '{}', providerId: providerB.id });
+
+    // 模拟 ComfyUI /prompt 提交成功（返回确定 prompt_id）
+    vi.stubGlobal('fetch', (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ prompt_id: 'pid-1' }),
+    })) as unknown as typeof fetch);
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-provider-b/execute')
+      .send({ prompt: 'cat' });
+    // 提交成功：返回 200 与 task_id
+    expect(res.status).toBe(200);
+    expect(res.body.task_id).toBeDefined();
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 任务应记录工作流自身的提供商 B（而非默认提供商 A）
+    expect(task.body.providerId).toBe(providerB.id);
+    expect(task.body.comfyuiUrl).toContain('http://comfy-b:8188');
+  });
+
+  it('execute falls back to default provider when workflow provider is disabled', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 提供商 A 设为默认；提供商 B 创建后禁用，工作流仍指向 B
+    const providerA = setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    new ProviderService(db).update(providerB.id, { enabled: false });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-provider-disabled', name: 'ProviderDisabled', rawJson: '{}', providerId: providerB.id });
+
+    // 模拟 ComfyUI /prompt 提交成功（返回确定 prompt_id）
+    vi.stubGlobal('fetch', (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ prompt_id: 'pid-1' }),
+    })) as unknown as typeof fetch);
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-provider-disabled/execute')
+      .send({ prompt: 'cat' });
+    // 提交成功：返回 200 与 task_id
+    expect(res.status).toBe(200);
+    expect(res.body.task_id).toBeDefined();
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 工作流指定的 B 已禁用，回退到默认提供商 A
+    expect(task.body.providerId).toBe(providerA.id);
+    expect(task.body.comfyuiUrl).toContain('http://comfy-a:8188');
+  });
+
+  it('GET /api/workflows/:id includes resolvedProvider from default provider', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 提供商 A 设为默认；工作流不指定 providerId
+    const providerA = setupDefaultProvider('http://comfy-a:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-resolved', name: 'Resolved', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .get('/api/workflows/wf-resolved')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    // 未显式指定 providerId
+    expect(res.body.providerId).toBeNull();
+    // resolvedProvider 解析到默认提供商 A
+    expect(res.body.resolvedProvider).not.toBeNull();
+    expect(res.body.resolvedProvider.id).toBe(providerA.id);
+    expect(res.body.resolvedProvider.resolvedBaseUrl).toBe('http://comfy-a:8188');
   });
 });

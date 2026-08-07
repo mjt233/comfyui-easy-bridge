@@ -8,27 +8,38 @@ import * as schema from '../models/schema';
 import { createTaskRoutes } from './task.routes';
 import { outputHistoryBackfillConfig } from '../controllers/task.controller';
 import { SettingsService } from '../services/settings.service';
+import { ProviderService } from '../services/providers/provider.service';
 import { TaskService } from '../services/task.service';
 
 /**
- * 构造带 task_logs / settings 的内存库与 Express 子应用，供输出文件接口测试复用。
- * @param baseUrl ComfyUI base URL；null 表示未配置
+ * 构造带 task_logs / providers / settings 的内存库与 Express 子应用，供输出文件接口测试复用。
+ * @param baseUrl ComfyUI base URL；null 表示未配置提供商（无默认实例）
  */
 function createOutputFilesTestApp(baseUrl: string | null): {
   app: express.Express;
   db: BetterSQLite3Database<typeof schema>;
   taskService: TaskService;
+  providerService: ProviderService;
 } {
   const sqlite = new Database(':memory:');
   sqlite.exec(`
-    CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+    CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   `);
   const db = drizzle(sqlite, { schema });
   const taskService = new TaskService(db);
   const settings = new SettingsService(db);
-  if (baseUrl) settings.set('comfyui_base_url', baseUrl);
+  const providerService = new ProviderService(db);
+  // 替代旧的 comfyui_base_url 设置：配置了地址时创建 comfyui 实例并设为全局默认
+  if (baseUrl) {
+    const provider = providerService.create({
+      name: 'test-comfyui', type: 'comfyui',
+      config: { baseUrl },
+    });
+    providerService.setDefault(provider.id);
+  }
   settings.set('auth_enabled', '0');
   settings.set('output_download_mode', 'proxy');
 
@@ -40,7 +51,7 @@ function createOutputFilesTestApp(baseUrl: string | null): {
   const routeApp = express();
   routeApp.use(express.json());
   routeApp.use('/api/tasks', createTaskRoutes(db));
-  return { app: routeApp, db, taskService };
+  return { app: routeApp, db, taskService, providerService };
 }
 
 /**
@@ -291,14 +302,21 @@ describe('Task cancel endpoint', () => {
   beforeAll(() => {
     const sqlite = new Database(':memory:');
     sqlite.exec(`
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     `);
     const db = drizzle(sqlite, { schema });
     const svc = new TaskService(db);
     const s = new SettingsService(db);
-    s.set('comfyui_base_url', 'http://localhost:8188');
+    // 用 comfyui 实例 + 全局默认替代旧的 comfyui_base_url 设置
+    const providerService = new ProviderService(db);
+    const provider = providerService.create({
+      name: 'cancel-comfyui', type: 'comfyui',
+      config: { baseUrl: 'http://localhost:8188' },
+    });
+    providerService.setDefault(provider.id);
     s.set('auth_enabled', '0');
 
     db.insert(schema.workflows).values({
@@ -400,5 +418,111 @@ describe('Task cancel endpoint', () => {
       .post('/api/tasks/nonexistent/cancel');
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('task_not_found');
+  });
+});
+
+/**
+ * 任务按 provider_id 解析执行提供商（历史任务回退全局默认）。
+ */
+describe('Task output files provider resolution', () => {
+  const originalFetch = globalThis.fetch;
+  const defaultRetryDelayMs = outputHistoryBackfillConfig.retryDelayMs;
+  let app: express.Express;
+  let taskService: TaskService;
+  let providerService: ProviderService;
+  const promptId = 'prompt-provider';
+
+  beforeEach(() => {
+    const ctx = createOutputFilesTestApp('http://localhost:8188');
+    app = ctx.app;
+    taskService = ctx.taskService;
+    providerService = ctx.providerService;
+    // 测试中跳过真实 2s 等待，只验证回源 URL 与结果
+    outputHistoryBackfillConfig.retryDelayMs = 0;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    outputHistoryBackfillConfig.retryDelayMs = defaultRetryDelayMs;
+  });
+
+  it('backfills via runninghub proxy URL when task has provider_id', async () => {
+    // 创建 runninghub 实例，任务显式引用它（应优先于全局默认的 comfyui 实例）
+    const rh = providerService.create({
+      name: 'rh-test', type: 'runninghub',
+      config: { apiKey: 'sk-test-key', gpuSize: '24G' },
+    });
+    const task = taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId, providerId: rh.id,
+    });
+    taskService.updateStatus(task.id, { status: 'completed' });
+
+    // stub 全局 fetch，捕获回源请求的 URL
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => buildHistoryJson(promptId, true),
+    });
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await supertest(app)
+      .get(`/api/tasks/${task.id}/output-files`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.files).toHaveLength(1);
+    expect(res.body.files[0].filename).toBe('history-out.png');
+    // 回源请求应打到 runninghub 推导出的 proxy 地址
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
+    expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
+  });
+
+  it('download returns 502 when task provider_id is missing and no default provider', async () => {
+    // 无任何可用提供商（任务引用实例不存在且无全局默认）时下载返回 502
+    const ctx = createOutputFilesTestApp(null);
+    const task = ctx.taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: 'prompt-missing', providerId: 'missing-provider',
+    });
+    const res = await supertest(ctx.app)
+      .get(`/api/tasks/${task.id}/output-files/output.png`);
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('comfyui_unreachable');
+  });
+
+  it('backfills via task provider even when the instance is disabled', async () => {
+    // 创建 runninghub 实例后禁用：历史任务仍应按 task.providerId 引用原实例回源（不因禁用而回退默认）
+    const rh = providerService.create({
+      name: 'rh-disabled', type: 'runninghub',
+      config: { apiKey: 'sk-test-key', gpuSize: '24G' },
+    });
+    providerService.update(rh.id, { enabled: false });
+
+    const task = taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId, providerId: rh.id,
+    });
+    taskService.updateStatus(task.id, { status: 'completed' });
+
+    // stub 全局 fetch，捕获回源请求的 URL
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => buildHistoryJson(promptId, true),
+    });
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await supertest(app)
+      .get(`/api/tasks/${task.id}/output-files`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.files).toHaveLength(1);
+    expect(res.body.files[0].filename).toBe('history-out.png');
+    // 即使实例已禁用，仍解析到该 runninghub 实例推导出的 proxy 地址（而非全局默认的 comfyui）
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
+    expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
   });
 });

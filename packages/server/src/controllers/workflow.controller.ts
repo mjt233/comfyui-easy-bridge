@@ -11,11 +11,12 @@ import {
   resolveSubmittedAliasValues,
   toRuntimeParams,
 } from '../services/executor.service';
+import { ProviderService } from '../services/providers/provider.service';
+import type { ExecutionProvider } from '../services/providers/types';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import type { DeclaredParam } from '../services/param.types';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
-import { SettingsService } from '../services/settings.service';
 import { TaskService } from '../services/task.service';
 
 /** 上传文件元数据（原始请求表单中的文件条目） */
@@ -51,10 +52,32 @@ function buildOriginalForm(
 
 export function createWorkflowController(db: BetterSQLite3Database<typeof schema>) {
   const workflowService = new WorkflowService(db);
-  const settingsService = new SettingsService(db);
+  const providerService = new ProviderService(db);
   const taskService = new TaskService(db);
   const attachmentService = new AttachmentService(db);
   const workflowIOService = new WorkflowIOService(db);
+
+  /**
+   * 构造工作流解析后的提供商摘要（供详情响应使用）。
+   * 工作流未指定或未启用任何执行实例时返回 null。
+   * @param wf 工作流行（需含 id 与 providerId）
+   * @returns 解析后的提供商摘要或 null
+   */
+  function buildResolvedProvider(wf: { id: string; providerId: string | null }): {
+    id: string;
+    name: string;
+    type: string;
+    resolvedBaseUrl: string;
+  } | null {
+    const provider: ExecutionProvider | null = providerService.resolveWorkflowProvider(wf.id);
+    if (!provider) return null;
+    return {
+      id: provider.id,
+      name: provider.name,
+      type: provider.type,
+      resolvedBaseUrl: provider.getDisplayBaseUrl(),
+    };
+  }
 
   return {
     /** 返回动态构建脚本 API 的 d.ts 文本（供 Monaco 注册类型提示） */
@@ -103,6 +126,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         buildScriptEnabled: wf.buildScriptEnabled === 1,
         declaredParams: workflowService.getDeclaredParams(id),
         params,
+        providerId: wf.providerId ?? null,
+        resolvedProvider: buildResolvedProvider(wf),
       });
     },
 
@@ -134,6 +159,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         buildScriptEnabled: wf.buildScriptEnabled === 1,
         declaredParams: workflowService.getDeclaredParams(id),
         params,
+        providerId: wf.providerId ?? null,
+        resolvedProvider: buildResolvedProvider(wf),
       });
     },
 
@@ -193,6 +220,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         buildScriptEnabled: wf.buildScriptEnabled === 1,
         declaredParams: normalized,
         params,
+        providerId: wf.providerId ?? null,
+        resolvedProvider: buildResolvedProvider(wf),
       });
     },
 
@@ -238,9 +267,10 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           ? body.params as Record<string, unknown>
           : {};
 
-        const baseUrl = settingsService.get('comfyui_base_url');
-        if (!baseUrl) {
-          res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
+        // 解析工作流执行提供商（工作流指定优先，否则全局默认）
+        const provider = providerService.resolveWorkflowProvider(id);
+        if (!provider) {
+          res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
           return;
         }
         const baseParams = toRuntimeParams(workflowService.getParams(id));
@@ -260,7 +290,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const effectiveParams = buildResult.params ?? baseParams;
 
         // 按声明配置上传媒体（真实上传，模拟与真实执行一致）
-        const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, baseUrl);
+        const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, provider);
 
         // 注入并返回
         const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);
@@ -278,7 +308,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       }
       // description 可选（Markdown 文本），非字符串时忽略
       const description = typeof req.body.description === 'string' ? req.body.description : '';
-      const wf = workflowService.create({ id, name, rawJson, description });
+      // providerId 可选（执行提供商实例 ID）；空字符串视为未提供
+      const providerId = typeof req.body.providerId === 'string' && req.body.providerId !== '' ? req.body.providerId : null;
+      const wf = workflowService.create({ id, name, rawJson, description, providerId });
       res.status(201).json(wf);
     },
 
@@ -290,7 +322,18 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       try {
-        const wf = workflowService.update(id, req.body);
+        // 空字符串 providerId 视为清除（回退全局默认）
+        const body = { ...req.body } as {
+          id?: string;
+          name?: string;
+          rawJson?: string;
+          description?: string;
+          providerId?: string | null;
+        };
+        if (typeof body.providerId === 'string' && body.providerId === '') {
+          body.providerId = null;
+        }
+        const wf = workflowService.update(id, body);
         res.json(wf);
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
@@ -414,11 +457,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
         const params = workflowService.getParams(id);
-        const baseUrl = settingsService.get('comfyui_base_url');
-        if (!baseUrl) {
-          res.status(400).json({ error: 'ComfyUI base URL not configured', code: 'missing_parameter' });
+        // 解析工作流执行提供商（工作流指定优先，否则全局默认）
+        const provider = providerService.resolveWorkflowProvider(id);
+        if (!provider) {
+          res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
           return;
         }
+        const baseUrl = provider.getBaseUrl();
 
         // 解析 multipart 或 JSON 请求（值可能是 string/number/boolean）
         const isMultipart = req.is('multipart/form-data');
@@ -472,6 +517,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
               comfyuiRequestBody: null,
               comfyuiResponse: null,
               promptId: null,
+              providerId: provider.id,
             });
             taskService.updateStatus(failedTask.id, {
               status: 'failed',
@@ -485,7 +531,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         }
 
         // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
-        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, baseUrl);
+        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
 
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
         const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);
@@ -494,10 +540,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const submittedAliasValues = resolveSubmittedAliasValues(effectiveParams, finalAliasValues);
         const submittedAliasValuesJson = JSON.stringify(submittedAliasValues);
 
-        // 检查并发数
-        const concurrencyStr = settingsService.get('comfyui_concurrency');
-        const concurrency = concurrencyStr ? parseInt(concurrencyStr, 10) : 1;
-        const pendingCount = taskService.countByStatus('pending');
+        // 检查并发数（取自提供商实例配置，按提供商分别统计 pending 任务）
+        const concurrency = provider.concurrency;
+        const pendingCount = taskService.countByStatus('pending', provider.id);
 
         if (pendingCount >= concurrency) {
           // 超过并发限制，进入排队
@@ -510,6 +555,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
             comfyuiResponse: null,
             promptId: null,
+            providerId: provider.id,
           });
           // 覆盖为 queued 状态
           taskService.updateStatus(task.id, { status: 'queued' });
@@ -521,7 +567,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
 
-        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, baseUrl);
+        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, provider);
 
         const task = taskService.create({
           workflowId: wf.id,
@@ -532,6 +578,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
           promptId: result.promptId,
+          providerId: provider.id,
         });
 
         if (!result.success) {

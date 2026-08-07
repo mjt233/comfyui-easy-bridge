@@ -41,6 +41,18 @@
           class="mb-3"
         />
 
+        <!-- 执行提供商选择：仅展示已启用实例，留空表示使用全局默认实例 -->
+        <v-select
+          v-model="providerId"
+          :items="providerOptions"
+          label="执行提供商"
+          hint="留空使用全局默认提供商实例"
+          persistent-hint
+          variant="outlined"
+          clearable
+          class="mb-4"
+        />
+
         <div class="d-flex align-center mb-2">
           <span class="text-subtitle-1">备注说明（Markdown）</span>
         </div>
@@ -186,6 +198,7 @@ import {
   deleteAttachment,
 } from '@/api/workflows';
 import type { WorkflowAttachment } from '@/types';
+import { listProviders } from '@/api/providers';
 import MonacoEditor from '@/components/MonacoEditor.vue';
 
 const route = useRoute();
@@ -193,6 +206,10 @@ const router = useRouter();
 const isEdit = computed(() => !!route.params.id);
 
 const form = ref({ id: '', name: '', rawJson: '', description: '' });
+/** 选中的执行提供商实例 ID；null 表示使用全局默认实例 */
+const providerId = ref<string | null>(null);
+/** 可选执行提供商下拉选项（仅已启用实例） */
+const providerOptions = ref<Array<{ title: string; value: string }>>([]);
 const error = ref('');
 const saving = ref(false);
 const snackbar = ref({ show: false, text: '', color: 'success' });
@@ -236,6 +253,21 @@ function formatRawJson(): void {
   }
 }
 
+/**
+ * 加载已启用的执行提供商列表，填充下拉选项；失败时清空选项
+ */
+async function loadProviders(): Promise<void> {
+  try {
+    const list = await listProviders();
+    // 仅展示已启用实例，与后端 enabled 门控的解析逻辑保持一致
+    providerOptions.value = list
+      .filter((p) => p.enabled)
+      .map((p) => ({ title: p.name, value: p.id }));
+  } catch {
+    providerOptions.value = [];
+  }
+}
+
 async function handleSave() {
   error.value = '';
   if (!form.value.id || !form.value.name || !form.value.rawJson) {
@@ -245,17 +277,27 @@ async function handleSave() {
   saving.value = true;
   try {
     if (isEdit.value) {
-      const payload: Record<string, string> = {
+      const payload: Partial<{
+        id: string;
+        name: string;
+        rawJson: string;
+        description: string;
+        providerId: string | null;
+      }> = {
         name: form.value.name,
         rawJson: form.value.rawJson,
         description: form.value.description,
+        providerId: providerId.value,
       };
       if (form.value.id !== route.params.id) {
         payload.id = form.value.id;
       }
       await updateWorkflow(route.params.id as string, payload);
     } else {
-      const created = await createWorkflow(form.value);
+      const created = await createWorkflow({
+        ...form.value,
+        providerId: providerId.value,
+      });
       // 新建后自动上传暂存的附件
       if (pendingFiles.value.length > 0) {
         await uploadAttachments(created.id, pendingFiles.value);
@@ -372,10 +414,13 @@ onMounted(async () => {
     try {
       const wf = await getWorkflow(route.params.id as string);
       form.value = { id: wf.id, name: wf.name, rawJson: wf.rawJson, description: wf.description ?? '' };
+      // 回显工作流已指定的执行提供商
+      providerId.value = wf.providerId ?? null;
     } catch {
       error.value = '工作流不存在';
     }
   }
+  await loadProviders();
   await loadAttachments();
 });
 </script>

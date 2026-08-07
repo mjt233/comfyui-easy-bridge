@@ -5,9 +5,10 @@ import { db } from './models/db';
 import { createAuthRoutes } from './routes/auth.routes';
 import { createWorkflowRoutes } from './routes/workflow.routes';
 import { createSettingsRoutes } from './routes/settings.routes';
+import { createProvidersRoutes } from './routes/providers.routes';
 import { createTaskRoutes } from './routes/task.routes';
 import { errorHandler } from './middleware/errorHandler';
-import { startComfyUIService } from './services/comfyui.service';
+import { startExecutionService } from './services/execution.service';
 
 const app: Express = express();
 const PORT = process.env.PORT ?? 10721;
@@ -23,12 +24,13 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', createAuthRoutes(db));
 app.use('/api/workflows', createWorkflowRoutes(db));
 app.use('/api/settings', createSettingsRoutes(db));
+app.use('/api/providers', createProvidersRoutes(db));
 app.use('/api/tasks', createTaskRoutes(db));
 
 app.use(errorHandler);
 
 function startServer() {
-  startComfyUIService(db);
+  startExecutionService(db);
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });

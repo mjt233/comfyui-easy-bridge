@@ -2,8 +2,9 @@ import WebSocket from 'ws';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from './task.service';
-import { SettingsService } from './settings.service';
-import { submitPrompt, COMFYUI_CLIENT_ID } from './executor.service';
+import { ProviderService } from './providers/provider.service';
+import { COMFYUI_CLIENT_ID } from './providers/types';
+import type { ExecutionProvider } from './providers/types';
 
 const FALLBACK_INTERVAL = 10000;
 const COMPLETION_POLL_INTERVAL = 1000;
@@ -183,49 +184,44 @@ function guessFileType(key: string): 'image' | 'video' | 'audio' {
   return 'image';
 }
 
-/** 启动 ComfyUI WebSocket 连接 + 队列调度 + 后备轮询服务 */
-export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): { stop: () => void } {
-  const taskService = new TaskService(db);
-  const settingsService = new SettingsService(db);
+/** 单个提供商实例的跟踪器 */
+interface ProviderTracker {
+  /** 启动初始队列调度（服务启动/重建后立即处理 queued 任务） */
+  init(): void;
+  /** 停止跟踪器：关闭 WebSocket 并清理定时器 */
+  stop(): void;
+}
 
+/**
+ * 为单个提供商实例创建跟踪器：队列调度 + （可选）WebSocket + 轮询。
+ * @param provider 实例化后的执行提供商
+ * @param taskService 任务服务
+ */
+function createProviderTracker(provider: ExecutionProvider, taskService: TaskService): ProviderTracker {
+  const providerId = provider.id;
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let fallbackTimer: ReturnType<typeof setInterval> | null = null;
   let completionPollTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
-
-  function getBaseUrl(): string | null {
-    return settingsService.get('comfyui_base_url');
-  }
-
-  /**
-   * 构造带 clientId 的 WebSocket URL，与 /prompt 提交的 client_id 一致。
-   * @returns ws URL；未配置 base URL 时返回 null
-   */
-  function getWsUrl(): string | null {
-    const base = getBaseUrl();
-    if (!base) return null;
-    // ComfyUI 使用 query clientId 识别会话，才能收到非广播的 execution_error
-    return `${base.replace(/^http/, 'ws')}/ws?clientId=${encodeURIComponent(COMFYUI_CLIENT_ID)}`;
-  }
-
-  function getConcurrency(): number {
-    const val = settingsService.get('comfyui_concurrency');
-    return val ? parseInt(val, 10) : 1;
-  }
+  /** 是否正在执行 drainQueue（防止并发重复提交同一任务） */
+  let draining = false;
+  /** 连续 history 拉取失败计数（按任务 ID）；达到阈值后将该任务置为失败 */
+  const historyErrorCounts = new Map<string, number>();
+  /** 连续失败阈值：达到后不再重试，将任务标记为失败 */
+  const MAX_CONSECUTIVE_HISTORY_ERRORS = 5;
 
   /** 调度队列：当 running < concurrency 时取出最旧 queued 任务提交 */
   async function drainQueue(): Promise<void> {
+    // 重入保护：并发触发时直接返回，避免同一任务被重复提交
+    if (draining) return;
+    draining = true;
     try {
-      const concurrency = getConcurrency();
-      const running = taskService.countByStatus('pending');
-      if (running >= concurrency) return;
+      const running = taskService.countByStatus('pending', providerId);
+      if (running >= provider.concurrency) return;
 
-      const queued = taskService.listQueued();
+      const queued = taskService.listQueued(providerId);
       if (queued.length === 0) return;
-
-      const baseUrl = getBaseUrl();
-      if (!baseUrl) return;
 
       const nextTask = queued[0];
       if (!nextTask.comfyuiRequestBody) {
@@ -236,7 +232,7 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
         return;
       }
 
-      const result = await submitPrompt(nextTask.comfyuiRequestBody, baseUrl);
+      const result = await provider.submitPrompt(nextTask.comfyuiRequestBody);
       if (result.success) {
         taskService.updateStatus(nextTask.id, {
           status: 'pending',
@@ -251,7 +247,9 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
         });
       }
     } catch (err) {
-      console.error('[ComfyUIService] drainQueue error', err);
+      console.error(`[ExecutionService:${providerId}] drainQueue error`, err);
+    } finally {
+      draining = false;
     }
   }
 
@@ -260,11 +258,10 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
     const task = taskService.getByPromptId(promptId);
     if (!task || task.status !== 'pending') return;
     taskService.updateStatus(task.id, { status: 'completed' });
-    const baseUrl = getBaseUrl();
-    if (baseUrl) {
-      fetchHistoryAndExtractOutputs(promptId, baseUrl, taskService)
-        .catch(err => console.error('[ComfyUIService] fetch outputs error', err));
-    }
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(task.id);
+    fetchHistoryAndExtractOutputs(promptId)
+      .catch(err => console.error(`[ExecutionService:${providerId}] fetch outputs error`, err));
     drainQueue();
   }
 
@@ -276,18 +273,18 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
       status: 'failed',
       errorMessage: errorMessage || 'Execution error',
     });
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(task.id);
     drainQueue();
   }
 
-  async function fetchHistoryAndExtractOutputs(
-    promptId: string,
-    baseUrl: string,
-    taskService: TaskService,
-  ): Promise<void> {
+  /**
+   * 拉取 history 并提取输出文件，写入任务输出列表（异步兜底，失败仅记录日志）。
+   * @param promptId ComfyUI prompt_id
+   */
+  async function fetchHistoryAndExtractOutputs(promptId: string): Promise<void> {
     try {
-      const res = await fetch(`${baseUrl}/history/${promptId}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await provider.fetchHistory(promptId);
       const files = parseHistoryOutputs(data, promptId);
       if (files.length === 0) return;
       const task = taskService.getByPromptId(promptId);
@@ -295,92 +292,19 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
         taskService.updateOutputFiles(task.id, files);
       }
     } catch (err) {
-      console.error('[ComfyUIService] fetchHistoryAndExtractOutputs error', err);
+      console.error(`[ExecutionService:${providerId}] fetchHistoryAndExtractOutputs error`, err);
     }
   }
 
-  function connect(): void {
-    if (stopped) return;
-    const url = getWsUrl();
-    if (!url) {
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
-      return;
-    }
-
-    try {
-      ws = new WebSocket(url);
-      ws.on('open', () => {
-        console.log('[ComfyUIService] WebSocket connected');
-      });
-
-      ws.on('message', (raw: Buffer) => {
-        try {
-          const msg = JSON.parse(raw.toString());
-          const data = msg.data || {};
-          const promptId = data.prompt_id;
-          if (!promptId) return;
-
-          if (msg.type === 'progress') {
-            const { value, max } = data;
-            if (value != null && max > 0) {
-              const pct = Math.round((value / max) * 100);
-              const task = taskService.getByPromptId(promptId);
-              if (task && task.status === 'pending') {
-                taskService.updateProgress(task.id, pct);
-              }
-            }
-          } else if (msg.type === 'execution_success') {
-            // 仅以 execution_success 作为成功信号；失败结束也会发 executing node=null
-            completeTask(promptId);
-          } else if (msg.type === 'execution_error') {
-            failTask(promptId, toErrorMessage(data.exception_message, 'Execution error'));
-          } else if (msg.type === 'execution_interrupted') {
-            // 用户中断或 InterruptProcessingException
-            failTask(promptId, 'Execution interrupted');
-          }
-          // 注意：不再将 executing + node=null 视为成功（失败任务也会收到该消息）
-        } catch {
-          // ignore parse errors
-        }
-      });
-
-      ws.on('close', () => {
-        if (!stopped) {
-          reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
-        }
-      });
-
-      ws.on('error', () => {
-        // close event will fire and trigger reconnect
-      });
-    } catch {
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
-    }
-  }
-
-  /**
-   * 根据 history 解析结果更新 pending 任务终态。
-   * @param taskId 本地任务 ID
-   * @param promptId ComfyUI prompt_id
-   * @param data history JSON
-   * @returns 是否已进入终态
-   */
-  function applyHistoryOutcome(
-    taskId: string,
-    promptId: string,
-    data: unknown,
-  ): boolean {
+  /** 按 history 解析结果更新 pending 任务终态 */
+  function applyHistoryOutcome(taskId: string, promptId: string, data: unknown): boolean {
     const outcome = resolveHistoryOutcome(data, promptId);
-    if (outcome.kind === 'running') {
-      return false;
-    }
+    if (outcome.kind === 'running') return false;
 
     if (outcome.kind === 'completed') {
-      // 标记完成并尽量提取输出文件
-      taskService.updateStatus(taskId, {
-        status: 'completed',
-        comfyuiResponse: JSON.stringify(data),
-      });
+      taskService.updateStatus(taskId, { status: 'completed', comfyuiResponse: JSON.stringify(data) });
+      // 任务已进入终态，清理其连续失败计数
+      historyErrorCounts.delete(taskId);
       const files = parseHistoryOutputs(data, promptId);
       if (files.length > 0) {
         taskService.updateOutputFiles(taskId, files);
@@ -389,33 +313,82 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
       return true;
     }
 
-    // failed
     taskService.updateStatus(taskId, {
       status: 'failed',
       errorMessage: outcome.errorMessage,
       comfyuiResponse: JSON.stringify(data),
     });
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(taskId);
     drainQueue();
     return true;
   }
 
-  /** 快速轮询进度 100% 但尚未完成的 pending 任务，1 秒间隔补足 WebSocket 可能丢失的完成/失败信号 */
+  /** 仅 websocket 模式建立连接 */
+  function connect(): void {
+    if (stopped || provider.trackingMode !== 'websocket') return;
+    const url = `${provider.getBaseUrl().replace(/^http/, 'ws')}/ws?clientId=${encodeURIComponent(COMFYUI_CLIENT_ID)}`;
+    try {
+      ws = new WebSocket(url);
+      ws.on('open', () => {
+        console.log(`[ExecutionService:${providerId}] WebSocket connected`);
+      });
+      ws.on('message', (raw: Buffer) => {
+        try {
+          const parsed: unknown = JSON.parse(raw.toString());
+          // 仅处理对象类型消息，其余忽略
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+          const msg = parsed as Record<string, unknown>;
+          // data 字段非对象时按空对象处理
+          const data = msg.data && typeof msg.data === 'object' && !Array.isArray(msg.data)
+            ? (msg.data as Record<string, unknown>)
+            : {};
+          const promptId = typeof data.prompt_id === 'string' ? data.prompt_id : '';
+          if (!promptId) return;
+          if (msg.type === 'progress') {
+            const { value, max } = data;
+            if (typeof value === 'number' && typeof max === 'number' && max > 0) {
+              const pct = Math.round((value / max) * 100);
+              const task = taskService.getByPromptId(promptId);
+              if (task && task.status === 'pending') {
+                taskService.updateProgress(task.id, pct);
+              }
+            }
+          } else if (msg.type === 'execution_success') {
+            completeTask(promptId);
+          } else if (msg.type === 'execution_error') {
+            failTask(promptId, toErrorMessage(data.exception_message, 'Execution error'));
+          } else if (msg.type === 'execution_interrupted') {
+            failTask(promptId, 'Execution interrupted');
+          }
+        } catch {
+          // ignore parse errors
+        }
+      });
+      ws.on('close', () => {
+        if (!stopped) {
+          reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
+        }
+      });
+      ws.on('error', () => {
+        // close event will fire and trigger reconnect
+      });
+    } catch {
+      reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
+    }
+  }
+
+  /** 快速轮询进度 100% 但尚未完成的 pending 任务 */
   function startCompletionPoll(): void {
     completionPollTimer = setInterval(async () => {
       try {
-        const pending = taskService.listPending();
+        const pending = taskService.listPending(providerId);
         const stuck = pending.filter(t => t.progress != null && t.progress >= 100);
         if (stuck.length === 0) return;
-        const baseUrl = getBaseUrl();
-        if (!baseUrl) return;
-
         for (const task of stuck) {
           if (!task.promptId) continue;
           try {
-            const res = await fetch(`${baseUrl}/history/${task.promptId}`);
-            if (!res.ok) continue;
-            const data = await res.json();
-            // 成功或失败均通过统一解析器处理
+            const data = await provider.fetchHistory(task.promptId);
             applyHistoryOutcome(task.id, task.promptId, data);
           } catch {
             // retry next cycle
@@ -427,40 +400,31 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
     }, COMPLETION_POLL_INTERVAL);
   }
 
-  /** 后备轮询 /history 补偿 WebSocket 可能丢失的消息（含失败） */
+  /** 后备轮询 /history 补偿丢失消息 */
   function startFallback(): void {
     fallbackTimer = setInterval(async () => {
       try {
-        const pending = taskService.listPending();
+        const pending = taskService.listPending(providerId);
         if (pending.length === 0) return;
-        const baseUrl = getBaseUrl();
-        if (!baseUrl) return;
-
         for (const task of pending) {
           if (!task.promptId) continue;
           try {
-            const res = await fetch(`${baseUrl}/history/${task.promptId}`);
-            if (res.status === 404) continue;
-            if (res.status >= 500) {
-              const text = await res.text();
+            const data = await provider.fetchHistory(task.promptId);
+            historyErrorCounts.delete(task.id);
+            applyHistoryOutcome(task.id, task.promptId, data);
+          } catch (err) {
+            // 连续失败计数：达到阈值后终止任务，避免永久卡在 pending
+            const count = (historyErrorCounts.get(task.id) ?? 0) + 1;
+            historyErrorCounts.set(task.id, count);
+            if (count >= MAX_CONSECUTIVE_HISTORY_ERRORS) {
+              historyErrorCounts.delete(task.id);
               taskService.updateStatus(task.id, {
                 status: 'failed',
-                errorMessage: `ComfyUI error: ${text}`,
+                errorMessage: err instanceof Error ? `History check failed: ${err.message}` : 'History check failed',
               });
               drainQueue();
-              continue;
             }
-            const text = await res.text();
-            let data: unknown;
-            try {
-              data = JSON.parse(text);
-            } catch {
-              continue;
-            }
-            // 成功或失败均通过统一解析器处理
-            applyHistoryOutcome(task.id, task.promptId, data);
-          } catch {
-            // retry next cycle
+            // 未达阈值则下一轮重试
           }
         }
       } catch {
@@ -474,12 +438,53 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
   startCompletionPoll();
 
   return {
+    init: () => {
+      // 启动即触发一次队列调度，让 queued 任务尽快进入 pending（fire-and-forget）
+      drainQueue().catch(err => console.error(`[ExecutionService:${providerId}] init drain error`, err));
+    },
     stop: () => {
       stopped = true;
       if (ws) { ws.close(); ws = null; }
       if (reconnectTimer) { clearTimeout(reconnectTimer); }
       if (fallbackTimer) { clearInterval(fallbackTimer); }
       if (completionPollTimer) { clearInterval(completionPollTimer); }
+    },
+  };
+}
+
+/**
+ * 启动执行服务：为每个启用的提供商实例启动独立跟踪器；
+ * 实例变更（增删改/默认切换）时整体重建。
+ * @param db 数据库实例
+ */
+export function startExecutionService(db: BetterSQLite3Database<typeof schema>): { stop: () => void } {
+  const taskService = new TaskService(db);
+  const providerService = new ProviderService(db);
+  let trackers: ProviderTracker[] = [];
+
+  function stopAll(): void {
+    for (const t of trackers) t.stop();
+    trackers = [];
+  }
+
+  function startAll(): void {
+    stopAll();
+    const rows = providerService.listEnabled();
+    trackers = rows
+      .map((row) => providerService.instantiate(row))
+      .filter((p): p is ExecutionProvider => p !== null)
+      .map((p) => createProviderTracker(p, taskService));
+    // 启动/重建后立即 drain 一次，让队列中已存在的任务尽快开始执行
+    for (const tracker of trackers) tracker.init();
+  }
+
+  const unsubscribe = providerService.onChange(() => startAll());
+  startAll();
+
+  return {
+    stop: () => {
+      unsubscribe();
+      stopAll();
     },
   };
 }

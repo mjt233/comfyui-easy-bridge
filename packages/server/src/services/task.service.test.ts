@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
@@ -7,8 +7,8 @@ import { TaskService, type OutputFile } from './task.service';
 function createTestDb() {
   const sqlite = new Database(':memory:');
   sqlite.exec(`
-    CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+    CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
   `);
   return drizzle(sqlite, { schema });
 }
@@ -90,5 +90,64 @@ describe('TaskService.getByPromptId', () => {
     const db = createTestDb();
     const svc = new TaskService(db);
     expect(svc.getByPromptId('nonexistent')).toBeNull();
+  });
+});
+
+describe('TaskService provider support', () => {
+  let db: ReturnType<typeof createTestDb>;
+  let service: TaskService;
+
+  beforeEach(() => {
+    db = createTestDb();
+    service = new TaskService(db);
+  });
+
+  it('stores providerId on create', () => {
+    const task = service.create({
+      workflowId: 'w1',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://x/prompt',
+      comfyuiRequestBody: null,
+      comfyuiResponse: null,
+      promptId: null,
+      providerId: 'p1',
+    });
+    expect(task.providerId).toBe('p1');
+    expect(task.status).toBe('failed');
+  });
+
+  it('filters queued and pending by providerId', () => {
+    // p1 有两个任务：一个 queued、一个 pending（用于验证状态与提供商联合过滤）
+    const t1 = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: null, providerId: 'p1',
+    });
+    const t2 = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: null, providerId: 'p2',
+    });
+    // promptId 非空 → 状态为 pending
+    const t3 = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: 'pt3', providerId: 'p1',
+    });
+    service.updateStatus(t1.id, { status: 'queued' });
+    service.updateStatus(t2.id, { status: 'queued' });
+
+    // 带 providerId 时只返回该提供商且状态为 queued 的任务（t3 是 pending，必须被排除）
+    expect(service.listQueued('p1').map((t) => t.id)).toEqual([t1.id]);
+    // 不带参数保持向后兼容：返回全部 queued 任务
+    expect(service.listQueued().map((t) => t.id)).toHaveLength(2);
+    // 带 providerId 的 pending 查询
+    expect(service.listPending('p1').map((t) => t.id)).toEqual([t3.id]);
+    expect(service.listPending().map((t) => t.id)).toHaveLength(1);
+    // countByStatus 同样支持按提供商过滤
+    expect(service.countByStatus('queued', 'p1')).toBe(1);
+    expect(service.countByStatus('queued')).toBe(2);
+    expect(service.countByStatus('pending', 'p1')).toBe(1);
   });
 });

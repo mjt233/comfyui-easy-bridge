@@ -63,13 +63,20 @@ pnpm --filter server test:watch    # vitest watch 模式
 - 受保护路由在 `router.beforeEach` 中检查
 - 公开端点: `POST /api/auth/login`, `POST /api/workflows/:id/execute`
 
+## 执行提供商
+
+- 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
+- 类型：`comfyui`（`config.baseUrl`）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）
+- 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
+- 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）；`services/execution.service.ts` 按实例维护任务跟踪器
+
 ## 数据库
 
 - SQLite 文件: `data/bridge.db` (已 gitignore)
 - 初始建表与后续 schema 变更统一走**版本化迁移**：`packages/server/src/models/migrations/`（引擎 `runner.ts`、注册表 `index.ts`、迁移 `vN-xxx.ts`）
 - 已应用迁移记录在 `schema_migrations` 表；每个迁移在独立事务中执行，失败自动回滚
 - 旧库启动时自动补齐缺失列（迁移 1 幂等兼容），无需人工干预
-- Drizzle schema 定义在 `schema.ts`（五表: `workflows`, `workflow_params`, `workflow_attachments`, `settings`, `task_logs`）
+- Drizzle schema 定义在 `schema.ts`（六表: `workflows`, `workflow_params`, `workflow_attachments`, `settings`, `task_logs`, `providers`）
 - 新增 schema 变更：在 `migrations/` 新建 `vN-xxx.ts` 并在 `index.ts` 注册表中追加，同步更新设计文档
 - 测试使用 `:memory:` 数据库，不依赖磁盘文件
 - 可以通过 `DATA_DIR` 环境变量覆盖数据库路径
@@ -89,7 +96,8 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `unauthorized` | Token 无效/过期 |
 | `workflow_not_found` | 工作流不存在 |
 | `alias_conflict` | 别名重复 (UNIQUE 约束) |
-| `comfyui_unreachable` | ComfyUI 服务不可达或返回错误 |
+| `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
+| `provider_not_configured` | 未配置默认提供商 / 工作流指定的实例不存在或已禁用 |
 | `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
 | `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |
 
