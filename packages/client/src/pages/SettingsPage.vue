@@ -164,6 +164,7 @@
               label="API Key"
               variant="outlined"
               class="mb-4"
+              :hint="providerDialog.isEdit ? '保持不变则沿用原 Key' : undefined"
             />
             <v-radio-group
               v-model="providerForm.gpuSize"
@@ -439,7 +440,19 @@ function apiKeyChanged(): boolean {
 }
 
 /**
+ * 判断编辑模式下 GPU 显存档位是否被修改。
+ * 仅 runninghub 且原配置包含 gpuSize 时比较，否则视为未修改。
+ * @returns 是否修改
+ */
+function gpuSizeChanged(): boolean {
+  const original = providerDialog.value.original;
+  if (!original || original.type !== 'runninghub') return false;
+  return 'gpuSize' in original.config && providerForm.value.gpuSize !== original.config.gpuSize;
+}
+
+/**
  * 弹窗内测试当前表单配置的连通性（测试失败不阻止保存）。
+ * 编辑 runninghub 且 API Key 未改动（打码值）时，改用真实存储的 Key 测试。
  */
 async function handleDialogTest() {
   // 基础校验：缺必填字段时给出即时提示
@@ -452,8 +465,19 @@ async function handleDialogTest() {
     return;
   }
   testing.value = true;
+  providerTestResult.value = null;
   try {
-    providerTestResult.value = await testProviderConfig(providerForm.value.type, buildConfigPayload());
+    // 编辑模式 + runninghub + API Key 未改动（仍为打码值）时，
+    // 用真实存储的 Key 测试，避免将打码值作为配置提交
+    const isEdit = providerDialog.value.isEdit;
+    const isRunningHubUnchangedKey = isEdit
+      && providerForm.value.type === 'runninghub'
+      && !apiKeyChanged();
+    if (isRunningHubUnchangedKey) {
+      providerTestResult.value = await testProviderById(providerDialog.value.id);
+    } else {
+      providerTestResult.value = await testProviderConfig(providerForm.value.type, buildConfigPayload());
+    }
   } catch {
     providerTestResult.value = { ok: false, message: '测试连接失败' };
   } finally {
@@ -466,11 +490,20 @@ async function handleDialogTest() {
  * 首个实例创建成功后自动设为全局默认。
  */
 async function handleSaveProvider() {
-  const name = providerForm.value.name.trim();
-  if (!name) {
+  // 客户端预校验：必填字段缺失时给出明确提示
+  if (providerForm.value.name.trim() === '') {
     providerError.value = '名称不能为空';
     return;
   }
+  if (providerForm.value.type === 'comfyui' && providerForm.value.baseUrl.trim() === '') {
+    providerError.value = '请填写 ComfyUI 服务地址';
+    return;
+  }
+  if (providerForm.value.type === 'runninghub' && providerForm.value.apiKey.trim() === '') {
+    providerError.value = '请填写 RunningHub API Key';
+    return;
+  }
+  const name = providerForm.value.name.trim();
   // 并发数兜底为 1
   const concurrency = Number(providerForm.value.concurrency) || 1;
   savingProvider.value = true;
@@ -481,6 +514,11 @@ async function handleSaveProvider() {
       const original = providerDialog.value.original;
       // 类型是否被切换（切换时必须同时回传 type 与新的 config）
       const typeChanged = original ? providerForm.value.type !== original.type : true;
+      // GPU 显存修改需要重新输入 API Key：打码值不能回传，只能整段提交 config
+      if (gpuSizeChanged() && !apiKeyChanged()) {
+        providerError.value = '修改 GPU 显存需重新输入 API Key 才能生效';
+        return;
+      }
       // 部分更新：name/concurrency/enabled 始终回传
       const payload: Partial<ProviderCreateInput> = {
         name,
@@ -526,12 +564,19 @@ async function handleSaveProvider() {
  * @param val 新的默认实例 ID（清空时为 null）
  */
 async function handleDefaultChange(val: string | null) {
+  const prev = defaultProviderId.value;
+  // 清空选择时不做持久化（服务端以空串视为未设置）
+  if (!val) {
+    return;
+  }
   try {
-    await updateSetting('default_provider_id', val ?? '');
+    await updateSetting('default_provider_id', val);
     defaultProviderId.value = val;
     snackbar.value = { show: true, text: '默认提供商已更新', color: 'success' };
   } catch {
-    providerError.value = '更新默认提供商失败';
+    // 失败时回滚本地选择，避免与持久化状态不一致
+    defaultProviderId.value = prev;
+    providerError.value = '设置默认提供商失败';
   }
 }
 
@@ -566,7 +611,7 @@ async function handleDelete(p: ProviderSummary) {
     snackbar.value = { show: true, text: '提供商已删除', color: 'success' };
     await loadProviders();
   } catch {
-    providerError.value = '删除提供商失败（默认实例不可删除）';
+    providerError.value = '删除失败：默认实例不可删除或网络错误';
   }
 }
 
