@@ -67,6 +67,30 @@ const TYPES: readonly ProviderType[] = ['comfyui', 'runninghub'];
 /** GPU 显存档位白名单 */
 const GPU_SIZES: readonly string[] = ['24G', '48G'];
 
+/** 提供商变更监听器 */
+type ProviderChangeListener = () => void;
+
+/**
+ * 模块级变更事件总线：跨 ProviderService 实例共享。
+ * 任何实例的 notifyChange 都会触发所有订阅者，确保执行服务能感知到
+ * 其他模块（如 providers.controller 持有的独立实例）发起的变更。
+ */
+const changeListeners = new Set<ProviderChangeListener>();
+
+/**
+ * 订阅提供商变更（模块级共享）；返回取消订阅函数。
+ * @param cb 变更回调
+ */
+export function onProviderChange(cb: ProviderChangeListener): () => void {
+  changeListeners.add(cb);
+  return () => { changeListeners.delete(cb); };
+}
+
+/** 触发提供商变更通知（模块级共享） */
+export function notifyProviderChange(): void {
+  for (const cb of changeListeners) cb();
+}
+
 /**
  * 执行提供商实例服务：CRUD、解析（工作流/默认/node-info）、变更事件、测试连接。
  * 负责 providers 表的读写，并将 DB 行实例化为 ExecutionProvider。
@@ -353,18 +377,21 @@ export class ProviderService {
     };
   }
 
-  /** 变更事件回调集合 */
-  private listeners = new Set<() => void>();
-
-  /** 订阅实例变更事件，返回取消订阅函数 */
+  /**
+   * 订阅实例变更事件，返回取消订阅函数。
+   * 委托到模块级共享总线：任何 ProviderService 实例（含执行服务自身的订阅）的
+   * 变更都会触发本订阅，实现跨实例感知。
+   */
   onChange(cb: () => void): () => void {
-    this.listeners.add(cb);
-    return () => { this.listeners.delete(cb); };
+    return onProviderChange(cb);
   }
 
-  /** 触发变更事件（增删改实例 / 默认切换后调用） */
+  /**
+   * 触发变更事件（增删改实例 / 默认切换后调用）。
+   * 委托到模块级共享总线：所有订阅者（其他实例/执行服务）都会收到通知。
+   */
   notifyChange(): void {
-    for (const cb of this.listeners) cb();
+    notifyProviderChange();
   }
 
   /**

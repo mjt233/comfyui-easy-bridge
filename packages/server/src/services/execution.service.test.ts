@@ -317,15 +317,37 @@ describe('createProviderTracker behavior', () => {
     }
   });
 
-  it('重建时停止旧跟踪器并启动新跟踪器，不抛异常', () => {
+  it('rebuilds trackers on provider change notified from another ProviderService instance', async () => {
     const db = createInMemoryDb();
-    insertProvider(db, 'p1', 'http://x');
+    insertProvider(db, 'p1', 'http://a');
+    const taskService = new TaskService(db);
+
+    // 打桩 fetch：/prompt 返回固定 prompt_id，其余端点返回空对象
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/prompt')) {
+        return new Response(JSON.stringify({ prompt_id: 'pid-new' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     const svc = startExecutionService(db);
-    // 模拟实例变更触发整体重建
-    const providerService = new ProviderService(db);
-    expect(() => providerService.notifyChange()).not.toThrow();
-    // 重建后再停止应幂等且不抛异常
-    expect(() => svc.stop()).not.toThrow();
+    try {
+      // 通过另一个 ProviderService 实例插入新提供商与任务，再触发变更通知
+      const other = new ProviderService(db);
+      const p2 = other.create({ name: 'P2', type: 'comfyui', config: { baseUrl: 'http://b' }, concurrency: 1 });
+      insertQueuedTask(db, 't2', p2.id);
+      other.notifyChange(); // 必须能触发执行服务的重建
+
+      // 重建后新实例的跟踪器应启动并排空新任务
+      await vi.waitFor(() => {
+        const t = taskService.getById('t2');
+        expect(t?.status).toBe('pending');
+      });
+      const t = taskService.getById('t2');
+      expect(t?.promptId).toBe('pid-new');
+    } finally {
+      svc.stop();
+    }
   });
 });

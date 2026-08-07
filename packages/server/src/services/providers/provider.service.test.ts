@@ -113,6 +113,17 @@ describe('ProviderService', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it('notifyChange from one instance triggers subscribers of another instance', () => {
+    // 事件总线为模块级共享：实例 A 订阅、实例 B 触发，回调仍应执行
+    const a = new ProviderService(db);
+    const b = new ProviderService(db);
+    const fn = vi.fn();
+    const unsub = a.onChange(fn);
+    b.notifyChange();
+    expect(fn).toHaveBeenCalledTimes(1);
+    unsub();
+  });
+
   it('testConnection succeeds on 2xx system_stats', async () => {
     // 模拟 GET {base}/system_stats 返回 200：应视为连通
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"system":{}}', { status: 200 })));
