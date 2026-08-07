@@ -26,6 +26,22 @@ export interface WorkflowTagGroup {
   tags: WorkflowTagNode[];
 }
 
+/** 工作流标签关联（含标签定义信息，供导入导出） */
+export interface WorkflowTagAssociationDetail {
+  /** 标签 ID */
+  tagId: string;
+  /** 显示名 */
+  name: string;
+  /** 父标签 ID；null=顶层 */
+  parentId: string | null;
+  /** 是否预设（1=预设只读，0=用户自定义） */
+  isPreset: number;
+  /** 元数据字段定义 JSON（TagMetadataFieldDef[]） */
+  metadataDef: string;
+  /** 用户配置的元数据原始值 */
+  metadataValues: TagMetadataValues;
+}
+
 /**
  * 解析 metadataValues 字符串为对象；损坏时返回空对象。
  * @param raw 数据库中的 JSON 字符串
@@ -143,7 +159,8 @@ export class WorkflowTagService {
    * @returns 父标签分组数组
    */
   getTagGroups(workflowId: string): WorkflowTagGroup[] {
-    const assocs = this.db.select().from(schema.workflowTags).where(eq(schema.workflowTags.workflowId, workflowId)).all();
+    // 按 rowid（插入顺序）返回，保证“上次整组打标顺序”（复合主键索引扫描默认按 tag_id 字典序）
+    const assocs = this.db.select().from(schema.workflowTags).where(eq(schema.workflowTags.workflowId, workflowId)).orderBy(sql`rowid`).all();
     const tags = this.listAllTags();
     const byId = new Map(tags.map((t) => [t.id, t]));
     const groups: WorkflowTagGroup[] = [];
@@ -181,6 +198,32 @@ export class WorkflowTagService {
       }
     }
     return groups;
+  }
+
+  /**
+   * 查询工作流的全部标签关联（含标签定义），供导出使用。
+   * @param workflowId 工作流 ID
+   * @returns 标签关联明细数组（按关联记录插入顺序）
+   */
+  listAssociationsWithTags(workflowId: string): WorkflowTagAssociationDetail[] {
+    // 按 rowid（插入顺序）返回，与 getTagGroups 保持一致
+    const assocs = this.db.select().from(schema.workflowTags).where(eq(schema.workflowTags.workflowId, workflowId)).orderBy(sql`rowid`).all();
+    const tags = this.listAllTags();
+    const byId = new Map(tags.map((t) => [t.id, t]));
+    return assocs
+      .map((a) => {
+        const tag = byId.get(a.tagId);
+        if (!tag) return null;
+        return {
+          tagId: a.tagId,
+          name: tag.name,
+          parentId: tag.parentId,
+          isPreset: tag.isPreset,
+          metadataDef: tag.metadataDef,
+          metadataValues: parseMetadataValues(a.metadataValues),
+        };
+      })
+      .filter((x): x is WorkflowTagAssociationDetail => x !== null);
   }
 
   /**
