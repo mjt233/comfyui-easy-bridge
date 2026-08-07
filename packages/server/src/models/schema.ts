@@ -12,6 +12,8 @@ export const workflows = sqliteTable('workflows', {
   declaredParams: text('declared_params').notNull().default('[]'),
   /** 备注说明（Markdown 格式）；空串表示未填写 */
   description: text('description').notNull().default(''),
+  /** 执行提供商实例 ID；null 表示使用全局默认实例 */
+  providerId: text('provider_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -35,6 +37,8 @@ export const taskLogs = sqliteTable('task_logs', {
   id: text('id').primaryKey(),
   workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
   workflowName: text('workflow_name').notNull(),
+  /** 实际使用的提供商实例 ID；历史任务可能为 null */
+  providerId: text('provider_id'),
   promptId: text('prompt_id'),
   aliasValues: text('alias_values').notNull(),
   /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */
@@ -62,6 +66,23 @@ export const workflowAttachments = sqliteTable('workflow_attachments', {
   /** MIME 类型；可空 */
   mimetype: text('mimetype'),
   createdAt: text('created_at').notNull(),
+});
+
+/** 执行提供商实例（comfyui / runninghub） */
+export const providers = sqliteTable('providers', {
+  id: text('id').primaryKey(),
+  /** 展示名 */
+  name: text('name').notNull(),
+  /** 提供商类型：comfyui | runninghub */
+  type: text('type').notNull(),
+  /** 类型化配置 JSON（见 services/providers/types.ts 的 ProviderConfig） */
+  config: text('config').notNull(),
+  /** 该实例的并发上限 */
+  concurrency: integer('concurrency').notNull().default(1),
+  /** 是否启用（0/1） */
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
 });
 
 export const settings = sqliteTable('settings', {
