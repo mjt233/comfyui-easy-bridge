@@ -62,12 +62,14 @@
           </template>
           <span v-else class="text-caption text-grey">暂无标签</span>
           <v-spacer />
+          <!-- 工作流尚未加载（loading/未找到）时禁用编辑按钮，避免静默空操作 -->
           <v-btn
             size="small"
             variant="text"
             color="primary"
             prepend-icon="mdi-tag-edit"
-            @click="tagDialog = true"
+            :disabled="!workflow"
+            @click="openTagDialog"
           >
             编辑标签
           </v-btn>
@@ -839,13 +841,22 @@ async function load() {
 }
 
 /**
+ * 打开标签编辑弹窗：先清除上次保存失败残留的错误提示，避免过期错误滞留
+ */
+function openTagDialog() {
+  tagError.value = '';
+  tagDialog.value = true;
+}
+
+/**
  * 加载标签树（供标签编辑弹窗使用）；加载失败不阻塞详情页，弹窗内展示空态提示
  */
 async function loadTags() {
   try {
     allTags.value = await listTags();
-  } catch {
-    // 加载失败不阻塞详情页；弹窗内无标签时展示空态提示
+  } catch (err) {
+    // 加载失败不阻塞详情页；弹窗内无标签时展示空态提示，同时输出警告便于排查
+    console.warn('加载标签树失败', err);
     allTags.value = [];
   }
 }
@@ -864,6 +875,8 @@ async function handleSaveTags(tags: WorkflowTagInput[]) {
     tagDialog.value = false;
   } catch (err) {
     tagError.value = err instanceof Error ? err.message : String(err);
+    // 保存失败时弹窗保持打开，卡片内的错误提示会被遮罩压暗；同时经 snackbar 弹出，保证可见性
+    snackbar.value = { show: true, text: tagError.value, color: 'error' };
   } finally {
     savingTags.value = false;
   }
