@@ -34,6 +34,8 @@ export async function listTags(): Promise<TagTreeNode[]> {
  * 新建自定义标签的入参
  */
 export interface TagCreateInput {
+  /** 标签 ID（可选；缺省/空串时后端自动生成 uuid；提供时须全局唯一且仅含字母数字、连字符、下划线） */
+  id?: string;
   /** 显示名 */
   name: string;
   /** 父标签 ID（可选，null=顶层） */

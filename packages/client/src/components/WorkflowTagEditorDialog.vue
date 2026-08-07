@@ -30,20 +30,19 @@
 
           <!-- 子标签区：父标签未勾选时禁用，保证「子必带父」不变量 -->
           <div v-if="parent.children.length > 0" class="ml-8">
-            <v-checkbox
-              v-for="child in parent.children"
-              :key="child.id"
-              :model-value="checkedChildren.has(child.id)"
-              :label="child.name"
-              :disabled="!checkedParents.has(parent.id)"
-              hide-details
-              density="compact"
-              class="ml-4"
-              @update:model-value="toggleChild(child, $event)"
-            />
+            <!-- 每个子标签的 checkbox 与其元数据编辑区在同一 v-for 内，编辑区紧跟该子标签下方 -->
+            <template v-for="child in parent.children" :key="child.id">
+              <v-checkbox
+                :model-value="checkedChildren.has(child.id)"
+                :label="child.name"
+                :disabled="!checkedParents.has(parent.id)"
+                hide-details
+                density="compact"
+                class="ml-4"
+                @update:model-value="toggleChild(child, $event)"
+              />
 
-            <!-- 元数据编辑区：仅选中的且带元数据定义的子标签，默认收起 -->
-            <template v-for="child in parent.children" :key="`meta-${child.id}`">
+              <!-- 元数据编辑区：仅选中的且带元数据定义的子标签，默认收起 -->
               <div
                 v-if="checkedChildren.has(child.id) && child.metadataDef.length > 0"
                 class="ml-4 mb-3"

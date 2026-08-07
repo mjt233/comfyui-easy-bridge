@@ -38,6 +38,8 @@ export interface TagTreeNode {
 
 /** 创建/更新标签的输入 */
 export interface TagInput {
+  /** 标签 ID（可选，仅创建时生效；缺省/空串时自动生成 uuid；提供时须全局唯一且符合格式） */
+  id?: string;
   /** 显示名（必填，同层级唯一） */
   name: string;
   /** 父标签 ID；null=顶层；创建后不可改 */
@@ -45,6 +47,9 @@ export interface TagInput {
   /** 元数据字段定义；缺省空数组 */
   metadataDef?: TagMetadataFieldDef[];
 }
+
+/** 自定义标签 ID 格式：字母/数字开头，仅含字母、数字、连字符、下划线（与预设 ID 风格一致） */
+const TAG_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
 /** 字段类型白名单 */
 const FIELD_TYPES: readonly TagMetadataFieldType[] = ['number', 'string', 'boolean'];
@@ -146,7 +151,7 @@ export class TagService {
   }
 
   /**
-   * 新建标签（自定义）。校验：name 必填、同层级唯一、parentId 存在且为顶层。
+   * 新建标签（自定义）。校验：name 必填、同层级唯一、parentId 存在且为顶层、自定义 ID 合法且全局唯一。
    * @param input 创建输入
    * @returns 新标签行
    * @throws TagError tag_conflict / tag_not_found / tag_has_parent / invalid metadata
@@ -156,6 +161,24 @@ export class TagService {
     if (!name) throw new TagError('missing_parameter', 'missing_parameter: name is required');
     const metadataDef = validateMetadataDef(input.metadataDef);
     if (!metadataDef) throw new TagError('missing_parameter', 'missing_parameter: invalid metadata definition');
+
+    // 自定义 ID：可选；缺省/空串时自动生成 uuid。提供时校验格式与全局唯一性
+    const rawId = input.id?.trim();
+    let id: string;
+    if (rawId) {
+      if (!TAG_ID_PATTERN.test(rawId)) {
+        throw new TagError(
+          'missing_parameter',
+          'missing_parameter: tag id must start with a letter or digit and contain only letters, digits, "-" or "_"',
+        );
+      }
+      if (this.getById(rawId)) {
+        throw new TagError('tag_conflict', `tag_conflict: tag id "${rawId}" already exists`, 409);
+      }
+      id = rawId;
+    } else {
+      id = randomUUID();
+    }
 
     // 规范化 parentId：空串/空白视为顶层（null），避免绕过父标签存在性校验
     const rawParentId = input.parentId ?? null;
@@ -171,7 +194,6 @@ export class TagService {
     if (conflict) throw new TagError('tag_conflict', `tag_conflict: tag name "${name}" already exists`, 409);
 
     const now = new Date().toISOString();
-    const id = randomUUID();
     this.db.insert(schema.tags).values({
       id, name, parentId, isPreset: 0,
       metadataDef: JSON.stringify(metadataDef),
@@ -181,12 +203,12 @@ export class TagService {
   }
 
   /**
-   * 更新自定义标签（name / metadataDef；parentId 创建后不可改，类型层面禁止传入）。预设标签拒绝。
+   * 更新自定义标签（name / metadataDef；parentId 与 id 创建后不可改，类型层面禁止传入）。预设标签拒绝。
    * @param id 标签 ID
-   * @param input 可更新字段（不含 parentId）
+   * @param input 可更新字段（不含 parentId 与 id）
    * @throws TagError tag_not_found / tag_preset_readonly
    */
-  update(id: string, input: Omit<Partial<TagInput>, 'parentId'>): TagRow {
+  update(id: string, input: Omit<Partial<TagInput>, 'parentId' | 'id'>): TagRow {
     const existing = this.getById(id);
     if (!existing) throw new TagError('tag_not_found', 'tag_not_found: tag not found', 404);
     if (existing.isPreset) throw new TagError('tag_preset_readonly', 'tag_preset_readonly: preset tags are read-only', 403);

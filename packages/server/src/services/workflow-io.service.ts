@@ -402,6 +402,16 @@ export class WorkflowIOService {
       });
     }
 
+    // ④ 复制标签关联（含用户配置的元数据值，子标签因「子必带父」不变量已含父关联）
+    const workflowTagService = new WorkflowTagService(this.db);
+    for (const assoc of workflowTagService.listAssociationsWithTags(id)) {
+      this.db.insert(schema.workflowTags).values({
+        workflowId: newId,
+        tagId: assoc.tagId,
+        metadataValues: JSON.stringify(assoc.metadataValues),
+      }).run();
+    }
+
     // 回查并返回新工作流行
     return this.workflowService.getById(newId)!;
   }

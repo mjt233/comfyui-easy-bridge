@@ -36,6 +36,8 @@
     </v-row>
 
     <!-- 标签筛选条：多选 chips，AND 语义（父/子标签分组展示） -->
+    <!-- 注意：不绑定 model-value/filter（v-chip 的 modelValue=false 会使整个 chip 不渲染；
+         无 v-chip-group 时 filter 的选中勾也无效），选中态由 :color 表达 -->
     <v-row v-if="tagTree.length > 0" class="mb-2 align-center">
       <v-col cols="auto" class="text-subtitle-2">
         按标签筛选：
@@ -45,9 +47,7 @@
           <template v-for="parent in tagTree" :key="parent.id">
             <v-chip
               :color="selectedTagIds.has(parent.id) ? 'primary' : ''"
-              :model-value="selectedTagIds.has(parent.id)"
               variant="tonal"
-              filter
               @click="toggleFilterTag(parent.id)"
             >
               {{ parent.name }}
@@ -56,9 +56,7 @@
               v-for="child in parent.children"
               :key="child.id"
               :color="selectedTagIds.has(child.id) ? 'secondary' : ''"
-              :model-value="selectedTagIds.has(child.id)"
               variant="flat"
-              filter
               size="small"
               class="ml-1"
               @click="toggleFilterTag(child.id)"
@@ -144,10 +142,31 @@
       <v-list-item
         v-for="wf in workflows"
         :key="wf.id"
-        :title="wf.name"
         :subtitle="`ID: ${wf.id} | 创建: ${wf.createdAt}`"
         @click="router.push(`/admin/workflow/${wf.id}`)"
       >
+        <!-- 标题行：标签 chips 位于工作流名称之前，与名称同一行展示 -->
+        <template #title>
+          <div class="d-flex align-center flex-wrap ga-1">
+            <template v-if="wf.tags && wf.tags.length > 0">
+              <template v-for="group in wf.tags" :key="group.id">
+                <v-chip size="x-small" color="primary" variant="tonal">
+                  {{ group.name }}
+                </v-chip>
+                <v-chip
+                  v-for="child in group.tags"
+                  :key="child.id"
+                  size="x-small"
+                  color="secondary"
+                  variant="flat"
+                >
+                  {{ child.name }}
+                </v-chip>
+              </template>
+            </template>
+            <span>{{ wf.name }}</span>
+          </div>
+        </template>
         <template #prepend>
           <v-checkbox
             :model-value="selectedIds.has(wf.id)"
@@ -161,28 +180,7 @@
             mdi-graph-outline
           </v-icon>
         </template>
-        <!-- 标签 chips：展示该工作流的父/子标签分组 -->
-        <template #default>
-          <div
-            v-if="wf.tags && wf.tags.length > 0"
-            class="d-flex flex-wrap ga-1 mt-1"
-          >
-            <template v-for="group in wf.tags" :key="group.id">
-              <v-chip size="x-small" color="primary" variant="tonal">
-                {{ group.name }}
-              </v-chip>
-              <v-chip
-                v-for="child in group.tags"
-                :key="child.id"
-                size="x-small"
-                color="secondary"
-                variant="flat"
-              >
-                {{ child.name }}
-              </v-chip>
-            </template>
-          </div>
-        </template>
+        <!-- 标签 chips 已移到 #title 槽（与工作流名称同行，位于名称之前） -->
         <template #append>
           <!-- 打标签入口 -->
           <v-btn

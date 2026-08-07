@@ -233,6 +233,28 @@ describe('WorkflowIOService', () => {
     expect(copy!.providerId).toBe('prov-1');
   });
 
+  it('duplicate copies workflow tags with metadata values', () => {
+    const env = createEnv();
+    env.workflowService.create({ id: 'src-tag', name: 'WF-tag', rawJson: '{}' });
+    // 源工作流打标签（含元数据配置）
+    const wt = new WorkflowTagService(env.db);
+    wt.setWorkflowTags('src-tag', [
+      { tagId: 'image-to-video' },
+      { tagId: 'reference', metadataValues: { maxImageCount: 12 } },
+    ]);
+
+    const copy = env.ioService.duplicate('src-tag');
+    expect(copy).not.toBeNull();
+    // 复制品继承标签分组与用户元数据配置
+    const groups = wt.getTagGroups(copy!.id);
+    expect(groups.map((g) => g.id)).toEqual(['image-to-video']);
+    expect(groups[0].tags.map((t) => t.id)).toEqual(['reference']);
+    expect(groups[0].tags[0].metadata.maxImageCount).toBe(12);
+    expect(groups[0].tags[0].configuredMetadata).toEqual({ maxImageCount: 12 });
+    // 源工作流标签不受影响
+    expect(wt.getTagGroups('src-tag').length).toBe(1);
+  });
+
   it('export includes providerId in manifest', async () => {
     const env = createEnv();
     env.workflowService.create({ id: 'wf-prov-export', name: 'WF-export', rawJson: '{}', providerId: 'prov-1' });
