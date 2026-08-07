@@ -225,6 +225,14 @@ export interface TagMetadataFieldDef {
 /** 标签元数据值 */
 export type TagMetadataValues = Record<string, number | string | boolean>;
 
+/** 工作流打标签的输入项 */
+export interface WorkflowTagInput {
+  /** 标签 ID */
+  tagId: string;
+  /** 用户配置的元数据原始值（可选；缺省空对象） */
+  metadataValues?: TagMetadataValues;
+}
+
 /** 标签树节点（/api/tags 响应） */
 export interface TagTreeNode {
   /** 标签 ID */

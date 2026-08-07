@@ -337,7 +337,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       // providerId 可选（执行提供商实例 ID）；空字符串视为未提供
       const providerId = typeof req.body.providerId === 'string' && req.body.providerId !== '' ? req.body.providerId : null;
       const wf = workflowService.create({ id, name, rawJson, description, providerId });
-      res.status(201).json(wf);
+      // tags 为客户端必填字段，新建后补充（空分组）
+      res.status(201).json({ ...wf, tags: workflowTagService.getTagGroups(wf.id) });
     },
 
     update(req: Request, res: Response): void {
@@ -434,7 +435,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      res.status(201).json(wf);
+      // tags 为客户端必填字段，复制后补充（新工作流的标签分组）
+      res.status(201).json({ ...wf, tags: workflowTagService.getTagGroups(wf.id) });
     },
 
     addParam(req: Request, res: Response): void {

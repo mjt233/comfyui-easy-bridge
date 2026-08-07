@@ -1,5 +1,5 @@
 import client from './client';
-import type { TagMetadataFieldDef, TagTreeNode, WorkflowTagGroup } from '@/types';
+import type { TagMetadataFieldDef, TagTreeNode, WorkflowTagGroup, WorkflowTagInput } from '@/types';
 
 /**
  * 标签数据库行（create/update 接口返回；metadataDef 为 JSON 字符串，需 JSON.parse 解析）
@@ -78,7 +78,7 @@ export async function deleteTag(id: string): Promise<void> {
  */
 export async function setWorkflowTags(
   workflowId: string,
-  tags: Array<{ tagId: string; metadataValues?: Record<string, number | string | boolean> }>,
+  tags: WorkflowTagInput[],
 ): Promise<WorkflowTagGroup[]> {
   const res = await client.put<WorkflowTagGroup[]>(`/workflows/${workflowId}/tags`, { tags });
   return res.data;
