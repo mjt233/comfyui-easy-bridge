@@ -54,6 +54,8 @@ export interface Workflow {
   description: string;
   /** 指定的执行提供商实例 ID；null 表示使用全局默认实例 */
   providerId: string | null;
+  /** 工作流标签（嵌套分组结构） */
+  tags: WorkflowTagGroup[];
   createdAt: string;
   updatedAt: string;
 }
@@ -203,4 +205,68 @@ export interface ComfyNodeReference {
   outputs: string[];
   /** 输出名列表 */
   output_names: string[];
+}
+
+/** 标签元数据字段类型 */
+export type TagMetadataFieldType = 'number' | 'string' | 'boolean';
+
+/** 标签元数据字段定义 */
+export interface TagMetadataFieldDef {
+  /** 字段键，如 "maxImageCount" */
+  key: string;
+  /** 显示名，如 "图片数量" */
+  label: string;
+  /** 字段类型 */
+  type: TagMetadataFieldType;
+  /** 默认值 */
+  defaultValue: number | string | boolean;
+}
+
+/** 标签元数据值 */
+export type TagMetadataValues = Record<string, number | string | boolean>;
+
+/** 工作流打标签的输入项 */
+export interface WorkflowTagInput {
+  /** 标签 ID */
+  tagId: string;
+  /** 用户配置的元数据原始值（可选；缺省空对象） */
+  metadataValues?: TagMetadataValues;
+}
+
+/** 标签树节点（/api/tags 响应） */
+export interface TagTreeNode {
+  /** 标签 ID */
+  id: string;
+  /** 显示名 */
+  name: string;
+  /** 父标签 ID；null=顶层 */
+  parentId: string | null;
+  /** 是否预设只读 */
+  isPreset: number;
+  /** 元数据字段定义 */
+  metadataDef: TagMetadataFieldDef[];
+  /** 子标签 */
+  children: TagTreeNode[];
+}
+
+/** 工作流标签分组中的子标签节点 */
+export interface WorkflowTagNode {
+  /** 标签 ID */
+  id: string;
+  /** 显示名 */
+  name: string;
+  /** 合并默认值后的完整元数据 */
+  metadata: TagMetadataValues;
+  /** 用户原始配置值 */
+  configuredMetadata: TagMetadataValues;
+}
+
+/** 工作流标签分组（父标签） */
+export interface WorkflowTagGroup {
+  /** 父标签 ID */
+  id: string;
+  /** 父标签显示名 */
+  name: string;
+  /** 该父标签下被选中的子标签 */
+  tags: WorkflowTagNode[];
 }

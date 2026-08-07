@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, uniqueIndex, primaryKey } from 'drizzle-orm/sqlite-core';
 
 export const workflows = sqliteTable('workflows', {
   id: text('id').primaryKey(),
@@ -89,3 +89,29 @@ export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
 });
+
+/** 标签定义（父/子两级；预设标签只读） */
+export const tags = sqliteTable('tags', {
+  /** 标签 ID：预设为固定英文标识（如 "image-to-video"），自定义为 uuid */
+  id: text('id').primaryKey(),
+  /** 显示名（同层级内唯一） */
+  name: text('name').notNull(),
+  /** 父标签 id；null 表示顶层标签 */
+  parentId: text('parent_id'),
+  /** 是否预设（1=只读参考模板，0=用户自定义） */
+  isPreset: integer('is_preset').notNull().default(0),
+  /** 元数据字段定义 JSON：TagMetadataFieldDef[] */
+  metadataDef: text('metadata_def').notNull().default('[]'),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});
+
+/** 工作流 ↔ 标签 多对多关联 */
+export const workflowTags = sqliteTable('workflow_tags', {
+  workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
+  tagId: text('tag_id').notNull().references(() => tags.id, { onDelete: 'cascade' }),
+  /** 用户为工作流配置的元数据原始值 JSON：{key: value}；未配置的键不存在 */
+  metadataValues: text('metadata_values').notNull().default('{}'),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.workflowId, table.tagId] }),
+}));

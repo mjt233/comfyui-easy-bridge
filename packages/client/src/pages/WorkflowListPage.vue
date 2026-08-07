@@ -8,6 +8,9 @@
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
       设置
     </v-btn>
+    <v-btn to="/admin/tags" variant="text" prepend-icon="mdi-tag-multiple">
+      标签管理
+    </v-btn>
     <v-btn
       v-if="authEnabled !== false"
       variant="text"
@@ -29,6 +32,49 @@
         <v-btn color="primary" to="/admin/workflow/new" prepend-icon="mdi-plus">
           新建工作流
         </v-btn>
+      </v-col>
+    </v-row>
+
+    <!-- 标签筛选条：多选 chips，AND 语义（父/子标签分组展示） -->
+    <v-row v-if="tagTree.length > 0" class="mb-2 align-center">
+      <v-col cols="auto" class="text-subtitle-2">
+        按标签筛选：
+      </v-col>
+      <v-col>
+        <div class="d-flex flex-wrap ga-1">
+          <template v-for="parent in tagTree" :key="parent.id">
+            <v-chip
+              :color="selectedTagIds.has(parent.id) ? 'primary' : ''"
+              :model-value="selectedTagIds.has(parent.id)"
+              variant="tonal"
+              filter
+              @click="toggleFilterTag(parent.id)"
+            >
+              {{ parent.name }}
+            </v-chip>
+            <v-chip
+              v-for="child in parent.children"
+              :key="child.id"
+              :color="selectedTagIds.has(child.id) ? 'secondary' : ''"
+              :model-value="selectedTagIds.has(child.id)"
+              variant="flat"
+              filter
+              size="small"
+              class="ml-1"
+              @click="toggleFilterTag(child.id)"
+            >
+              {{ child.name }}
+            </v-chip>
+          </template>
+          <v-btn
+            v-if="selectedTagIds.size > 0"
+            size="small"
+            variant="text"
+            @click="clearFilter"
+          >
+            清空
+          </v-btn>
+        </div>
       </v-col>
     </v-row>
 
@@ -81,7 +127,16 @@
 
     <v-card v-if="workflows.length === 0">
       <v-card-text class="text-center py-8 text-grey">
-        暂无工作流，点击上方按钮新建
+        <!-- 有筛选条件时空态提示：新建的工作流无标签，不会出现在当前筛选下 -->
+        <template v-if="selectedTagIds.size > 0">
+          没有匹配所选标签的工作流
+          <v-btn size="small" variant="text" color="primary" @click="clearFilter">
+            清空筛选
+          </v-btn>
+        </template>
+        <template v-else>
+          暂无工作流，点击上方按钮新建
+        </template>
       </v-card-text>
     </v-card>
 
@@ -106,7 +161,39 @@
             mdi-graph-outline
           </v-icon>
         </template>
+        <!-- 标签 chips：展示该工作流的父/子标签分组 -->
+        <template #default>
+          <div
+            v-if="wf.tags && wf.tags.length > 0"
+            class="d-flex flex-wrap ga-1 mt-1"
+          >
+            <template v-for="group in wf.tags" :key="group.id">
+              <v-chip size="x-small" color="primary" variant="tonal">
+                {{ group.name }}
+              </v-chip>
+              <v-chip
+                v-for="child in group.tags"
+                :key="child.id"
+                size="x-small"
+                color="secondary"
+                variant="flat"
+              >
+                {{ child.name }}
+              </v-chip>
+            </template>
+          </div>
+        </template>
         <template #append>
+          <!-- 打标签入口 -->
+          <v-btn
+            icon
+            variant="text"
+            size="small"
+            class="mr-2"
+            @click.stop="openTagDialog(wf)"
+          >
+            <v-icon>mdi-tag-outline</v-icon>
+          </v-btn>
           <v-btn
             icon
             variant="text"
@@ -341,6 +428,15 @@
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
     </v-snackbar>
+
+    <!-- 打标签弹窗：保存成功后由父组件关闭并刷新列表 -->
+    <WorkflowTagEditorDialog
+      v-model="tagDialog"
+      :all-tags="tagTree"
+      :current-tags="tagDialogWorkflow?.tags ?? []"
+      :saving="savingTags"
+      @save="handleSaveTags"
+    />
   </v-container>
 </template>
 
@@ -356,10 +452,12 @@ import {
   importWorkflows,
   duplicateWorkflow,
 } from '@/api/workflows';
-import type { Workflow, WorkflowParam } from '@/types';
+import { listTags, setWorkflowTags } from '@/api/tags';
+import type { TagTreeNode, Workflow, WorkflowParam, WorkflowTagInput } from '@/types';
 import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
+import WorkflowTagEditorDialog from '@/components/WorkflowTagEditorDialog.vue';
 
 interface ExecuteField {
   alias: string;
@@ -389,6 +487,18 @@ const importInput = ref<HTMLInputElement | null>(null);
 const allSelected = computed(
   () => workflows.value.length > 0 && workflows.value.every((w) => selectedIds.value.has(w.id)),
 );
+
+// 标签筛选 / 打标签弹窗状态
+/** 标签树（顶部筛选条与打标签弹窗共用） */
+const tagTree = ref<TagTreeNode[]>([]);
+/** 当前选中的筛选标签 ID 集合（AND 语义） */
+const selectedTagIds = ref<Set<string>>(new Set());
+/** 打标签弹窗目标工作流 */
+const tagDialogWorkflow = ref<Workflow | null>(null);
+/** 打标签弹窗可见性 */
+const tagDialog = ref(false);
+/** 打标签保存中（保存期间禁用弹窗按钮） */
+const savingTags = ref(false);
 
 /**
  * 切换全选状态
@@ -595,9 +705,77 @@ function handleApiDocs(id: string, name: string) {
   apiDialog.value = true;
 }
 
+/**
+ * 加载标签树（顶部筛选条与打标签弹窗共用）
+ */
+async function loadTags() {
+  try {
+    tagTree.value = await listTags();
+  } catch (err) {
+    console.warn('加载标签树失败', err);
+    tagTree.value = [];
+  }
+}
+
+/**
+ * 切换筛选标签：选中/取消后按当前集合重新拉取列表（多标签 AND）
+ * @param id 标签 ID
+ */
+function toggleFilterTag(id: string) {
+  const next = new Set(selectedTagIds.value);
+  // 已选中则移除，未选中则加入（切换后整体替换集合）
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
+  selectedTagIds.value = next;
+  load();
+}
+
+/**
+ * 清空标签筛选并重新拉取完整列表
+ */
+function clearFilter() {
+  selectedTagIds.value = new Set();
+  load();
+}
+
+/**
+ * 打开某工作流的打标签弹窗
+ * @param wf 目标工作流
+ */
+function openTagDialog(wf: Workflow) {
+  tagDialogWorkflow.value = wf;
+  tagDialog.value = true;
+}
+
+/**
+ * 保存标签：成功后关闭弹窗并刷新列表；失败时通过 snackbar 展示错误
+ * @param tags 整组标签（tagId + 可选元数据）
+ */
+async function handleSaveTags(tags: WorkflowTagInput[]) {
+  if (!tagDialogWorkflow.value) return;
+  savingTags.value = true;
+  try {
+    await setWorkflowTags(tagDialogWorkflow.value.id, tags);
+    // 先刷新列表，再关闭弹窗，避免保存后列表仍显示旧标签
+    await load();
+    tagDialog.value = false;
+  } catch (err) {
+    // 错误信息仅在当前作用域用于拼接 snackbar 文案，无需提升为组件状态
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    snackbar.value = { show: true, text: `保存标签失败: ${errorMessage}`, color: 'error' };
+  } finally {
+    savingTags.value = false;
+  }
+}
+
 async function load() {
   try {
-    workflows.value = await listWorkflows();
+    // 有选中的筛选标签时携带 tags 参数（AND 语义），否则拉取全部
+    const ids = [...selectedTagIds.value];
+    workflows.value = await listWorkflows(ids.length > 0 ? ids : undefined);
   } catch {
     snackbar.value = { show: true, text: '加载失败', color: 'error' };
   }
@@ -774,7 +952,10 @@ function handleLogout() {
   router.push('/login');
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadTags();
+});
 </script>
 
 <style scoped>

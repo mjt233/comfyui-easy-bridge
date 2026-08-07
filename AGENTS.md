@@ -100,6 +100,13 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `provider_not_configured` | 未配置默认提供商 / 工作流指定的实例不存在或已禁用 |
 | `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
 | `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |
+| `tag_not_found` | 标签不存在 |
+| `tag_conflict` | 同层级标签名重复 |
+| `tag_preset_readonly` | 预设标签不可编辑 / 删除 |
+| `tag_has_children` | 删除的标签存在子标签 |
+| `tag_in_use` | 删除的标签被工作流引用 |
+| `parent_tag_required` | 打子标签未同时包含父标签 |
+| `invalid_metadata` | 元数据键不属于字段定义或值类型不匹配 |
 
 ## 参考资料
 

@@ -18,6 +18,9 @@ import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-scri
 import type { DeclaredParam } from '../services/param.types';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
 import { TaskService } from '../services/task.service';
+import { TagError } from '../services/tag.service';
+import type { WorkflowTagInput } from '../services/tag.types';
+import { WorkflowTagService } from '../services/workflow-tag.service';
 
 /** 上传文件元数据（原始请求表单中的文件条目） */
 interface UploadedFileMeta {
@@ -56,6 +59,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
   const taskService = new TaskService(db);
   const attachmentService = new AttachmentService(db);
   const workflowIOService = new WorkflowIOService(db);
+  const workflowTagService = new WorkflowTagService(db);
 
   /**
    * 构造工作流解析后的提供商摘要（供详情响应使用）。
@@ -109,8 +113,27 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       }
     },
 
-    list(_req: Request, res: Response): void {
-      res.json(workflowService.list());
+    /** 列出工作流；支持 ?tags=id1&tags=id2 按标签筛选（AND），响应附带 tags 分组结构 */
+    list(req: Request, res: Response): void {
+      // 解析 ?tags=id1&tags=id2（可为数组或单个字符串）；非字符串项一律忽略
+      const raw = req.query.tags;
+      const selected: string[] = raw === undefined
+        ? []
+        : Array.isArray(raw)
+          ? raw.filter((x): x is string => typeof x === 'string')
+          : typeof raw === 'string' ? [raw] : [];
+      let workflows = workflowService.list();
+      // 选中标签非空时按标签筛选（AND 语义 + 父标签向下包含）；空数组 = 不过滤
+      const matched = workflowTagService.listWorkflowIdsByTags(selected);
+      if (matched !== null) {
+        const matchedSet = new Set(matched);
+        workflows = workflows.filter((w) => matchedSet.has(w.id));
+      }
+      // 每条记录附带嵌套标签分组结构
+      res.json(workflows.map((wf) => ({
+        ...wf,
+        tags: workflowTagService.getTagGroups(wf.id),
+      })));
     },
 
     getById(req: Request, res: Response): void {
@@ -128,6 +151,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         params,
         providerId: wf.providerId ?? null,
         resolvedProvider: buildResolvedProvider(wf),
+        tags: workflowTagService.getTagGroups(id),
       });
     },
 
@@ -161,6 +185,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         params,
         providerId: wf.providerId ?? null,
         resolvedProvider: buildResolvedProvider(wf),
+        tags: workflowTagService.getTagGroups(id),
       });
     },
 
@@ -222,6 +247,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         params,
         providerId: wf.providerId ?? null,
         resolvedProvider: buildResolvedProvider(wf),
+        tags: workflowTagService.getTagGroups(id),
       });
     },
 
@@ -311,7 +337,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       // providerId 可选（执行提供商实例 ID）；空字符串视为未提供
       const providerId = typeof req.body.providerId === 'string' && req.body.providerId !== '' ? req.body.providerId : null;
       const wf = workflowService.create({ id, name, rawJson, description, providerId });
-      res.status(201).json(wf);
+      // tags 为客户端必填字段，新建后补充（空分组）
+      res.status(201).json({ ...wf, tags: workflowTagService.getTagGroups(wf.id) });
     },
 
     update(req: Request, res: Response): void {
@@ -334,10 +361,48 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           body.providerId = null;
         }
         const wf = workflowService.update(id, body);
-        res.json(wf);
+        res.json({ ...wf, tags: workflowTagService.getTagGroups(id) });
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
           res.status(409).json({ error: 'ID already exists', code: 'id_conflict' });
+          return;
+        }
+        throw err;
+      }
+    },
+
+    /** 整组替换工作流标签；校验失败返回 400/404 */
+    setTags(req: Request, res: Response): void {
+      const id = req.params.id as string;
+      const existing = workflowService.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
+        return;
+      }
+      const body = req.body as { tags?: unknown };
+      if (!Array.isArray(body.tags)) {
+        res.status(400).json({ error: 'tags array is required', code: 'missing_parameter' });
+        return;
+      }
+      try {
+        // 校验数组元素：必须为对象（缺失的 tagId 由服务层报 tag_not_found）
+        for (const item of body.tags as unknown[]) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            res.status(400).json({ error: 'each tag must be an object', code: 'missing_parameter' });
+            return;
+          }
+        }
+        // 规范化输入：tagId 必须为字符串；metadataValues 原样透传由服务校验
+        const input = (body.tags as Array<{ tagId?: unknown; metadataValues?: unknown }>).map((t) => ({
+          tagId: typeof t.tagId === 'string' ? t.tagId : '',
+          metadataValues: t.metadataValues as WorkflowTagInput['metadataValues'],
+        }));
+        workflowTagService.setWorkflowTags(id, input);
+        // 返回打标后的嵌套分组结构
+        res.json(workflowTagService.getTagGroups(id));
+      } catch (err) {
+        if (err instanceof TagError) {
+          res.status(err.status).json({ error: err.message, code: err.code });
           return;
         }
         throw err;
@@ -370,7 +435,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      res.status(201).json(wf);
+      // tags 为客户端必填字段，复制后补充（新工作流的标签分组）
+      res.status(201).json({ ...wf, tags: workflowTagService.getTagGroups(wf.id) });
     },
 
     addParam(req: Request, res: Response): void {

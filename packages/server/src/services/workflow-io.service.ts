@@ -1,9 +1,11 @@
 import { randomBytes } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import JSZip from 'jszip';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { WorkflowService } from './workflow.service';
 import { AttachmentService } from './attachment.service';
+import { WorkflowTagService } from './workflow-tag.service';
 import type { DeclaredParam } from './param.types';
 
 /**
@@ -18,6 +20,28 @@ interface ExportAttachment {
   size: number;
   /** MIME 类型；可空 */
   mimetype: string | null;
+}
+
+/** 导出清单中的标签定义 */
+interface ExportTagDef {
+  /** 标签 ID */
+  id: string;
+  /** 显示名 */
+  name: string;
+  /** 父标签 ID；null=顶层 */
+  parentId: string | null;
+  /** 是否预设（1=预设只读，0=用户自定义） */
+  isPreset: number;
+  /** 元数据字段定义（TagMetadataFieldDef[] 的 JSON 字符串或对象） */
+  metadataDef: unknown;
+}
+
+/** 导出清单中的工作流标签关联 */
+interface ExportWorkflowTag {
+  /** 标签 ID */
+  tagId: string;
+  /** 用户配置的元数据原始值 */
+  metadataValues: Record<string, number | string | boolean>;
 }
 
 /**
@@ -51,16 +75,20 @@ interface ExportWorkflow {
   declaredParams: DeclaredParam[];
   /** 附件元信息 */
   attachments: ExportAttachment[];
+  /** 标签关联（含用户配置的元数据值） */
+  tags: ExportWorkflowTag[];
 }
 
 /**
  * 导出清单（manifest.json 的结构）
  */
 interface ExportManifest {
-  /** 格式版本号 */
+  /** 格式版本号（v2 起包含标签定义与关联） */
   version: number;
   /** 导出时间 */
   exportedAt: string;
+  /** 顶层标签定义（父在前；含本包所有工作流引用的标签） */
+  tags: ExportTagDef[];
   /** 工作流列表 */
   workflows: ExportWorkflow[];
 }
@@ -80,7 +108,7 @@ export interface ImportResult {
 /**
  * 工作流导入导出服务：多选导出为 ZIP、批量导入 ZIP。
  * ZIP 结构：
- *   manifest.json    { version, exportedAt, workflows: [...] }
+ *   manifest.json    { version, exportedAt, tags: [...], workflows: [...] }（v2 起含标签）
  *   attachments/     附件二进制文件（storedName）
  */
 export class WorkflowIOService {
@@ -103,10 +131,15 @@ export class WorkflowIOService {
   async exportWorkflows(ids: string[]): Promise<Buffer> {
     const zip = new JSZip();
     const manifest: ExportManifest = {
-      version: 1,
+      // 导出恒为 v2（含标签定义与关联）
+      version: 2,
       exportedAt: new Date().toISOString(),
+      tags: [],
       workflows: [],
     };
+    // 标签服务与标签定义收集表（跨工作流去重）
+    const workflowTagService = new WorkflowTagService(this.db);
+    const tagDefMap = new Map<string, ExportTagDef>();
 
     for (const id of ids) {
       // 跳过不存在的工作流
@@ -115,6 +148,24 @@ export class WorkflowIOService {
 
       const params = this.workflowService.getParams(id);
       const attachments = this.attachmentService.list(id);
+
+      // 标签关联与标签定义收集
+      const tagAssocs = workflowTagService.listAssociationsWithTags(id);
+      const tags: ExportWorkflowTag[] = tagAssocs.map((t) => ({
+        tagId: t.tagId,
+        metadataValues: t.metadataValues,
+      }));
+      for (const t of tagAssocs) {
+        if (!tagDefMap.has(t.tagId)) {
+          tagDefMap.set(t.tagId, {
+            id: t.tagId,
+            name: t.name,
+            parentId: t.parentId,
+            isPreset: t.isPreset,
+            metadataDef: t.metadataDef,
+          });
+        }
+      }
 
       manifest.workflows.push({
         id: wf.id,
@@ -140,6 +191,7 @@ export class WorkflowIOService {
           size: a.size,
           mimetype: a.mimetype,
         })),
+        tags,
       });
 
       // 附件二进制写入 zip 的 attachments/ 目录
@@ -151,6 +203,8 @@ export class WorkflowIOService {
       }
     }
 
+    // 顶层标签定义（父在前）；版本恒为 2
+    manifest.tags = [...tagDefMap.values()].sort((a, b) => (a.parentId === null ? -1 : 1) - (b.parentId === null ? -1 : 1));
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
     return zip.generateAsync({ type: 'nodebuffer' });
   }
@@ -169,6 +223,33 @@ export class WorkflowIOService {
       throw new Error('Invalid export file: missing manifest.json');
     }
     const manifest = JSON.parse(await manifestFile.async('string')) as ExportManifest;
+
+    // ① 确保标签定义存在（父先子后；已存在复用，不存在创建）
+    // 防御：过滤定义不完整的标签（缺失 id/name 等），避免整批导入中断
+    const tagDefs = (manifest.tags ?? [])
+      .filter((def): def is ExportTagDef => (
+        def != null
+        && typeof def.id === 'string'
+        && def.id !== ''
+        && typeof def.name === 'string'
+        && def.name !== ''
+      ))
+      .sort((a, b) => (a.parentId === null ? -1 : 1) - (b.parentId === null ? -1 : 1));
+    const now = new Date().toISOString();
+    for (const def of tagDefs) {
+      const exists = this.db.select().from(schema.tags).where(eq(schema.tags.id, def.id)).get();
+      if (exists) continue;
+      this.db.insert(schema.tags).values({
+        id: def.id,
+        name: def.name,
+        // 防御：parentId 非字符串时按 null 处理，避免写入畸形父 ID
+        parentId: typeof def.parentId === 'string' ? def.parentId : null,
+        isPreset: typeof def.isPreset === 'number' ? def.isPreset : 0,
+        metadataDef: typeof def.metadataDef === 'string' ? def.metadataDef : JSON.stringify(def.metadataDef ?? []),
+        createdAt: now,
+        updatedAt: now,
+      }).run();
+    }
 
     for (const entry of manifest.workflows) {
       try {
@@ -203,6 +284,26 @@ export class WorkflowIOService {
             label: p.label ?? null,
             paramType: p.paramType ?? 'text',
             defaultValue: p.defaultValue ?? null,
+          }).run();
+        }
+
+        // 创建标签关联（防御：子缺父自动补父关联）
+        const entryTags = entry.tags ?? [];
+        const present = new Set(entryTags.map((t) => t.tagId));
+        const allTagIds = new Set(tagDefs.map((t) => t.id));
+        const toInsert: ExportWorkflowTag[] = [...entryTags];
+        for (const t of entryTags) {
+          const def = tagDefs.find((d) => d.id === t.tagId);
+          if (def?.parentId && !present.has(def.parentId) && allTagIds.has(def.parentId)) {
+            toInsert.push({ tagId: def.parentId, metadataValues: {} });
+            present.add(def.parentId);
+          }
+        }
+        for (const t of toInsert) {
+          this.db.insert(schema.workflowTags).values({
+            workflowId: newId,
+            tagId: t.tagId,
+            metadataValues: JSON.stringify(t.metadataValues ?? {}),
           }).run();
         }
 

@@ -40,6 +40,11 @@ const router = createRouter({
       component: () => import('@/pages/SettingsPage.vue'),
     },
     {
+      path: '/admin/tags',
+      name: 'Tags',
+      component: () => import('@/pages/TagManagementPage.vue'),
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/admin',
     },

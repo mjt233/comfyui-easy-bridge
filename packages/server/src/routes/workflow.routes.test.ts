@@ -53,8 +53,43 @@ describe('Workflow API', () => {
       CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE tags (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        parent_id TEXT,
+        is_preset INTEGER NOT NULL DEFAULT 0,
+        metadata_def TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE workflow_tags (
+        workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+        metadata_values TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (workflow_id, tag_id)
+      );
     `);
     db = drizzle(sqlite, { schema });
+
+    // 种子预设标签（供工作流打标签用例使用；镜像迁移 v5 的种子数据，仅取用例需要的两个）
+    const now = new Date().toISOString();
+    const insertTag = sqlite.prepare(
+      'INSERT OR IGNORE INTO tags (id, name, parent_id, is_preset, metadata_def, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)',
+    );
+    insertTag.run('image-to-video', '图生视频', null, '[]', now, now);
+    insertTag.run(
+      'reference',
+      '全能参考',
+      'image-to-video',
+      JSON.stringify([
+        { key: 'maxImageCount', label: '图片数量', type: 'number', defaultValue: 9 },
+        { key: 'maxAudioCount', label: '音频数量', type: 'number', defaultValue: 3 },
+        { key: 'maxVideoCount', label: '视频数量', type: 'number', defaultValue: 3 },
+        { key: 'maxTotalCount', label: '参考总数量', type: 'number', defaultValue: 12 },
+      ]),
+      now,
+      now,
+    );
 
     app = express();
     app.use(express.json());
@@ -1022,5 +1057,76 @@ describe('Workflow API', () => {
     expect(res.body.resolvedProvider).not.toBeNull();
     expect(res.body.resolvedProvider.id).toBe(providerA.id);
     expect(res.body.resolvedProvider.resolvedBaseUrl).toBe('http://comfy-a:8188');
+  });
+
+  it('PUT /:id/tags 设置标签并返回', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    // 先建工作流
+    const created = await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'tag-wf', name: '标签流', rawJson: '{}' });
+    expect(created.status).toBe(201);
+
+    const res = await supertest(app)
+      .put('/api/workflows/tag-wf/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ tags: [{ tagId: 'image-to-video' }, { tagId: 'reference', metadataValues: { maxImageCount: 15 } }] });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe('image-to-video');
+    expect(res.body[0].tags[0].metadata.maxImageCount).toBe(15);
+    expect(res.body[0].tags[0].configuredMetadata).toEqual({ maxImageCount: 15 });
+  });
+
+  it('PUT /:id/tags 子标签缺父标签返回 400 parent_tag_required', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'tag-wf2', name: 'x', rawJson: '{}' });
+    const res = await supertest(app)
+      .put('/api/workflows/tag-wf2/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ tags: [{ tagId: 'reference' }] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('parent_tag_required');
+  });
+
+  it('GET / 列表包含 tags 结构', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const res = await supertest(app).get('/api/workflows').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const wf = (res.body as Array<Record<string, unknown>>).find((w) => w.id === 'tag-wf');
+    expect(Array.isArray(wf?.tags)).toBe(true);
+  });
+
+  it('PUT /:id/tags 数组元素非对象返回 400 missing_parameter', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'tag-wf3', name: 'x', rawJson: '{}' });
+    const res = await supertest(app)
+      .put('/api/workflows/tag-wf3/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ tags: [null] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('missing_parameter');
+  });
+
+  it('GET / 支持 tags 筛选', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const res = await supertest(app)
+      .get('/api/workflows?tags=image-to-video')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const ids = (res.body as Array<{ id: string }>).map((w) => w.id);
+    expect(ids).toContain('tag-wf');
   });
 });

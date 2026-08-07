@@ -7,39 +7,16 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
+import { runMigrations } from '../models/migrations/runner';
 import { WorkflowService } from './workflow.service';
 import { AttachmentService } from './attachment.service';
 import { WorkflowIOService } from './workflow-io.service';
+import { WorkflowTagService } from './workflow-tag.service';
+import { TagService } from './tag.service';
 
 // 使用临时目录作为 DATA_DIR，避免污染真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-io-'));
 process.env.DATA_DIR = tempDataDir;
-
-/** 建表 SQL（与 db.ts 保持一致） */
-const DDL = `
-  CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-  CREATE TABLE workflow_params (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-    node_id TEXT NOT NULL,
-    field_name TEXT NOT NULL,
-    alias TEXT,
-    label TEXT,
-    param_type TEXT NOT NULL DEFAULT 'text',
-    default_value TEXT,
-    UNIQUE(workflow_id, alias)
-  );
-  CREATE TABLE workflow_attachments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL,
-    stored_name TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    mimetype TEXT,
-    created_at TEXT NOT NULL
-  );
-  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-`;
 
 /**
  * 创建一套独立的 in-memory 环境（DB + 各服务）
@@ -48,7 +25,8 @@ const DDL = `
 function createEnv() {
   const sqlite = new Database(':memory:');
   sqlite.pragma('foreign_keys = ON');
-  sqlite.exec(DDL);
+  // 通过迁移建全量表（含 tags / workflow_tags），与生产保持一致
+  runMigrations(sqlite);
   const db: BetterSQLite3Database<typeof schema> = drizzle(sqlite, { schema });
   return {
     db,
@@ -306,5 +284,95 @@ describe('WorkflowIOService', () => {
     expect(result.imported).toBe(1);
     // 旧版导出无 providerId → 导入后为 null（使用全局默认实例）
     expect(env.workflowService.getById('wf-legacy')?.providerId).toBeNull();
+  });
+
+  it('导出包含标签定义与工作流标签关联；导入后还原', async () => {
+    const env = createEnv();
+    const { db } = env;
+
+    // 准备工作流 + 标签
+    db.insert(schema.workflows).values({
+      id: 'wf-tag', name: '标签流', rawJson: '{}', createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    }).run();
+    const wt = new WorkflowTagService(db);
+    wt.setWorkflowTags('wf-tag', [
+      { tagId: 'image-to-video' },
+      { tagId: 'reference', metadataValues: { maxImageCount: 12 } },
+    ]);
+    // 新建一个自定义标签并打上
+    const tagService = new TagService(db);
+    const custom = tagService.create({ name: '自定义标签', parentId: null, metadataDef: [] });
+    wt.setWorkflowTags('wf-tag', [
+      { tagId: 'image-to-video' },
+      { tagId: 'reference', metadataValues: { maxImageCount: 12 } },
+      { tagId: custom.id },
+    ]);
+
+    // 导出
+    const io = new WorkflowIOService(db);
+    const zip = await io.exportWorkflows(['wf-tag']);
+    const loaded = await JSZip.loadAsync(zip);
+    const manifest = JSON.parse(await loaded.file('manifest.json')!.async('string')) as {
+      version: number;
+      tags: Array<{ id: string; name: string; parentId: string | null; isPreset: number }>;
+      workflows: Array<{ id: string; tags: Array<{ tagId: string; metadataValues: Record<string, number> }> }>;
+    };
+    expect(manifest.version).toBe(2);
+    expect(manifest.tags.find((t) => t.id === 'reference')?.isPreset).toBe(1);
+    expect(manifest.tags.find((t) => t.id === custom.id)?.name).toBe('自定义标签');
+    const wfTags = manifest.workflows.find((w) => w.id === 'wf-tag')!.tags;
+    expect(wfTags.find((t) => t.tagId === 'reference')?.metadataValues.maxImageCount).toBe(12);
+
+    // 导入到新库
+    const sqlite2 = new Database(':memory:');
+    runMigrations(sqlite2);
+    const db2 = drizzle(sqlite2, { schema });
+    const io2 = new WorkflowIOService(db2);
+    const result = await io2.importWorkflows(zip);
+    expect(result.imported).toBe(1);
+    const groups = new WorkflowTagService(db2).getTagGroups('wf-tag');
+    expect(groups.map((g) => g.id)).toEqual(['image-to-video', custom.id]);
+    const ref = groups.find((g) => g.id === 'image-to-video')!.tags.find((t) => t.id === 'reference')!;
+    expect(ref.metadata.maxImageCount).toBe(12);
+    expect(ref.configuredMetadata).toEqual({ maxImageCount: 12 });
+    // 导入后自定义标签已重建
+    expect(new TagService(db2).getById(custom.id)?.name).toBe('自定义标签');
+  });
+
+  it('v1 旧包（无 tags）导入行为不变', async () => {
+    const sqlite2 = new Database(':memory:');
+    runMigrations(sqlite2);
+    const db2 = drizzle(sqlite2, { schema });
+    const io2 = new WorkflowIOService(db2);
+    const zip = await new JSZip()
+      .file('manifest.json', JSON.stringify({ version: 1, exportedAt: 'x', workflows: [{ id: 'old', name: '旧', rawJson: '{}' }] }))
+      .generateAsync({ type: 'nodebuffer' });
+    const result = await io2.importWorkflows(zip);
+    expect(result.imported).toBe(1);
+  });
+
+  it('v2 包中缺父定义的子标签关联，导入时自动补父关联', async () => {
+    const sqlite2 = new Database(':memory:');
+    runMigrations(sqlite2);
+    const db2 = drizzle(sqlite2, { schema });
+    const io2 = new WorkflowIOService(db2);
+    // 手动构造 v2 manifest：reference 关联存在，但其父 image-to-video 定义缺失
+    const zip = await new JSZip()
+      .file('manifest.json', JSON.stringify({
+        version: 2,
+        exportedAt: 'x',
+        tags: [{ id: 'reference', name: '全能参考', parentId: 'image-to-video', isPreset: 1, metadataDef: '[]' }],
+        workflows: [{
+          id: 'wf-child', name: '子', rawJson: '{}',
+          tags: [{ tagId: 'reference', metadataValues: {} }],
+        }],
+      }))
+      .generateAsync({ type: 'nodebuffer' });
+    const result = await io2.importWorkflows(zip);
+    expect(result.imported).toBe(1);
+    // 父关联被自动补上：父 image-to-video 与子 reference 都存在（image-to-video 是预设种子）
+    const groups = new WorkflowTagService(db2).getTagGroups('wf-child');
+    expect(groups.map((g) => g.id)).toEqual(['image-to-video']);
+    expect(groups[0].tags.map((t) => t.id)).toEqual(['reference']);
   });
 });
