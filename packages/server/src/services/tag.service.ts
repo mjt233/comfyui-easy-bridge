@@ -124,12 +124,14 @@ export class TagService {
   /** 组装标签树（顶层节点含 children；children 按创建时间升序） */
   getTree(): TagTreeNode[] {
     const rows = this.list();
-    const defCache = new Map<string, TagMetadataFieldDef[]>();
-    const toNode = (row: TagRow): TagTreeNode => {
-      let def = defCache.get(row.id);
-      if (!def) { def = parseMetadataDef(row.metadataDef); defCache.set(row.id, def); }
-      return { id: row.id, name: row.name, parentId: row.parentId, isPreset: row.isPreset, metadataDef: def, children: [] };
-    };
+    const toNode = (row: TagRow): TagTreeNode => ({
+      id: row.id,
+      name: row.name,
+      parentId: row.parentId,
+      isPreset: row.isPreset,
+      metadataDef: parseMetadataDef(row.metadataDef),
+      children: [],
+    });
     const nodes = new Map<string, TagTreeNode>();
     for (const row of rows) nodes.set(row.id, toNode(row));
     const roots: TagTreeNode[] = [];
@@ -177,12 +179,12 @@ export class TagService {
   }
 
   /**
-   * 更新自定义标签（name / metadataDef）。预设标签拒绝。
+   * 更新自定义标签（name / metadataDef；parentId 创建后不可改，类型层面禁止传入）。预设标签拒绝。
    * @param id 标签 ID
-   * @param input 可更新字段
+   * @param input 可更新字段（不含 parentId）
    * @throws TagError tag_not_found / tag_preset_readonly
    */
-  update(id: string, input: Partial<TagInput>): TagRow {
+  update(id: string, input: Omit<Partial<TagInput>, 'parentId'>): TagRow {
     const existing = this.getById(id);
     if (!existing) throw new TagError('tag_not_found', 'tag_not_found: tag not found', 404);
     if (existing.isPreset) throw new TagError('tag_preset_readonly', 'tag_preset_readonly: preset tags are read-only', 403);
