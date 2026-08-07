@@ -162,10 +162,11 @@ DELETE /api/providers/:id         # 删除；默认实例禁止删除（409）�
 POST   /api/providers/:id/test    # 连通性测试；见下方「测试连接行为」
 ```
 
-**测试连接行为**：
+**测试连接行为**（单一确定行为，不使用退化机制）：
 
 - comfyui 实例：`GET {baseUrl}/system_stats`，2xx 视为连通
-- runninghub 实例：先 `GET {derivedProxyBase}/system_stats`；若 404/405（proxy 未暴露该端点），退化为调用上传接口 `POST /openapi/v2/media/upload/binary` 验证 API Key 是否有效（上传一个最小占位文件，成功即连通）。具体以实现期实测为准，测试结果返回 `{ ok, message }`
+- runninghub 实例：`GET {derivedProxyBase}/system_stats`，2xx 视为连通；否则返回失败（不尝试其他端点）
+- 测试结果统一返回 `{ ok, message }`
 
 
 校验规则：
