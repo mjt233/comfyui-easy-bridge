@@ -8,6 +8,9 @@
     <v-btn to="/admin/settings" variant="text" prepend-icon="mdi-cog">
       设置
     </v-btn>
+    <v-btn to="/admin/tags" variant="text" prepend-icon="mdi-tag-multiple">
+      标签管理
+    </v-btn>
     <v-btn
       v-if="authEnabled !== false"
       variant="text"
