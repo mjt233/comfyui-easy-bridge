@@ -4,6 +4,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { runMigrations } from '../models/migrations/runner';
 import * as schema from '../models/schema';
 import { WorkflowTagService } from './workflow-tag.service';
+import { WorkflowService } from './workflow.service';
 
 /** 插入测试工作流 */
 function insertWorkflow(db: BetterSQLite3Database<typeof schema>, id: string) {
@@ -132,5 +133,14 @@ describe('WorkflowTagService', () => {
     service.setWorkflowTags('wf1', [{ tagId: 'text-to-image' }]);
     const groups = service.getTagGroups('wf1');
     expect(groups[0]).toMatchObject({ id: 'text-to-image', tags: [] });
+  });
+
+  it('工作流改名后标签保留（FK 级联迁移）', () => {
+    service.setWorkflowTags('wf1', [{ tagId: 'text-to-image' }]);
+    // 通过 WorkflowService.update 改名
+    const wfService = new WorkflowService(db);
+    wfService.update('wf1', { id: 'wf1-renamed' });
+    expect(service.getTagGroups('wf1-renamed').map((g) => g.id)).toEqual(['text-to-image']);
+    expect(service.getTagGroups('wf1')).toEqual([]);
   });
 });

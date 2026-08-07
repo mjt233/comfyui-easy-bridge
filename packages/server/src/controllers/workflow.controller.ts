@@ -384,6 +384,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       try {
+        // 校验数组元素：必须为对象（缺失的 tagId 由服务层报 tag_not_found）
+        for (const item of body.tags as unknown[]) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) {
+            res.status(400).json({ error: 'each tag must be an object', code: 'missing_parameter' });
+            return;
+          }
+        }
         // 规范化输入：tagId 必须为字符串；metadataValues 原样透传由服务校验
         const input = (body.tags as Array<{ tagId?: unknown; metadataValues?: unknown }>).map((t) => ({
           tagId: typeof t.tagId === 'string' ? t.tagId : '',

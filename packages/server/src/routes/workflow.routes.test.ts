@@ -1104,7 +1104,22 @@ describe('Workflow API', () => {
     expect(Array.isArray(wf?.tags)).toBe(true);
   });
 
-  it('GET / 支持 tags 筛选（AND）', async () => {
+  it('PUT /:id/tags 数组元素非对象返回 400 missing_parameter', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'tag-wf3', name: 'x', rawJson: '{}' });
+    const res = await supertest(app)
+      .put('/api/workflows/tag-wf3/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ tags: [null] });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('missing_parameter');
+  });
+
+  it('GET / 支持 tags 筛选', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
     const res = await supertest(app)

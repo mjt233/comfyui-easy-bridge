@@ -168,7 +168,7 @@ export class WorkflowService {
       const existing = this.getById(id);
       if (!existing) throw new Error('Workflow not found');
 
-      // 事务级联更新三张表
+      // 事务级联更新四张表
       // 策略：先 INSERT 新行（使新 ID 成为有效的 FK 目标），再更新子表 FK，最后删除旧行
       // 不使用 UPDATE 主键是因为 SQLite FK 约束禁止在子行引用时修改父键
       this.db.transaction(() => {
@@ -195,7 +195,12 @@ export class WorkflowService {
           .set({ workflowId: input.id! })
           .where(eq(schema.taskLogs.workflowId, id))
           .run();
-        // ④ 删除旧 workflows 行（此时已无子行引用旧 ID，不会级联删除已迁移的子行）
+        // ④ 级联更新 workflow_tags 外键
+        this.db.update(schema.workflowTags)
+          .set({ workflowId: input.id! })
+          .where(eq(schema.workflowTags.workflowId, id))
+          .run();
+        // ⑤ 删除旧 workflows 行（此时已无子行引用旧 ID，不会级联删除已迁移的子行）
         this.db.delete(schema.workflows).where(eq(schema.workflows.id, id)).run();
       });
       return this.getById(input.id)!;
