@@ -38,7 +38,7 @@ export class ComfyUIProvider implements ExecutionProvider {
 
   /** 提交 prompt 到 /prompt */
   submitPrompt(body: string): Promise<ExecutionResult> {
-    return submitPromptRequest(this.config.baseUrl, body);
+    return submitPromptRequest(this.getBaseUrl(), body);
   }
 
   /** 上传媒体文件到 /upload/image，返回 ComfyUI 存储文件名 */
@@ -51,32 +51,35 @@ export class ComfyUIProvider implements ExecutionProvider {
     formData.append('type', 'input');
     formData.append('overwrite', 'true');
 
-    const response = await fetch(`${this.config.baseUrl}/upload/image`, { method: 'POST', body: formData });
+    const response = await fetch(`${this.getBaseUrl()}/upload/image`, { method: 'POST', body: formData });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`ComfyUI upload failed (${response.status}): ${text}`);
     }
-    const result = (await response.json()) as { name: string };
+    const result = (await response.json()) as { name?: string };
+    if (!result.name) {
+      throw new Error('ComfyUI upload failed: missing name');
+    }
     return result.name;
   }
 
   /** 拉取 history（非 2xx 抛错，调用方捕获） */
   fetchHistory(promptId: string): Promise<unknown> {
-    return fetchHistoryRequest(this.config.baseUrl, promptId);
+    return fetchHistoryRequest(this.getBaseUrl(), promptId);
   }
 
   /** 中断任务 */
   interrupt(promptId?: string): Promise<boolean> {
-    return interruptRequest(this.config.baseUrl, promptId);
+    return interruptRequest(this.getBaseUrl(), promptId);
   }
 
   /** 查询是否仍在执行队列 */
   isPromptRunning(promptId: string): Promise<boolean> {
-    return isPromptRunningRequest(this.config.baseUrl, promptId);
+    return isPromptRunningRequest(this.getBaseUrl(), promptId);
   }
 
   /** 构造 /view 下载地址 */
   buildOutputViewUrl(file: OutputFileRef): string {
-    return buildViewUrl(this.config.baseUrl, file);
+    return buildViewUrl(this.getBaseUrl(), file);
   }
 }

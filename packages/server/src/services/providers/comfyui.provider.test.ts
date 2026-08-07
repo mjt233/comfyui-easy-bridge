@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ComfyUIProvider } from './comfyui.provider';
 
 /**
@@ -11,6 +11,11 @@ function makeProvider(baseUrl = 'http://127.0.0.1:8188'): ComfyUIProvider {
 }
 
 describe('ComfyUIProvider', () => {
+  // 每个用例结束后清理全局 fetch stub，避免用例间相互污染
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns configured base url', () => {
     expect(makeProvider('http://127.0.0.1:8188').getBaseUrl()).toBe('http://127.0.0.1:8188');
   });
@@ -30,7 +35,6 @@ describe('ComfyUIProvider', () => {
     const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://127.0.0.1:8188/upload/image');
     expect(init.method).toBe('POST');
-    vi.unstubAllGlobals();
   });
 
   it('throws when upload returns non-2xx', async () => {
@@ -38,6 +42,5 @@ describe('ComfyUIProvider', () => {
     const provider = makeProvider('http://127.0.0.1:8188');
     await expect(provider.uploadMedia({ buffer: Buffer.from('x'), originalname: 'a.png', mimetype: 'image/png' }, 'image'))
       .rejects.toThrow('ComfyUI upload failed (500)');
-    vi.unstubAllGlobals();
   });
 });

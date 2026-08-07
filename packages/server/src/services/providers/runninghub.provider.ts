@@ -8,6 +8,9 @@ import {
 } from './shared';
 import type { ExecutionProvider, ExecutionResult, MediaType, OutputFileRef, ProviderConfig, ProviderType, UploadFileInput } from './types';
 
+/** RunningHub 平台基础地址（上传接口与 proxy 共用） */
+const RUNNINGHUB_BASE_URL = 'https://www.runninghub.cn';
+
 /**
  * RunningHub 原生 ComfyUI 接口执行提供商。
  * 基础地址由 apiKey + gpuSize 推导；媒体走 /openapi/v2/media/upload/binary（Bearer 鉴权）；
@@ -35,7 +38,7 @@ export class RunningHubProvider implements ExecutionProvider {
   /** 由 apiKey + gpuSize 推导 proxy 基础地址 */
   getBaseUrl(): string {
     const prefix = this.config.gpuSize === '48G' ? 'proxy-plus' : 'proxy';
-    return `https://www.runninghub.cn/${prefix}/${this.config.apiKey}`;
+    return `${RUNNINGHUB_BASE_URL}/${prefix}/${this.config.apiKey}`;
   }
 
   /** 提交 prompt 到推导出的 proxy /prompt */
@@ -54,7 +57,7 @@ export class RunningHubProvider implements ExecutionProvider {
     const blob = new Blob([new Uint8Array(file.buffer)], { type: file.mimetype });
     formData.append('file', blob, uniqueName);
 
-    const response = await fetch('https://www.runninghub.cn/openapi/v2/media/upload/binary', {
+    const response = await fetch(`${RUNNINGHUB_BASE_URL}/openapi/v2/media/upload/binary`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.config.apiKey}` },
       body: formData,

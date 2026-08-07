@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RunningHubProvider } from './runninghub.provider';
 
 /**
@@ -12,6 +12,11 @@ function makeProvider(apiKey = 'sk-test-1234', gpuSize: '24G' | '48G' = '24G'): 
 }
 
 describe('RunningHubProvider', () => {
+  // 每个用例结束后清理全局 fetch stub，避免用例间相互污染
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('derives 24G proxy base url', () => {
     expect(makeProvider('abc', '24G').getBaseUrl()).toBe('https://www.runninghub.cn/proxy/abc');
   });
@@ -36,7 +41,6 @@ describe('RunningHubProvider', () => {
     expect(url).toBe('https://www.runninghub.cn/openapi/v2/media/upload/binary');
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer sk-abc');
-    vi.unstubAllGlobals();
   });
 
   it('throws when upload api returns non-zero code', async () => {
@@ -47,6 +51,24 @@ describe('RunningHubProvider', () => {
     const provider = makeProvider('bad', '24G');
     await expect(provider.uploadMedia({ buffer: Buffer.from('x'), originalname: 'a.png', mimetype: 'image/png' }, 'image'))
       .rejects.toThrow('bad key');
-    vi.unstubAllGlobals();
+  });
+
+  it('throws when upload api returns non-2xx status', async () => {
+    // 模拟 HTTP 500：ok=false、status=500，text() 返回错误详情
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('server error', { status: 500 })));
+    const provider = makeProvider('sk-abc', '24G');
+    await expect(provider.uploadMedia({ buffer: Buffer.from('x'), originalname: 'a.png', mimetype: 'image/png' }, 'image'))
+      .rejects.toThrow('500');
+  });
+
+  it('throws when upload response body misses fileName', async () => {
+    // 模拟业务成功但缺少 fileName 字段：应抛出 missing fileName 错误
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ code: 0, message: 'success', data: {} }),
+      { status: 200 },
+    )));
+    const provider = makeProvider('sk-abc', '24G');
+    await expect(provider.uploadMedia({ buffer: Buffer.from('x'), originalname: 'a.png', mimetype: 'image/png' }, 'image'))
+      .rejects.toThrow('fileName');
   });
 });
