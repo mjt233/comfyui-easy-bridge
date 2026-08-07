@@ -190,7 +190,114 @@ POST /api/providers/:id/test
 
 ---
 
-## 3. 查看任务状态
+## 3. 标签管理
+
+标签为父/子两级结构（仅支持一级子标签），预设标签只读；打子标签必须同时打其父标签。工作流可打多个标签，每个标签可定义元数据字段（number / string / boolean，含默认值）。
+
+### 列出标签树
+
+```
+GET /api/tags
+```
+
+返回顶层标签数组，每项含 `children` 子标签数组：
+
+```json
+[
+  {
+    "id": "image-to-video",
+    "name": "图生视频",
+    "parentId": null,
+    "isPreset": 1,
+    "metadataDef": [],
+    "children": [
+      {
+        "id": "reference",
+        "name": "全能参考",
+        "parentId": "image-to-video",
+        "isPreset": 1,
+        "metadataDef": [
+          { "key": "maxImageCount", "label": "图片数量", "type": "number", "defaultValue": 9 },
+          { "key": "maxAudioCount", "label": "音频数量", "type": "number", "defaultValue": 3 },
+          { "key": "maxVideoCount", "label": "视频数量", "type": "number", "defaultValue": 3 },
+          { "key": "maxTotalCount", "label": "参考总数量", "type": "number", "defaultValue": 12 }
+        ]
+      }
+    ]
+  }
+]
+```
+
+### 新建自定义标签
+
+```
+POST /api/tags
+```
+
+body：`{ "name": "自定义标签", "parentId": null, "metadataDef": [] }`（`parentId` 可选，须指向顶层标签；`metadataDef` 可选，元素为 `{ key, label, type, defaultValue }`，`type` 白名单 `number | string | boolean`）。同层级重名返回 `409 tag_conflict`。
+
+### 更新标签
+
+```
+PUT /api/tags/:id
+```
+
+可更新 `name` / `metadataDef`（`parentId` 不可改）。预设标签返回 `403 tag_preset_readonly`。
+
+### 删除标签
+
+```
+DELETE /api/tags/:id
+```
+
+预设标签返回 `403 tag_preset_readonly`；存在子标签返回 `409 tag_has_children`；被工作流引用返回 `409 tag_in_use`。
+
+### 设置工作流标签（整组替换）
+
+```
+PUT /api/workflows/:id/tags
+```
+
+body：`{ "tags": [{ "tagId": "image-to-video" }, { "tagId": "reference", "metadataValues": { "maxImageCount": 12 } }] }`。
+
+- 子标签必须同时包含其父标签（否则 `400 parent_tag_required`）
+- `metadataValues` 的键必须属于该标签 `metadataDef` 且值类型匹配（否则 `400 invalid_metadata`）
+- 返回替换后的标签分组数组
+
+### 工作流标签结构（列表/详情响应）
+
+`GET /api/workflows` 与 `GET /api/workflows/:id` 响应的每个工作流包含 `tags` 嵌套分组结构：
+
+```json
+"tags": [
+  {
+    "id": "image-to-video",
+    "name": "图生视频",
+    "tags": [
+      {
+        "id": "reference",
+        "name": "全能参考",
+        "metadata": { "maxImageCount": 12, "maxAudioCount": 3, "maxVideoCount": 3, "maxTotalCount": 12 },
+        "configuredMetadata": { "maxImageCount": 12 }
+      }
+    ]
+  }
+]
+```
+
+`metadata` 为合并默认值后的完整元数据；`configuredMetadata` 为用户原始配置值。
+
+### 按标签筛选
+
+```
+GET /api/workflows?tags=image-to-video&tags=reference
+```
+
+`tags` 参数可重复，多标签为 **AND** 语义；选中父标签且未选子标签时视为选中其全部子标签（向下包含）。
+
+---
+
+## 4. 查看任务状态
 
 ### 获取单个任务详情
 
@@ -265,7 +372,7 @@ POST /api/tasks/:taskId/cancel
 
 ---
 
-## 4. 下载工作流输出文件
+## 5. 下载工作流输出文件
 
 ### 获取输出文件列表
 
