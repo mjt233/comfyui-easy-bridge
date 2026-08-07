@@ -90,4 +90,21 @@ describe('标签管理 API', () => {
     const res = await request(app).delete('/api/tags/text-to-image').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(403);
   });
+
+  it('PUT /api/tags/:id 不存在的标签返回 404 tag_not_found', async () => {
+    const res = await request(app)
+      .put('/api/tags/nonexistent')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'x' });
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('tag_not_found');
+  });
+
+  it('DELETE /api/tags/:id 不存在的标签返回 404 tag_not_found', async () => {
+    const res = await request(app)
+      .delete('/api/tags/nonexistent')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('tag_not_found');
+  });
 });

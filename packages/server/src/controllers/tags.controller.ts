@@ -6,8 +6,11 @@ import type { TagMetadataFieldDef } from '../services/tag.types';
 
 /** 宽松输入（容忍来自 HTTP body 的任意值） */
 interface TagBodyLike {
+  /** 标签显示名（unknown，由服务层校验） */
   name?: unknown;
+  /** 父标签 ID（unknown，空串由服务层规范化为 null） */
   parentId?: unknown;
+  /** 元数据字段定义（unknown，由服务层校验） */
   metadataDef?: unknown;
 }
 

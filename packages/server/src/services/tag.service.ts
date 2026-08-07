@@ -157,7 +157,9 @@ export class TagService {
     const metadataDef = validateMetadataDef(input.metadataDef);
     if (!metadataDef) throw new TagError('missing_parameter', 'missing_parameter: invalid metadata definition');
 
-    const parentId = input.parentId ?? null;
+    // 规范化 parentId：空串/空白视为顶层（null），避免绕过父标签存在性校验
+    const rawParentId = input.parentId ?? null;
+    const parentId = typeof rawParentId === 'string' && rawParentId.trim() === '' ? null : rawParentId;
     if (parentId) {
       const parent = this.getById(parentId);
       if (!parent) throw new TagError('tag_not_found', 'tag_not_found: parent tag not found', 404);

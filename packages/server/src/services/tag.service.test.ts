@@ -34,6 +34,11 @@ describe('TagService', () => {
     expect(service.getById(tag.id)?.name).toBe('我的标签');
   });
 
+  it('parentId 空串视为顶层标签', () => {
+    const tag = service.create({ name: '顶层', parentId: '', metadataDef: [] });
+    expect(tag.parentId).toBeNull();
+  });
+
   it('新建子标签', () => {
     const parent = service.create({ name: '父', parentId: null, metadataDef: [] });
     const child = service.create({ name: '子', parentId: parent.id, metadataDef: [] });
