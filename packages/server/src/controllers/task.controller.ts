@@ -4,7 +4,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
-import { submitPrompt, interruptPrompt } from '../services/executor.service';
+import { submitPromptRequest, interruptRequest } from '../services/providers/shared';
 import { parseHistoryOutputs } from '../services/comfyui.service';
 
 /**
@@ -199,7 +199,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(400).json({ error: 'Task has no request body', code: 'missing_parameter' });
         return;
       }
-      const result = await submitPrompt(task.comfyuiRequestBody, baseUrl);
+      const result = await submitPromptRequest(baseUrl, task.comfyuiRequestBody);
       if (result.success) {
         taskService.updateStatus(task.id, {
           status: 'pending',
@@ -244,7 +244,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       const baseUrl = settingsService.get('comfyui_base_url');
       if (baseUrl) {
         // 传入 promptId：中断后轮询 /queue 确认任务已停止执行，仍在执行则重试中断
-        await interruptPrompt(baseUrl, task.promptId ?? undefined);
+        await interruptRequest(baseUrl, task.promptId ?? undefined);
       }
       taskService.updateStatus(task.id, {
         status: 'failed',

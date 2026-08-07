@@ -11,6 +11,7 @@ import {
   resolveSubmittedAliasValues,
   toRuntimeParams,
 } from '../services/executor.service';
+import { ComfyUIProvider } from '../services/providers/comfyui.provider';
 import { runBuildScript } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import type { DeclaredParam } from '../services/param.types';
@@ -47,6 +48,16 @@ function buildOriginalForm(
     }
   }
   return JSON.stringify({ params: aliasValues, files });
+}
+
+/**
+ * 根据设置中的 baseUrl 构建临时 ComfyUI 执行提供商。
+ * 临时适配：Task 10 将改为通过 ProviderService 解析工作流提供商。
+ * @param baseUrl ComfyUI 基础 URL
+ * @returns ComfyUI 执行提供商实例
+ */
+function makeLegacyProvider(baseUrl: string): ComfyUIProvider {
+  return new ComfyUIProvider('legacy', 'ComfyUI', { baseUrl }, 1);
 }
 
 export function createWorkflowController(db: BetterSQLite3Database<typeof schema>) {
@@ -260,7 +271,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const effectiveParams = buildResult.params ?? baseParams;
 
         // 按声明配置上传媒体（真实上传，模拟与真实执行一致）
-        const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, baseUrl);
+        // 临时适配：Task 10 将改为通过 ProviderService 解析工作流提供商
+        const provider = makeLegacyProvider(baseUrl);
+        const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, provider);
 
         // 注入并返回
         const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);
@@ -485,7 +498,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         }
 
         // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
-        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, baseUrl);
+        // 临时适配：Task 10 将改为通过 ProviderService 解析工作流提供商
+        const provider = makeLegacyProvider(baseUrl);
+        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
 
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
         const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);
@@ -521,7 +536,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
 
-        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, baseUrl);
+        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, provider);
 
         const task = taskService.create({
           workflowId: wf.id,

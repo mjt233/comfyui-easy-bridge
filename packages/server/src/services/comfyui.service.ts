@@ -3,7 +3,8 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from './task.service';
 import { SettingsService } from './settings.service';
-import { submitPrompt, COMFYUI_CLIENT_ID } from './executor.service';
+import { COMFYUI_CLIENT_ID } from './executor.service';
+import { submitPromptRequest } from './providers/shared';
 
 const FALLBACK_INTERVAL = 10000;
 const COMPLETION_POLL_INTERVAL = 1000;
@@ -236,7 +237,7 @@ export function startComfyUIService(db: BetterSQLite3Database<typeof schema>): {
         return;
       }
 
-      const result = await submitPrompt(nextTask.comfyuiRequestBody, baseUrl);
+      const result = await submitPromptRequest(baseUrl, nextTask.comfyuiRequestBody);
       if (result.success) {
         taskService.updateStatus(nextTask.id, {
           status: 'pending',

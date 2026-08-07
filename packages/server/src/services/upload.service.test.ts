@@ -1,91 +1,36 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { uploadFileToComfyUI } from './upload.service';
+import { describe, it, expect } from 'vitest';
+import { buildUniqueUploadFilename } from './upload.service';
 
 describe('upload.service', () => {
-  const mockFetch = vi.fn();
-  globalThis.fetch = mockFetch;
-
-  const mockFile = {
-    buffer: Buffer.from('fake-image-data'),
-    originalname: 'test.png',
-    mimetype: 'image/png',
-  };
-
-  beforeEach(() => {
-    mockFetch.mockReset();
+  it('buildUniqueUploadFilename keeps the original extension', () => {
+    const name = buildUniqueUploadFilename('photo.png');
+    expect(name).toMatch(/\.png$/i);
   });
 
-  it('uploads image to ComfyUI and returns filename', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ name: 'test.png' }),
-    });
-    const result = await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
-    expect(result).toBe('test.png');
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:8188/upload/image',
-      expect.objectContaining({ method: 'POST' }),
-    );
+  it('buildUniqueUploadFilename keeps the original base name for traceability', () => {
+    const name = buildUniqueUploadFilename('photo.png');
+    expect(name).toContain('photo');
   });
 
-  it('uploads video to ComfyUI', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ name: 'video.mp4' }),
-    });
-    const result = await uploadFileToComfyUI(
-      { buffer: Buffer.from('fake-video'), originalname: 'video.mp4', mimetype: 'video/mp4' },
-      'video',
-      'http://localhost:8188',
-    );
-    expect(result).toBe('video.mp4');
-    // ComfyUI 统一走 /upload/image，与 mediaType 无关
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://localhost:8188/upload/image',
-      expect.objectContaining({ method: 'POST' }),
-    );
+  it('buildUniqueUploadFilename generates different names for the same input', () => {
+    // 同一请求中多个同名文件必须得到不同文件名，避免相互覆盖
+    const first = buildUniqueUploadFilename('photo.png');
+    const second = buildUniqueUploadFilename('photo.png');
+    expect(first).not.toBe(second);
   });
 
-  it('throws on upload failure', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 400,
-      text: async () => 'Invalid file',
-    });
-    await expect(
-      uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188'),
-    ).rejects.toThrow('ComfyUI upload failed (400): Invalid file');
+  it('buildUniqueUploadFilename sanitizes unsafe characters', () => {
+    // 路径分隔符/控制字符会被清理为下划线，避免路径注入
+    const name = buildUniqueUploadFilename('a/b\\c?.png');
+    expect(name).not.toContain('/');
+    expect(name).not.toContain('\\');
+    expect(name).not.toContain('?');
+    expect(name).toMatch(/\.png$/i);
   });
 
-  it('uploads with a unique filename derived from the original name', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ name: 'unique.png' }),
-    });
-
-    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
-
-    const formData = mockFetch.mock.calls[0][1].body as FormData;
-    const uploaded = formData.get('image') as File;
-    // 不能直接使用原始文件名，否则同名文件会互相覆盖
-    expect(uploaded.name).not.toBe('test.png');
-    // 保留扩展名，便于 ComfyUI 识别类型
-    expect(uploaded.name).toMatch(/\.png$/i);
-    // 仍包含原始文件名主体，便于排查
-    expect(uploaded.name).toContain('test');
-  });
-
-  it('generates different filenames for two uploads with the same originalname', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ name: 'ignored.png' }),
-    });
-
-    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
-    await uploadFileToComfyUI(mockFile, 'image', 'http://localhost:8188');
-
-    const first = (mockFetch.mock.calls[0][1].body as FormData).get('image') as File;
-    const second = (mockFetch.mock.calls[1][1].body as FormData).get('image') as File;
-    expect(first.name).not.toBe(second.name);
+  it('buildUniqueUploadFilename falls back to "file" for an empty base name', () => {
+    // 空文件名主体 → 回退为 file 前缀
+    const name = buildUniqueUploadFilename('');
+    expect(name).toMatch(/^file_/);
   });
 });
