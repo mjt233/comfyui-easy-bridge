@@ -44,6 +44,45 @@
             </div>
           </v-expand-transition>
         </template>
+
+        <!-- 标签展示：分组展示父标签 + 子标签，无标签时展示空态 -->
+        <v-divider class="my-2" />
+        <div class="d-flex align-center flex-wrap ga-2">
+          <span class="text-subtitle-2">标签</span>
+          <template v-if="workflow?.tags && workflow.tags.length > 0">
+            <template v-for="group in workflow.tags" :key="group.id">
+              <v-chip color="primary" variant="tonal" size="small">{{ group.name }}</v-chip>
+              <v-chip
+                v-for="child in group.tags" :key="child.id"
+                size="small" variant="flat" color="secondary" class="ml-1"
+              >
+                {{ child.name }}
+              </v-chip>
+            </template>
+          </template>
+          <span v-else class="text-caption text-grey">暂无标签</span>
+          <v-spacer />
+          <v-btn
+            size="small"
+            variant="text"
+            color="primary"
+            prepend-icon="mdi-tag-edit"
+            @click="tagDialog = true"
+          >
+            编辑标签
+          </v-btn>
+        </div>
+
+        <!-- 标签保存失败提示 -->
+        <v-alert
+          v-if="tagError"
+          type="error"
+          density="compact"
+          variant="tonal"
+          class="mt-2"
+        >
+          {{ tagError }}
+        </v-alert>
       </v-card-text>
       <v-card-actions>
         <v-btn :to="`/admin/workflow/${workflow?.id}/edit`" variant="text" prepend-icon="mdi-pencil">
@@ -395,6 +434,15 @@
     <v-snackbar v-model="snackbar.show" :color="snackbar.color">
       {{ snackbar.text }}
     </v-snackbar>
+
+    <!-- 标签编辑弹窗：保存中由父组件控制关闭 -->
+    <WorkflowTagEditorDialog
+      v-model="tagDialog"
+      :all-tags="allTags"
+      :current-tags="workflow?.tags ?? []"
+      :saving="savingTags"
+      @save="handleSaveTags"
+    />
   </v-container>
 </template>
 
@@ -402,7 +450,9 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
-import type { WorkflowDetail, WorkflowParam } from '@/types';
+import { listTags, setWorkflowTags } from '@/api/tags';
+import type { WorkflowDetail, WorkflowParam, TagTreeNode, WorkflowTagInput } from '@/types';
+import WorkflowTagEditorDialog from '@/components/WorkflowTagEditorDialog.vue';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
 import DeclaredParamsEditor from '@/components/DeclaredParamsEditor.vue';
@@ -462,6 +512,15 @@ const viewMode = ref<'chip' | 'list'>('chip');
 
 /** 备注说明是否展开 */
 const showDescription = ref(false);
+
+/** 可用标签树（供标签编辑弹窗使用） */
+const allTags = ref<TagTreeNode[]>([]);
+/** 标签编辑弹窗是否打开 */
+const tagDialog = ref(false);
+/** 是否正在保存标签 */
+const savingTags = ref(false);
+/** 标签保存失败的错误信息 */
+const tagError = ref('');
 
 /** 当前展示的 Tab（画布 / 参数配置 / 动态构建脚本 / 动态字段） */
 const section = ref<'canvas' | 'config' | 'build' | 'dynamic'>('config');
@@ -779,5 +838,39 @@ async function load() {
   }
 }
 
-onMounted(load);
+/**
+ * 加载标签树（供标签编辑弹窗使用）；加载失败不阻塞详情页，弹窗内展示空态提示
+ */
+async function loadTags() {
+  try {
+    allTags.value = await listTags();
+  } catch {
+    // 加载失败不阻塞详情页；弹窗内无标签时展示空态提示
+    allTags.value = [];
+  }
+}
+
+/**
+ * 保存标签：成功后关闭弹窗并刷新详情
+ * @param tags 标签数组（tagId + 可选元数据）
+ */
+async function handleSaveTags(tags: WorkflowTagInput[]) {
+  if (!workflow.value) return;
+  savingTags.value = true;
+  tagError.value = '';
+  try {
+    await setWorkflowTags(workflow.value.id, tags);
+    await load(); // 重新拉取详情刷新 tags
+    tagDialog.value = false;
+  } catch (err) {
+    tagError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    savingTags.value = false;
+  }
+}
+
+onMounted(() => {
+  load();
+  loadTags();
+});
 </script>

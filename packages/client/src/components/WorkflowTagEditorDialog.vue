@@ -100,10 +100,11 @@
       </v-card-text>
       <v-card-actions>
         <v-spacer />
-        <v-btn variant="text" @click="close">
+        <!-- 保存中禁用取消/保存，防止异步保存期间误操作 -->
+        <v-btn variant="text" :disabled="saving" @click="close">
           取消
         </v-btn>
-        <v-btn color="primary" @click="handleSave">
+        <v-btn color="primary" :loading="saving" :disabled="saving" @click="handleSave">
           保存
         </v-btn>
       </v-card-actions>
@@ -121,16 +122,21 @@ import type {
 } from '@/types';
 
 /**
- * 组件 props：弹窗可见性、可用标签树、当前工作流标签分组
+ * 组件 props：弹窗可见性、可用标签树、当前工作流标签分组、保存中状态
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** 弹窗可见性（v-model） */
   modelValue: boolean;
   /** 可用标签树 */
   allTags: TagTreeNode[];
   /** 当前工作流的标签分组 */
   currentTags: WorkflowTagGroup[];
-}>();
+  /** 是否正在保存（保存中禁用取消/保存按钮；由父组件在保存成功后关闭弹窗） */
+  saving?: boolean;
+}>(), {
+  /** 默认非保存中 */
+  saving: false,
+});
 
 /**
  * 组件事件：可见性变更与保存
@@ -290,12 +296,12 @@ function buildResult(): WorkflowTagInput[] {
 }
 
 /**
- * 保存：构建结果数组并触发 save 事件，随后关闭弹窗
+ * 保存：构建结果数组并触发 save 事件；不在此处关闭弹窗，
+ * 由父组件在异步保存成功后通过 modelValue=false 关闭，避免保存失败时丢失编辑内容
  */
 function handleSave(): void {
   const result = buildResult();
   emit('save', result);
-  emit('update:modelValue', false);
 }
 
 /**
