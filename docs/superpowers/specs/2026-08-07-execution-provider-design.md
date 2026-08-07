@@ -159,10 +159,13 @@ GET    /api/providers             # 列表；返回摘要（id/name/type/config 
 POST   /api/providers             # 新建；按 type 校验 config 字段
 PUT    /api/providers/:id         # 更新；运行中变更触发跟踪器重建
 DELETE /api/providers/:id         # 删除；默认实例禁止删除（409）；被工作流引用的实例：工作流 provider_id 置空（回退默认）
-POST   /api/providers/:id/test    # 连通性测试；见下方「测试连接行为」
+POST   /api/providers/:id/test    # 测试已保存的实例（复用下方同一逻辑）
+POST   /api/providers/test        # 用「当前填写的配置」测试连通性（未保存也可测试）；body: { type, config }
 ```
 
-**测试连接行为**（单一确定行为，不使用退化机制）：
+**测试与保存解耦**：测试仅用于向用户反馈连通性，**测试失败不阻止创建 / 更新**；保存接口不校验测试结果。前端在新建 / 编辑对话框内提供「测试连接」按钮，使用当前表单中填写的配置（无需先保存）。
+
+**测试连接行为**（单一确定行为，不使用退化机制；`POST /api/providers/test` 与 `POST /api/providers/:id/test` 共用）：
 
 - comfyui 实例：`GET {baseUrl}/system_stats`，2xx 视为连通
 - runninghub 实例：`GET {derivedProxyBase}/system_stats`，2xx 视为连通；否则返回失败（不尝试其他端点）
@@ -186,7 +189,7 @@ POST   /api/providers/:id/test    # 连通性测试；见下方「测试连接�
 
 - `SettingsPage.vue`：新增"执行提供商"管理区
   - 实例列表（名称 / 类型 / 地址或 GPU 档位 / 并发 / 启用开关 / 测试连接 / 编辑 / 删除）
-  - 新建 / 编辑对话框按类型显示不同字段
+  - 新建 / 编辑对话框按类型显示不同字段，并提供「测试连接」按钮（用当前表单配置调用 `POST /api/providers/test`，结果仅作提示，不阻止保存）
   - **全局默认实例**下拉选择
   - 移除旧的 "ComfyUI 服务地址" 与全局 "ComfyUI 任务执行并发数" 字段
   - 若当前无任何提供商实例，提示引导创建
