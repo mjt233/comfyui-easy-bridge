@@ -491,4 +491,38 @@ describe('Task output files provider resolution', () => {
     expect(res.status).toBe(502);
     expect(res.body.code).toBe('comfyui_unreachable');
   });
+
+  it('backfills via task provider even when the instance is disabled', async () => {
+    // 创建 runninghub 实例后禁用：历史任务仍应按 task.providerId 引用原实例回源（不因禁用而回退默认）
+    const rh = providerService.create({
+      name: 'rh-disabled', type: 'runninghub',
+      config: { apiKey: 'sk-test-key', gpuSize: '24G' },
+    });
+    providerService.update(rh.id, { enabled: false });
+
+    const task = taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId, providerId: rh.id,
+    });
+    taskService.updateStatus(task.id, { status: 'completed' });
+
+    // stub 全局 fetch，捕获回源请求的 URL
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => buildHistoryJson(promptId, true),
+    });
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await supertest(app)
+      .get(`/api/tasks/${task.id}/output-files`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.files).toHaveLength(1);
+    expect(res.body.files[0].filename).toBe('history-out.png');
+    // 即使实例已禁用，仍解析到该 runninghub 实例推导出的 proxy 地址（而非全局默认的 comfyui）
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
+    expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
+  });
 });
