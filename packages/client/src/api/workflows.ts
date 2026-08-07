@@ -1,8 +1,15 @@
 import client from './client';
 import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference, DeclaredParam } from '@/types';
 
-export async function listWorkflows(): Promise<Workflow[]> {
-  const res = await client.get<Workflow[]>('/workflows');
+/**
+ * 列出工作流；支持按标签筛选（多标签 AND）
+ * @param tagIds 选中的标签 ID 数组（可选）
+ * @returns 工作流列表（含 tags 结构）
+ */
+export async function listWorkflows(tagIds?: string[]): Promise<Workflow[]> {
+  const res = await client.get<Workflow[]>('/workflows', {
+    params: tagIds && tagIds.length > 0 ? { tags: tagIds } : undefined,
+  });
   return res.data;
 }
 
