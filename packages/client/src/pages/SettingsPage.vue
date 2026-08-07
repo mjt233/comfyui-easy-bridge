@@ -345,7 +345,8 @@ async function loadProviders() {
     // 并行拉取实例列表与设置（default_provider_id 在其中）
     const [list, settings] = await Promise.all([listProviders(), getSettings()]);
     providers.value = list;
-    defaultProviderId.value = settings.default_provider_id ?? null;
+    // 空串（未设置）归一化为 null，保证本地状态一致
+    defaultProviderId.value = settings.default_provider_id || null;
   } catch {
     providerError.value = '加载执行提供商失败';
   }
@@ -565,13 +566,11 @@ async function handleSaveProvider() {
  */
 async function handleDefaultChange(val: string | null) {
   const prev = defaultProviderId.value;
-  // 清空选择时不做持久化（服务端以空串视为未设置）
-  if (!val) {
-    return;
-  }
+  // 清空选择时持久化空串，服务端以空串视为未设置默认提供商
+  const next = val ?? '';
   try {
-    await updateSetting('default_provider_id', val);
-    defaultProviderId.value = val;
+    await updateSetting('default_provider_id', next);
+    defaultProviderId.value = next;
     snackbar.value = { show: true, text: '默认提供商已更新', color: 'success' };
   } catch {
     // 失败时回滚本地选择，避免与持久化状态不一致
