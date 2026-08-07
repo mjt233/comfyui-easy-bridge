@@ -1,8 +1,75 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { parseHistoryOutputs, resolveHistoryOutcome, startExecutionService } from './execution.service';
+import { TaskService } from './task.service';
+import { ProviderService } from './providers/provider.service';
+
+/**
+ * 构建 :memory: 数据库（providers / settings / task_logs / workflows 四表最小结构）。
+ * @returns drizzle 数据库实例
+ */
+function createInMemoryDb() {
+  const sqlite = new Database(':memory:');
+  // 建表：providers / settings / task_logs / workflows（最小结构）
+  sqlite.exec(`
+    CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT, provider_id TEXT);
+    CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, provider_id TEXT);
+  `);
+  return drizzle(sqlite, { schema });
+}
+
+/**
+ * 直接插入一条启用状态的 comfyui 提供商记录。
+ * @param db 数据库实例
+ * @param id 提供商 ID
+ * @param baseUrl 基础地址
+ * @param concurrency 并发上限（默认 1）
+ */
+function insertProvider(db: ReturnType<typeof createInMemoryDb>, id: string, baseUrl: string, concurrency = 1): void {
+  const now = new Date().toISOString();
+  db.insert(schema.providers).values({
+    id,
+    name: id,
+    type: 'comfyui',
+    config: JSON.stringify({ baseUrl }),
+    concurrency,
+    enabled: 1,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+}
+
+/**
+ * 直接插入一条 queued 状态的任务记录。
+ * @param db 数据库实例
+ * @param id 任务 ID
+ * @param providerId 归属提供商 ID
+ */
+function insertQueuedTask(db: ReturnType<typeof createInMemoryDb>, id: string, providerId: string): void {
+  const now = new Date().toISOString();
+  db.insert(schema.taskLogs).values({
+    id,
+    workflowId: 'wf-1',
+    workflowName: 'wf',
+    providerId,
+    promptId: null,
+    aliasValues: '{}',
+    originalForm: null,
+    comfyuiUrl: 'http://x',
+    comfyuiRequestBody: '{"prompt":{}}',
+    comfyuiResponse: null,
+    outputFiles: null,
+    status: 'queued',
+    errorMessage: null,
+    progress: null,
+    createdAt: now,
+    completedAt: null,
+  }).run();
+}
 
 /**
  * resolveHistoryOutcome 单元测试：
@@ -205,17 +272,60 @@ describe('parseHistoryOutputs', () => {
  */
 describe('startExecutionService', () => {
   it('starts and stops without throwing', () => {
-    const sqlite = new Database(':memory:');
-    // 建表：providers / settings / task_logs / workflows（最小结构）
-    sqlite.exec(`
-      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT, provider_id TEXT);
-      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, provider_id TEXT);
-    `);
-    const db = drizzle(sqlite, { schema });
+    const db = createInMemoryDb();
     const svc = startExecutionService(db);
     expect(svc.stop).toBeTypeOf('function');
     svc.stop();
+  });
+});
+
+/**
+ * 跟踪器行为测试：
+ * 使用 :memory: 数据库 + 打桩 fetch，验证真实跟踪器的队列调度与重建逻辑。
+ */
+describe('createProviderTracker behavior', () => {
+  afterEach(() => {
+    // 清理全局打桩，避免影响其他测试
+    vi.unstubAllGlobals();
+  });
+
+  it('drainQueue 只提交自身提供商的 queued 任务', async () => {
+    const db = createInMemoryDb();
+    // 两个启用的 comfyui 提供商，并发均为 1
+    insertProvider(db, 'p1', 'http://x');
+    insertProvider(db, 'p2', 'http://x');
+    // 仅 p1 下有一条 queued 任务
+    insertQueuedTask(db, 't1', 'p1');
+
+    // 打桩 fetch：/prompt 返回固定 prompt_id
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const svc = startExecutionService(db);
+    try {
+      const taskService = new TaskService(db);
+      // 启动后的初始 drain 应将 t1 提交为 pending 并带上 promptId
+      await vi.waitFor(() => {
+        const t = taskService.getById('t1');
+        expect(t?.status).toBe('pending');
+        expect(t?.promptId).toBe('pid-1');
+      });
+      // 仅 p1 的跟踪器提交了任务（p2 无 queued 任务，不触发提交）
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('重建时停止旧跟踪器并启动新跟踪器，不抛异常', () => {
+    const db = createInMemoryDb();
+    insertProvider(db, 'p1', 'http://x');
+
+    const svc = startExecutionService(db);
+    // 模拟实例变更触发整体重建
+    const providerService = new ProviderService(db);
+    expect(() => providerService.notifyChange()).not.toThrow();
+    // 重建后再停止应幂等且不抛异常
+    expect(() => svc.stop()).not.toThrow();
   });
 });

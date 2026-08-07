@@ -186,6 +186,9 @@ function guessFileType(key: string): 'image' | 'video' | 'audio' {
 
 /** 单个提供商实例的跟踪器 */
 interface ProviderTracker {
+  /** 启动初始队列调度（服务启动/重建后立即处理 queued 任务） */
+  init(): void;
+  /** 停止跟踪器：关闭 WebSocket 并清理定时器 */
   stop(): void;
 }
 
@@ -201,17 +204,21 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
   let fallbackTimer: ReturnType<typeof setInterval> | null = null;
   let completionPollTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
-
-  function getConcurrency(): number {
-    return provider.concurrency;
-  }
+  /** 是否正在执行 drainQueue（防止并发重复提交同一任务） */
+  let draining = false;
+  /** 连续 history 拉取失败计数（按任务 ID）；达到阈值后将该任务置为失败 */
+  const historyErrorCounts = new Map<string, number>();
+  /** 连续失败阈值：达到后不再重试，将任务标记为失败 */
+  const MAX_CONSECUTIVE_HISTORY_ERRORS = 5;
 
   /** 调度队列：当 running < concurrency 时取出最旧 queued 任务提交 */
   async function drainQueue(): Promise<void> {
+    // 重入保护：并发触发时直接返回，避免同一任务被重复提交
+    if (draining) return;
+    draining = true;
     try {
-      const concurrency = getConcurrency();
       const running = taskService.countByStatus('pending', providerId);
-      if (running >= concurrency) return;
+      if (running >= provider.concurrency) return;
 
       const queued = taskService.listQueued(providerId);
       if (queued.length === 0) return;
@@ -241,6 +248,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       }
     } catch (err) {
       console.error(`[ExecutionService:${providerId}] drainQueue error`, err);
+    } finally {
+      draining = false;
     }
   }
 
@@ -249,6 +258,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
     const task = taskService.getByPromptId(promptId);
     if (!task || task.status !== 'pending') return;
     taskService.updateStatus(task.id, { status: 'completed' });
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(task.id);
     fetchHistoryAndExtractOutputs(promptId)
       .catch(err => console.error(`[ExecutionService:${providerId}] fetch outputs error`, err));
     drainQueue();
@@ -262,9 +273,15 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       status: 'failed',
       errorMessage: errorMessage || 'Execution error',
     });
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(task.id);
     drainQueue();
   }
 
+  /**
+   * 拉取 history 并提取输出文件，写入任务输出列表（异步兜底，失败仅记录日志）。
+   * @param promptId ComfyUI prompt_id
+   */
   async function fetchHistoryAndExtractOutputs(promptId: string): Promise<void> {
     try {
       const data = await provider.fetchHistory(promptId);
@@ -286,6 +303,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
 
     if (outcome.kind === 'completed') {
       taskService.updateStatus(taskId, { status: 'completed', comfyuiResponse: JSON.stringify(data) });
+      // 任务已进入终态，清理其连续失败计数
+      historyErrorCounts.delete(taskId);
       const files = parseHistoryOutputs(data, promptId);
       if (files.length > 0) {
         taskService.updateOutputFiles(taskId, files);
@@ -299,6 +318,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       errorMessage: outcome.errorMessage,
       comfyuiResponse: JSON.stringify(data),
     });
+    // 任务已进入终态，清理其连续失败计数
+    historyErrorCounts.delete(taskId);
     drainQueue();
     return true;
   }
@@ -314,13 +335,19 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       });
       ws.on('message', (raw: Buffer) => {
         try {
-          const msg = JSON.parse(raw.toString());
-          const data = msg.data || {};
-          const promptId = data.prompt_id;
+          const parsed: unknown = JSON.parse(raw.toString());
+          // 仅处理对象类型消息，其余忽略
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+          const msg = parsed as Record<string, unknown>;
+          // data 字段非对象时按空对象处理
+          const data = msg.data && typeof msg.data === 'object' && !Array.isArray(msg.data)
+            ? (msg.data as Record<string, unknown>)
+            : {};
+          const promptId = typeof data.prompt_id === 'string' ? data.prompt_id : '';
           if (!promptId) return;
           if (msg.type === 'progress') {
             const { value, max } = data;
-            if (value != null && max > 0) {
+            if (typeof value === 'number' && typeof max === 'number' && max > 0) {
               const pct = Math.round((value / max) * 100);
               const task = taskService.getByPromptId(promptId);
               if (task && task.status === 'pending') {
@@ -383,9 +410,21 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
           if (!task.promptId) continue;
           try {
             const data = await provider.fetchHistory(task.promptId);
+            historyErrorCounts.delete(task.id);
             applyHistoryOutcome(task.id, task.promptId, data);
-          } catch {
-            // retry next cycle
+          } catch (err) {
+            // 连续失败计数：达到阈值后终止任务，避免永久卡在 pending
+            const count = (historyErrorCounts.get(task.id) ?? 0) + 1;
+            historyErrorCounts.set(task.id, count);
+            if (count >= MAX_CONSECUTIVE_HISTORY_ERRORS) {
+              historyErrorCounts.delete(task.id);
+              taskService.updateStatus(task.id, {
+                status: 'failed',
+                errorMessage: err instanceof Error ? `History check failed: ${err.message}` : 'History check failed',
+              });
+              drainQueue();
+            }
+            // 未达阈值则下一轮重试
           }
         }
       } catch {
@@ -399,6 +438,10 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
   startCompletionPoll();
 
   return {
+    init: () => {
+      // 启动即触发一次队列调度，让 queued 任务尽快进入 pending（fire-and-forget）
+      drainQueue().catch(err => console.error(`[ExecutionService:${providerId}] init drain error`, err));
+    },
     stop: () => {
       stopped = true;
       if (ws) { ws.close(); ws = null; }
@@ -431,6 +474,8 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
       .map((row) => providerService.instantiate(row))
       .filter((p): p is ExecutionProvider => p !== null)
       .map((p) => createProviderTracker(p, taskService));
+    // 启动/重建后立即 drain 一次，让队列中已存在的任务尽快开始执行
+    for (const tracker of trackers) tracker.init();
   }
 
   const unsubscribe = providerService.onChange(() => startAll());
