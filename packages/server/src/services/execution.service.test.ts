@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { parseHistoryOutputs, resolveHistoryOutcome } from './comfyui.service';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import * as schema from '../models/schema';
+import { parseHistoryOutputs, resolveHistoryOutcome, startExecutionService } from './execution.service';
 
 /**
  * resolveHistoryOutcome 单元测试：
@@ -193,5 +196,26 @@ describe('parseHistoryOutputs', () => {
         fileType: 'audio',
       },
     ]);
+  });
+});
+
+/**
+ * startExecutionService 冒烟测试：
+ * 在 :memory: 数据库中启动/停止执行服务，验证不抛异常。
+ */
+describe('startExecutionService', () => {
+  it('starts and stops without throwing', () => {
+    const sqlite = new Database(':memory:');
+    // 建表：providers / settings / task_logs / workflows（最小结构）
+    sqlite.exec(`
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT, provider_id TEXT);
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, provider_id TEXT);
+    `);
+    const db = drizzle(sqlite, { schema });
+    const svc = startExecutionService(db);
+    expect(svc.stop).toBeTypeOf('function');
+    svc.stop();
   });
 });

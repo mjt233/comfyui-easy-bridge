@@ -5,7 +5,7 @@ import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { submitPromptRequest, interruptRequest } from '../services/providers/shared';
-import { parseHistoryOutputs } from '../services/comfyui.service';
+import { parseHistoryOutputs } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
