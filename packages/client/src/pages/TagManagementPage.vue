@@ -524,12 +524,13 @@ async function handleSave(): Promise<void> {
     dialogError.value = '请输入显示名';
     return;
   }
-  // 过滤完全空白的字段行（误添加的空行），其余交由后端校验
+  // 过滤不完整的字段行：后端要求 key 与 label 均非空，缺任一字段的整行都会被丢弃，
+  // 否则会导致整次保存被「参数校验失败」拒绝且无法定位到具体行
   const metadataDef: TagMetadataFieldDef[] = form.value.metadataDef
-    .filter((row) => row.key.trim() !== '' || row.label.trim() !== '')
+    .filter((row) => row.key.trim() !== '' && row.label.trim() !== '')
     .map((row) => ({
       key: row.key.trim(),
-      label: row.label,
+      label: row.label.trim(),
       type: row.type,
       defaultValue: normalizeDefaultValue(row.type, row.defaultValue),
     }));
@@ -550,6 +551,7 @@ async function handleSave(): Promise<void> {
     dialogError.value = friendlyApiError(err, {
       tag_conflict: '同层级下已存在同名标签',
       tag_not_found: '父标签不存在或已被删除',
+      tag_has_parent: '不能将标签设为已有父标签的子标签',
       missing_parameter: '参数校验失败，请检查填写内容',
     });
   } finally {
