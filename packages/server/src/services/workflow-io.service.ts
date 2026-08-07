@@ -131,7 +131,8 @@ export class WorkflowIOService {
   async exportWorkflows(ids: string[]): Promise<Buffer> {
     const zip = new JSZip();
     const manifest: ExportManifest = {
-      version: 1,
+      // 导出恒为 v2（含标签定义与关联）
+      version: 2,
       exportedAt: new Date().toISOString(),
       tags: [],
       workflows: [],
@@ -202,9 +203,8 @@ export class WorkflowIOService {
       }
     }
 
-    // 顶层标签定义（父在前）与版本升级
+    // 顶层标签定义（父在前）；版本恒为 2
     manifest.tags = [...tagDefMap.values()].sort((a, b) => (a.parentId === null ? -1 : 1) - (b.parentId === null ? -1 : 1));
-    manifest.version = 2;
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
     return zip.generateAsync({ type: 'nodebuffer' });
   }
@@ -225,7 +225,16 @@ export class WorkflowIOService {
     const manifest = JSON.parse(await manifestFile.async('string')) as ExportManifest;
 
     // ① 确保标签定义存在（父先子后；已存在复用，不存在创建）
-    const tagDefs = (manifest.tags ?? []).slice().sort((a, b) => (a.parentId === null ? -1 : 1) - (b.parentId === null ? -1 : 1));
+    // 防御：过滤定义不完整的标签（缺失 id/name 等），避免整批导入中断
+    const tagDefs = (manifest.tags ?? [])
+      .filter((def): def is ExportTagDef => (
+        def != null
+        && typeof def.id === 'string'
+        && def.id !== ''
+        && typeof def.name === 'string'
+        && def.name !== ''
+      ))
+      .sort((a, b) => (a.parentId === null ? -1 : 1) - (b.parentId === null ? -1 : 1));
     const now = new Date().toISOString();
     for (const def of tagDefs) {
       const exists = this.db.select().from(schema.tags).where(eq(schema.tags.id, def.id)).get();
@@ -233,8 +242,9 @@ export class WorkflowIOService {
       this.db.insert(schema.tags).values({
         id: def.id,
         name: def.name,
-        parentId: def.parentId,
-        isPreset: def.isPreset,
+        // 防御：parentId 非字符串时按 null 处理，避免写入畸形父 ID
+        parentId: typeof def.parentId === 'string' ? def.parentId : null,
+        isPreset: typeof def.isPreset === 'number' ? def.isPreset : 0,
         metadataDef: typeof def.metadataDef === 'string' ? def.metadataDef : JSON.stringify(def.metadataDef ?? []),
         createdAt: now,
         updatedAt: now,
@@ -281,7 +291,7 @@ export class WorkflowIOService {
         const entryTags = entry.tags ?? [];
         const present = new Set(entryTags.map((t) => t.tagId));
         const allTagIds = new Set(tagDefs.map((t) => t.id));
-        const toInsert: Array<{ tagId: string; metadataValues: Record<string, number | string | boolean> }> = [...entryTags];
+        const toInsert: ExportWorkflowTag[] = [...entryTags];
         for (const t of entryTags) {
           const def = tagDefs.find((d) => d.id === t.tagId);
           if (def?.parentId && !present.has(def.parentId) && allTagIds.has(def.parentId)) {

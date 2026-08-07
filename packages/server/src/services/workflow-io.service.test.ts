@@ -350,4 +350,29 @@ describe('WorkflowIOService', () => {
     const result = await io2.importWorkflows(zip);
     expect(result.imported).toBe(1);
   });
+
+  it('v2 包中缺父定义的子标签关联，导入时自动补父关联', async () => {
+    const sqlite2 = new Database(':memory:');
+    runMigrations(sqlite2);
+    const db2 = drizzle(sqlite2, { schema });
+    const io2 = new WorkflowIOService(db2);
+    // 手动构造 v2 manifest：reference 关联存在，但其父 image-to-video 定义缺失
+    const zip = await new JSZip()
+      .file('manifest.json', JSON.stringify({
+        version: 2,
+        exportedAt: 'x',
+        tags: [{ id: 'reference', name: '全能参考', parentId: 'image-to-video', isPreset: 1, metadataDef: '[]' }],
+        workflows: [{
+          id: 'wf-child', name: '子', rawJson: '{}',
+          tags: [{ tagId: 'reference', metadataValues: {} }],
+        }],
+      }))
+      .generateAsync({ type: 'nodebuffer' });
+    const result = await io2.importWorkflows(zip);
+    expect(result.imported).toBe(1);
+    // 父关联被自动补上：父 image-to-video 与子 reference 都存在（image-to-video 是预设种子）
+    const groups = new WorkflowTagService(db2).getTagGroups('wf-child');
+    expect(groups.map((g) => g.id)).toEqual(['image-to-video']);
+    expect(groups[0].tags.map((t) => t.id)).toEqual(['reference']);
+  });
 });
