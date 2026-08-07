@@ -20,6 +20,7 @@ export function createWorkflowRoutes(db: BetterSQLite3Database<typeof schema>): 
   router.post('/:id/execute', upload.any(), controller.execute);
   router.put('/:id/build-script', auth, controller.saveBuildScript);
   router.put('/:id/declared-params', auth, controller.saveDeclaredParams);
+  router.put('/:id/tags', auth, controller.setTags);
   router.post('/:id/build/simulate', auth, upload.any(), controller.simulateBuild);
 
   router.get('/', auth, controller.list);
