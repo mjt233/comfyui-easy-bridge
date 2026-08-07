@@ -1,6 +1,6 @@
 # 工作流相关 API 文档
 
-本文档覆盖四个核心 API：提交工作流执行、查看任务状态、中断任务、下载输出文件。
+本文档覆盖五个核心 API：提供商管理、提交工作流执行、查看任务状态、中断任务、下载输出文件。
 
 **基础路径**: `/api`
 
@@ -75,13 +75,122 @@ input_image: <file>
 
 | 状态码 | code | 说明 |
 |--------|------|------|
-| `400` | `missing_parameter` | ComfyUI 基础 URL 未配置 |
+| `400` | `missing_parameter` | 必填参数缺失 |
+| `400` | `provider_not_configured` | 未配置默认执行提供商 / 工作流指定的提供商不存在或已禁用 |
 | `404` | `workflow_not_found` | 工作流不存在 |
-| `502` | `comfyui_unreachable` | ComfyUI 服务不可达 |
+| `502` | `comfyui_unreachable` | 执行提供商服务不可达 |
+
+> 说明：工作流执行通过「执行提供商」实例进行（见第 2 节「提供商管理」），执行端可能是 ComfyUI 原生或 RunningHub。`comfyui_response` 为执行端的原始响应体、`prompt_id` 语义不变，执行端地址不再来自全局 `comfyui_base_url` 设置。
 
 ---
 
-## 2. 查看任务状态
+## 2. 提供商管理
+
+执行提供商（Provider）实例负责工作流的实际执行，类型分为：
+
+| 类型 | 配置 | 说明 |
+|------|------|------|
+| `comfyui` | `config.baseUrl` | ComfyUI 原生服务地址 |
+| `runninghub` | `config.apiKey` + `config.gpuSize` (`'24G'` / `'48G'`) | RunningHub 云端执行；基础地址由 `https://www.runninghub.cn/proxy/<apiKey>`（24G）或 `/proxy-plus/<apiKey>`（48G）推导 |
+
+以下端点均需认证 (`Authorization: Bearer <token>`)。
+
+### 列出提供商实例
+
+```
+GET /api/providers
+```
+
+返回所有实例的脱敏摘要（runninghub 的 `apiKey` 已打码）：
+
+```json
+[
+  {
+    "id": "uuid-string",
+    "name": "本地 ComfyUI",
+    "type": "comfyui",
+    "config": { "baseUrl": "http://localhost:8188" },
+    "concurrency": 1,
+    "enabled": true,
+    "resolvedBaseUrl": "http://localhost:8188",
+    "trackingMode": "websocket"
+  }
+]
+```
+
+### 新建提供商实例
+
+```
+POST /api/providers
+```
+
+**请求体**:
+
+```json
+{
+  "name": "本地 ComfyUI",
+  "type": "comfyui",
+  "config": { "baseUrl": "http://localhost:8188" },
+  "concurrency": 1,
+  "enabled": true
+}
+```
+
+RunningHub 示例：
+
+```json
+{
+  "name": "RunningHub 24G",
+  "type": "runninghub",
+  "config": { "apiKey": "sk-xxxx", "gpuSize": "24G" }
+}
+```
+
+**响应** `201`: 与列表项相同的实例摘要；校验失败返回 `400`。
+
+### 更新提供商实例
+
+```
+PUT /api/providers/:id
+```
+
+支持部分更新：仅提交需要修改的字段，`config` 缺省时沿用原配置、未显式提供 `type` 时沿用原类型。校验失败返回 `400`，实例不存在返回 `404`。
+
+### 删除提供商实例
+
+```
+DELETE /api/providers/:id
+```
+
+删除成功返回 `204`。全局默认实例禁止删除（返回 `409`，code `default_provider_not_deletable`）；被删除实例引用的工作流自动回退到全局默认（`providerId` 置空）。
+
+### 测试连接
+
+用未保存的配置测试连通性（测试失败不阻止保存）：
+
+```
+POST /api/providers/test
+```
+
+**请求体**: `{ "type": "comfyui", "config": { "baseUrl": "..." } }` 或 `{ "type": "runninghub", "config": { "apiKey": "...", "gpuSize": "24G" } }`；`type` 缺省按 `comfyui` 处理。
+
+测试已保存的实例：
+
+```
+POST /api/providers/:id/test
+```
+
+两者的测试行为一致：请求 `GET {base}/system_stats`，`2xx` 视为连通，返回 `{ "ok": true, "message": "连接成功" }` 或 `{ "ok": false, "message": "<原因>" }`。
+
+### 默认实例与工作流覆盖
+
+- 全局默认实例通过设置 `default_provider_id` 指定（`PUT /api/settings`，body 为 `{ "key": "default_provider_id", "value": "<实例 ID>" }`）；默认实例被禁用时视为未配置。
+- 工作流的 `providerId` 字段（可空：`null` 或空字符串 = 使用全局默认）可覆盖默认实例，创建工作流（`POST /api/workflows`）与更新工作流（`PUT /api/workflows/:id`）时均可传入。
+- 执行时优先使用工作流指定的**启用中**的实例，否则回退全局默认；均不可用时 `POST /api/workflows/:id/execute` 返回 `400 provider_not_configured`。
+
+---
+
+## 3. 查看任务状态
 
 ### 获取单个任务详情
 
@@ -156,7 +265,7 @@ POST /api/tasks/:taskId/cancel
 
 ---
 
-## 3. 下载工作流输出文件
+## 4. 下载工作流输出文件
 
 ### 获取输出文件列表
 
@@ -195,7 +304,7 @@ GET /api/tasks/:taskId/output-files
 | `type` | 固定为 `output` |
 | `nodeId` | 生成该文件的节点 ID |
 | `fileType` | `image` / `video` / `audio` |
-| `url` | 下载 URL（proxy 模式为本站路径，direct 模式为 ComfyUI 直连路径） |
+| `url` | 下载 URL（proxy 模式为本站路径，direct 模式为执行提供商直连路径） |
 
 ### 下载单个文件
 
@@ -261,9 +370,12 @@ curl -O "http://localhost:10721/api/tasks/$TASK_ID/output-files/output_001.png" 
 
 | code | HTTP 状态码 | 场景 |
 |------|------------|------|
-| `missing_parameter` | 400 | 必填参数缺失 / ComfyUI URL 未配置 |
+| `missing_parameter` | 400 | 必填参数缺失 |
+| `provider_not_configured` | 400 | 未配置默认执行提供商 / 工作流指定的实例不存在或已禁用 |
 | `invalid_status` | 400 | 任务状态不允许当前操作（如取消已完成的任务） |
 | `unauthorized` | 401 | Token 无效或过期 |
 | `workflow_not_found` | 404 | 工作流不存在 |
 | `task_not_found` | 404 | 任务不存在 |
-| `comfyui_unreachable` | 502 | ComfyUI 服务不可达 |
+| `provider_not_found` | 404 | 提供商实例不存在 |
+| `default_provider_not_deletable` | 409 | 尝试删除全局默认提供商实例 |
+| `comfyui_unreachable` | 502 | 执行提供商服务不可达 |
