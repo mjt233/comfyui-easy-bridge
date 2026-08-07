@@ -45,6 +45,7 @@
           <template v-for="parent in tagTree" :key="parent.id">
             <v-chip
               :color="selectedTagIds.has(parent.id) ? 'primary' : ''"
+              :model-value="selectedTagIds.has(parent.id)"
               variant="tonal"
               filter
               @click="toggleFilterTag(parent.id)"
@@ -55,6 +56,7 @@
               v-for="child in parent.children"
               :key="child.id"
               :color="selectedTagIds.has(child.id) ? 'secondary' : ''"
+              :model-value="selectedTagIds.has(child.id)"
               variant="flat"
               filter
               size="small"
@@ -125,7 +127,16 @@
 
     <v-card v-if="workflows.length === 0">
       <v-card-text class="text-center py-8 text-grey">
-        暂无工作流，点击上方按钮新建
+        <!-- 有筛选条件时空态提示：新建的工作流无标签，不会出现在当前筛选下 -->
+        <template v-if="selectedTagIds.size > 0">
+          没有匹配所选标签的工作流
+          <v-btn size="small" variant="text" color="primary" @click="clearFilter">
+            清空筛选
+          </v-btn>
+        </template>
+        <template v-else>
+          暂无工作流，点击上方按钮新建
+        </template>
       </v-card-text>
     </v-card>
 
@@ -488,8 +499,6 @@ const tagDialogWorkflow = ref<Workflow | null>(null);
 const tagDialog = ref(false);
 /** 打标签保存中（保存期间禁用弹窗按钮） */
 const savingTags = ref(false);
-/** 打标签保存错误信息 */
-const tagError = ref('');
 
 /**
  * 切换全选状态
@@ -714,7 +723,12 @@ async function loadTags() {
  */
 function toggleFilterTag(id: string) {
   const next = new Set(selectedTagIds.value);
-  if (next.has(id)) next.delete(id); else next.add(id);
+  // 已选中则移除，未选中则加入（切换后整体替换集合）
+  if (next.has(id)) {
+    next.delete(id);
+  } else {
+    next.add(id);
+  }
   selectedTagIds.value = next;
   load();
 }
@@ -733,7 +747,6 @@ function clearFilter() {
  */
 function openTagDialog(wf: Workflow) {
   tagDialogWorkflow.value = wf;
-  tagError.value = '';
   tagDialog.value = true;
 }
 
@@ -744,14 +757,15 @@ function openTagDialog(wf: Workflow) {
 async function handleSaveTags(tags: WorkflowTagInput[]) {
   if (!tagDialogWorkflow.value) return;
   savingTags.value = true;
-  tagError.value = '';
   try {
     await setWorkflowTags(tagDialogWorkflow.value.id, tags);
+    // 先刷新列表，再关闭弹窗，避免保存后列表仍显示旧标签
+    await load();
     tagDialog.value = false;
-    load();
   } catch (err) {
-    tagError.value = err instanceof Error ? err.message : String(err);
-    snackbar.value = { show: true, text: `保存标签失败: ${tagError.value}`, color: 'error' };
+    // 错误信息仅在当前作用域用于拼接 snackbar 文案，无需提升为组件状态
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    snackbar.value = { show: true, text: `保存标签失败: ${errorMessage}`, color: 'error' };
   } finally {
     savingTags.value = false;
   }
