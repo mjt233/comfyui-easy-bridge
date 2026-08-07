@@ -267,6 +267,10 @@ export interface WorkflowTagGroup {
   id: string;
   /** 父标签显示名 */
   name: string;
+  /** 合并默认值后的完整元数据（父标签自身的元数据；无定义时空对象） */
+  metadata: TagMetadataValues;
+  /** 用户原始配置值（父标签自身的元数据；未配置时空对象） */
+  configuredMetadata: TagMetadataValues;
   /** 该父标签下被选中的子标签 */
   tags: WorkflowTagNode[];
 }

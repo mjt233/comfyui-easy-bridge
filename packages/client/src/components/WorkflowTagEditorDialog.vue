@@ -28,6 +28,60 @@
             @update:model-value="toggleParent(parent, $event)"
           />
 
+          <!-- 顶层标签元数据编辑区：仅选中的且带元数据定义的顶层标签，默认收起 -->
+          <div
+            v-if="checkedParents.has(parent.id) && parent.metadataDef.length > 0"
+            class="ml-4 mb-3"
+          >
+            <div class="d-flex align-center">
+              <span class="text-caption text-grey">{{ parent.name }} 元数据</span>
+              <v-spacer />
+              <v-btn
+                size="small"
+                variant="text"
+                density="compact"
+                :prepend-icon="expandedMetadata[parent.id] ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+                @click="toggleMetadata(parent.id)"
+              >
+                {{ expandedMetadata[parent.id] ? '收起' : '展开' }}
+              </v-btn>
+            </div>
+            <v-expand-transition>
+              <!-- 展开/收起由 v-if 控制（不能用 v-show：v-expand-transition 会覆盖 v-show 的
+                   display:none，导致内容在收起态仍可见）；输入值绑定在持久的 metadataInputs 上，重建不丢数据 -->
+              <div v-if="expandedMetadata[parent.id]" class="d-flex flex-column ga-2 pt-1">
+                <!-- 按字段类型渲染输入控件：number→数字框 / string→文本框 / boolean→开关 -->
+                <template v-for="field in parent.metadataDef" :key="field.key">
+                  <v-text-field
+                    v-if="field.type === 'number'"
+                    v-model.number="metadataForTag(parent.id)[field.key]"
+                    :label="field.label"
+                    type="number"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                  <v-text-field
+                    v-else-if="field.type === 'string'"
+                    v-model="metadataForTag(parent.id)[field.key]"
+                    :label="field.label"
+                    density="compact"
+                    variant="outlined"
+                    hide-details
+                  />
+                  <v-switch
+                    v-else
+                    v-model="metadataForTag(parent.id)[field.key]"
+                    :label="field.label"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                  />
+                </template>
+              </div>
+            </v-expand-transition>
+          </div>
+
           <!-- 子标签区：父标签未勾选时禁用，保证「子必带父」不变量 -->
           <div v-if="parent.children.length > 0" class="ml-8">
             <!-- 每个子标签的 checkbox 与其元数据编辑区在同一 v-for 内，编辑区紧跟该子标签下方 -->
@@ -68,7 +122,7 @@
                     <template v-for="field in child.metadataDef" :key="field.key">
                       <v-text-field
                         v-if="field.type === 'number'"
-                        v-model.number="metadataForChild(child.id)[field.key]"
+                        v-model.number="metadataForTag(child.id)[field.key]"
                         :label="field.label"
                         type="number"
                         density="compact"
@@ -77,7 +131,7 @@
                       />
                       <v-text-field
                         v-else-if="field.type === 'string'"
-                        v-model="metadataForChild(child.id)[field.key]"
+                        v-model="metadataForTag(child.id)[field.key]"
                         :label="field.label"
                         density="compact"
                         variant="outlined"
@@ -85,7 +139,7 @@
                       />
                       <v-switch
                         v-else
-                        v-model="metadataForChild(child.id)[field.key]"
+                        v-model="metadataForTag(child.id)[field.key]"
                         :label="field.label"
                         color="primary"
                         density="compact"
@@ -159,44 +213,48 @@ const metadataInputs = ref<Record<string, TagMetadataValues>>({});
 const expandedMetadata = ref<Record<string, boolean>>({});
 
 /**
- * 在标签树中查找子标签节点
- * @param childId 子标签 ID
- * @returns 子标签节点；未找到返回 null
+ * 在标签树中查找标签节点（顶层或子标签均可）
+ * @param tagId 标签 ID
+ * @returns 标签节点；未找到返回 null
  */
-function findChild(childId: string): TagTreeNode | null {
+function findTag(tagId: string): TagTreeNode | null {
   for (const parent of props.allTags) {
-    const child = parent.children.find((c) => c.id === childId);
+    if (parent.id === tagId) return parent;
+    const child = parent.children.find((c) => c.id === tagId);
     if (child) return child;
   }
   return null;
 }
 
 /**
- * 从当前工作流标签分组中查找某子标签的已配置元数据
- * @param childId 子标签 ID
+ * 从当前工作流标签分组中查找某标签（顶层或子标签）的已配置元数据
+ * @param tagId 标签 ID
  * @returns 已配置元数据；未找到返回空对象
  */
-function findConfiguredMetadata(childId: string): TagMetadataValues {
+function findConfiguredMetadata(tagId: string): TagMetadataValues {
   for (const group of props.currentTags) {
+    // 顶层标签：分组自身的元数据
+    if (group.id === tagId) return group.configuredMetadata;
+    // 子标签：分组内的子节点
     for (const node of group.tags) {
-      if (node.id === childId) return node.configuredMetadata;
+      if (node.id === tagId) return node.configuredMetadata;
     }
   }
   return {};
 }
 
 /**
- * 依据已配置值初始化某子标签的元数据输入；未配置的键用字段默认值，保证输入框有合理初值
- * @param childId 子标签 ID
+ * 依据已配置值初始化某标签（顶层或子标签）的元数据输入；未配置的键用字段默认值，保证输入框有合理初值
+ * @param tagId 标签 ID
  * @param configured 已配置的元数据（缺省空对象）
  * @returns 初始化后的输入对象
  */
-function seedMetadataInputs(childId: string, configured: TagMetadataValues = {}): TagMetadataValues {
-  const child = findChild(childId);
+function seedMetadataInputs(tagId: string, configured: TagMetadataValues = {}): TagMetadataValues {
+  const tag = findTag(tagId);
   // 标签树中找不到定义时，仅保留已配置值
-  if (!child) return { ...configured };
+  if (!tag) return { ...configured };
   const out: TagMetadataValues = {};
-  for (const def of child.metadataDef) {
+  for (const def of tag.metadataDef) {
     // 已配置值优先，否则用字段默认值
     out[def.key] = configured[def.key] ?? def.defaultValue;
   }
@@ -204,16 +262,16 @@ function seedMetadataInputs(childId: string, configured: TagMetadataValues = {})
 }
 
 /**
- * 获取子标签的元数据输入对象；未初始化时按「已配置值 → 字段默认值」惰性初始化
- * @param childId 子标签 ID
- * @returns 该子标签的元数据输入对象（v-model 绑定的目标）
+ * 获取某标签（顶层或子标签）的元数据输入对象；未初始化时按「已配置值 → 字段默认值」惰性初始化
+ * @param tagId 标签 ID
+ * @returns 该标签的元数据输入对象（v-model 绑定的目标）
  */
-function metadataForChild(childId: string): TagMetadataValues {
-  let inputs = metadataInputs.value[childId];
+function metadataForTag(tagId: string): TagMetadataValues {
+  let inputs = metadataInputs.value[tagId];
   if (!inputs) {
     // 惰性初始化：保证 v-model 绑定的记录已存在
-    inputs = seedMetadataInputs(childId, findConfiguredMetadata(childId));
-    metadataInputs.value[childId] = inputs;
+    inputs = seedMetadataInputs(tagId, findConfiguredMetadata(tagId));
+    metadataInputs.value[tagId] = inputs;
   }
   return inputs;
 }
@@ -226,6 +284,8 @@ function metadataForChild(childId: string): TagMetadataValues {
 function toggleParent(parent: TagTreeNode, val: unknown): void {
   if (val === true) {
     checkedParents.value.add(parent.id);
+    // 选中时初始化元数据输入（顶层标签也可能带元数据定义），保证元数据区渲染时可绑定
+    if (parent.metadataDef.length > 0) metadataForTag(parent.id);
     return;
   }
   checkedParents.value.delete(parent.id);
@@ -244,7 +304,7 @@ function toggleChild(child: TagTreeNode, val: unknown): void {
   if (val === true) {
     checkedChildren.value.add(child.id);
     // 选中时初始化元数据输入，保证元数据区渲染时可绑定
-    metadataForChild(child.id);
+    metadataForTag(child.id);
   } else {
     checkedChildren.value.delete(child.id);
   }
@@ -277,15 +337,15 @@ function filterMetadata(child: TagTreeNode): TagMetadataValues {
 }
 
 /**
- * 构建保存结果：父标签恒携带空元数据；子标签仅保留与默认值不同的用户输入
+ * 构建保存结果：父标签携带自身元数据（顶层标签也可配置元数据）；子标签仅保留与默认值不同的用户输入
  * @returns 保存结果数组（父标签在前、其子标签随后，保持分组顺序）
  */
 function buildResult(): WorkflowTagInput[] {
   const result: WorkflowTagInput[] = [];
   for (const parent of props.allTags) {
     if (checkedParents.value.has(parent.id)) {
-      // 父标签无元数据定义，恒为空对象
-      result.push({ tagId: parent.id, metadataValues: {} });
+      // 顶层标签可能带元数据定义，按规则过滤用户输入（未配置的键回落默认值）
+      result.push({ tagId: parent.id, metadataValues: filterMetadata(parent) });
     }
     for (const child of parent.children) {
       if (checkedChildren.value.has(child.id)) {
@@ -319,11 +379,13 @@ watch(
   () => props.modelValue,
   (open) => {
     if (!open) return;
-    // 父标签：当前工作流的每个分组 ID
+    // 父标签：当前工作流的每个分组 ID（顶层标签可配置元数据，初始化其输入）
     checkedParents.value = new Set(props.currentTags.map((g) => g.id));
     checkedChildren.value = new Set();
     metadataInputs.value = {};
     for (const group of props.currentTags) {
+      // 顶层标签自身的元数据
+      metadataInputs.value[group.id] = seedMetadataInputs(group.id, group.configuredMetadata);
       for (const node of group.tags) {
         checkedChildren.value.add(node.id);
         // 依据已配置值（缺省用字段默认值）初始化元数据输入

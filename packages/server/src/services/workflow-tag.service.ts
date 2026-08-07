@@ -22,6 +22,10 @@ export interface WorkflowTagGroup {
   id: string;
   /** 父标签显示名 */
   name: string;
+  /** 合并默认值后的完整元数据（父标签自身的元数据；无定义时空对象） */
+  metadata: TagMetadataValues;
+  /** 用户原始配置值（父标签自身的元数据；未配置时空对象） */
+  configuredMetadata: TagMetadataValues;
   /** 该父标签下被选中的子标签 */
   tags: WorkflowTagNode[];
 }
@@ -166,7 +170,7 @@ export class WorkflowTagService {
     const groups: WorkflowTagGroup[] = [];
     const childrenByParent = new Map<string, WorkflowTagNode[]>();
 
-    // ① 分组：父标签进 groups，子标签暂存
+    // ① 分组：父标签进 groups（携带自身元数据），子标签暂存
     for (const assoc of assocs) {
       const tag = byId.get(assoc.tagId);
       if (!tag) continue;
@@ -179,7 +183,14 @@ export class WorkflowTagService {
         configuredMetadata: configured,
       };
       if (tag.parentId == null) {
-        groups.push({ id: tag.id, name: tag.name, tags: [] });
+        // 顶层标签也可配置元数据（根标签定义），分组携带其合并值与原始值
+        groups.push({
+          id: tag.id,
+          name: tag.name,
+          metadata: node.metadata,
+          configuredMetadata: node.configuredMetadata,
+          tags: [],
+        });
       } else {
         const arr = childrenByParent.get(tag.parentId) ?? [];
         arr.push(node);
@@ -187,14 +198,20 @@ export class WorkflowTagService {
       }
     }
 
-    // ② 子标签挂到父分组（防御：父未显式打标也建组）
+    // ② 子标签挂到父分组（防御：父未显式打标也建组，此时父标签无关联记录，元数据为空）
     for (const [parentId, children] of childrenByParent) {
       const group = groups.find((g) => g.id === parentId);
       if (group) {
         group.tags = children;
       } else {
         const parent = byId.get(parentId);
-        groups.push({ id: parentId, name: parent?.name ?? parentId, tags: children });
+        groups.push({
+          id: parentId,
+          name: parent?.name ?? parentId,
+          metadata: {},
+          configuredMetadata: {},
+          tags: children,
+        });
       }
     }
     return groups;

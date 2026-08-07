@@ -5,6 +5,7 @@ import { runMigrations } from '../models/migrations/runner';
 import * as schema from '../models/schema';
 import { WorkflowTagService } from './workflow-tag.service';
 import { WorkflowService } from './workflow.service';
+import { TagService } from './tag.service';
 
 /** 插入测试工作流 */
 function insertWorkflow(db: BetterSQLite3Database<typeof schema>, id: string) {
@@ -133,6 +134,40 @@ describe('WorkflowTagService', () => {
     service.setWorkflowTags('wf1', [{ tagId: 'text-to-image' }]);
     const groups = service.getTagGroups('wf1');
     expect(groups[0]).toMatchObject({ id: 'text-to-image', tags: [] });
+  });
+
+  it('顶层标签可携带元数据（根标签元数据定义生效）', () => {
+    // 新建一个带元数据定义的顶层自定义标签
+    const tagService = new TagService(db);
+    const root = tagService.create({
+      id: 'root-meta',
+      name: '根元数据',
+      parentId: null,
+      metadataDef: [{ key: 'maxCount', label: '数量', type: 'number', defaultValue: 5 }],
+    });
+    service.setWorkflowTags('wf1', [
+      { tagId: root.id, metadataValues: { maxCount: 8 } },
+    ]);
+    const groups = service.getTagGroups('wf1');
+    expect(groups.length).toBe(1);
+    expect(groups[0].id).toBe(root.id);
+    // 根标签的 metadata 为合并默认值后的完整对象，configuredMetadata 为原始配置值
+    expect(groups[0].metadata).toEqual({ maxCount: 8 });
+    expect(groups[0].configuredMetadata).toEqual({ maxCount: 8 });
+  });
+
+  it('顶层标签未配置元数据时返回默认值', () => {
+    const tagService = new TagService(db);
+    const root = tagService.create({
+      id: 'root-meta-default',
+      name: '根元数据默认',
+      parentId: null,
+      metadataDef: [{ key: 'maxCount', label: '数量', type: 'number', defaultValue: 5 }],
+    });
+    service.setWorkflowTags('wf1', [{ tagId: root.id }]);
+    const groups = service.getTagGroups('wf1');
+    expect(groups[0].metadata).toEqual({ maxCount: 5 });
+    expect(groups[0].configuredMetadata).toEqual({});
   });
 
   it('工作流改名后标签保留（FK 级联迁移）', () => {
