@@ -5,6 +5,7 @@ import { db } from './models/db';
 import { createAuthRoutes } from './routes/auth.routes';
 import { createWorkflowRoutes } from './routes/workflow.routes';
 import { createSettingsRoutes } from './routes/settings.routes';
+import { createProvidersRoutes } from './routes/providers.routes';
 import { createTaskRoutes } from './routes/task.routes';
 import { errorHandler } from './middleware/errorHandler';
 import { startExecutionService } from './services/execution.service';
@@ -23,6 +24,7 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', createAuthRoutes(db));
 app.use('/api/workflows', createWorkflowRoutes(db));
 app.use('/api/settings', createSettingsRoutes(db));
+app.use('/api/providers', createProvidersRoutes(db));
 app.use('/api/tasks', createTaskRoutes(db));
 
 app.use(errorHandler);
