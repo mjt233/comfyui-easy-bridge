@@ -75,7 +75,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       id: provider.id,
       name: provider.name,
       type: provider.type,
-      resolvedBaseUrl: provider.getBaseUrl(),
+      resolvedBaseUrl: provider.getDisplayBaseUrl(),
     };
   }
 

@@ -64,8 +64,6 @@ export interface ProviderSummary {
 
 /** 类型白名单 */
 const TYPES: readonly ProviderType[] = ['comfyui', 'runninghub'];
-/** GPU 显存档位白名单 */
-const GPU_SIZES: readonly string[] = ['24G', '48G'];
 
 /** 提供商变更监听器 */
 type ProviderChangeListener = () => void;
@@ -318,9 +316,8 @@ export class ProviderService {
     if (typeof cfg?.apiKey !== 'string' || cfg.apiKey.trim() === '') {
       return { ok: false, error: 'apiKey is required' };
     }
-    const gpuSize = typeof cfg.gpuSize === 'string' && GPU_SIZES.includes(cfg.gpuSize)
-      ? cfg.gpuSize as '24G' | '48G'
-      : null;
+    // gpuSize 缺省时默认 24G；显式提供非法值则拒绝
+    const gpuSize = cfg.gpuSize === '48G' ? '48G' : cfg.gpuSize === '24G' ? '24G' : cfg.gpuSize === undefined ? '24G' : null;
     if (!gpuSize) return { ok: false, error: 'gpuSize must be 24G or 48G' };
     return {
       ok: true,
@@ -372,7 +369,7 @@ export class ProviderService {
       config: maskedConfig,
       concurrency: row.concurrency,
       enabled: row.enabled === 1,
-      resolvedBaseUrl: provider?.getBaseUrl() ?? '',
+      resolvedBaseUrl: provider?.getDisplayBaseUrl() ?? '',
       trackingMode: provider?.trackingMode ?? 'polling',
     };
   }

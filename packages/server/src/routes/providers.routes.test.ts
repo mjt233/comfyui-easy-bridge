@@ -67,6 +67,9 @@ describe('Provider API', () => {
     expect(listed.body).toHaveLength(1);
     expect(listed.body[0].config.apiKey).toContain('****');
     expect(listed.body[0].config.apiKey).not.toContain('sk-12345678');
+    // resolvedBaseUrl 打码且不含完整密钥
+    expect(listed.body[0].resolvedBaseUrl).toContain('****');
+    expect(listed.body[0].resolvedBaseUrl).not.toContain('sk-12345678');
   });
 
   it('rejects invalid input with 400', async () => {

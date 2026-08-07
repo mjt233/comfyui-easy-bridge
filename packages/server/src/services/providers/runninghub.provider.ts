@@ -41,6 +41,14 @@ export class RunningHubProvider implements ExecutionProvider {
     return `${RUNNINGHUB_BASE_URL}/${prefix}/${this.config.apiKey}`;
   }
 
+  /** 对外展示地址：apiKey 打码，避免完整 Key 泄露给客户端 */
+  getDisplayBaseUrl(): string {
+    const apiKey = this.config.apiKey;
+    const masked = apiKey.length <= 4 ? '****' : `${apiKey.slice(0, 4)}****`;
+    const prefix = this.config.gpuSize === '48G' ? 'proxy-plus' : 'proxy';
+    return `https://www.runninghub.cn/${prefix}/${masked}`;
+  }
+
   /** 提交 prompt 到推导出的 proxy /prompt */
   submitPrompt(body: string): Promise<ExecutionResult> {
     return submitPromptRequest(this.getBaseUrl(), body);

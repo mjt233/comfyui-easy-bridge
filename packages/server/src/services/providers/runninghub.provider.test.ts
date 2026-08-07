@@ -25,6 +25,15 @@ describe('RunningHubProvider', () => {
     expect(makeProvider('abc', '48G').getBaseUrl()).toBe('https://www.runninghub.cn/proxy-plus/abc');
   });
 
+  it('getDisplayBaseUrl masks the apiKey', () => {
+    // 对外展示地址必须打码 apiKey，且不得包含完整 Key
+    const url = makeProvider('sk-test-1234', '24G').getDisplayBaseUrl();
+    expect(url).toBe('https://www.runninghub.cn/proxy/sk-t****');
+    expect(url).not.toContain('sk-test-1234');
+    // 48G 走 proxy-plus 前缀，同样打码
+    expect(makeProvider('sk-test-1234', '48G').getDisplayBaseUrl()).toBe('https://www.runninghub.cn/proxy-plus/sk-t****');
+  });
+
   it('uses polling tracking mode', () => {
     expect(makeProvider().trackingMode).toBe('polling');
   });

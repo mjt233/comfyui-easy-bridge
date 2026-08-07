@@ -31,6 +31,7 @@ function makeProviderStub(uploadResults: string[]): {
     concurrency: 1,
     trackingMode: 'polling',
     getBaseUrl: () => 'http://comfy:8188',
+    getDisplayBaseUrl: () => 'http://comfy:8188',
     submitPrompt: async (_body: string): Promise<ExecutionResult> => ({
       success: true, comfyuiResponse: null, promptId: 'pid', errorMessage: null,
     }),

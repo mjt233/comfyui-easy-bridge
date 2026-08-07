@@ -59,8 +59,10 @@ export interface ExecutionProvider {
   readonly concurrency: number;
   /** 任务跟踪模式：websocket 或 polling */
   readonly trackingMode: 'websocket' | 'polling';
-  /** 解析后的 HTTP 基础地址 */
+  /** 解析后的 HTTP 基础地址（内部使用，含完整凭据） */
   getBaseUrl(): string;
+  /** 对外展示的基础地址（apiKey 等敏感信息已打码，可安全返回给客户端） */
+  getDisplayBaseUrl(): string;
   /** 提交 prompt，不抛网络/HTTP 异常 */
   submitPrompt(body: string): Promise<ExecutionResult>;
   /** 上传媒体文件，返回注入工作流节点的文件名 */

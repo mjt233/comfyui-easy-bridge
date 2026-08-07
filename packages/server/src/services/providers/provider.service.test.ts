@@ -101,6 +101,18 @@ describe('ProviderService', () => {
     const rec = service.create({ name: 'RH', type: 'runninghub', config: { apiKey: 'sk-abcdef', gpuSize: '24G' }, concurrency: 1 });
     const summary = service.toSummary(rec);
     expect(summary.config.apiKey).not.toContain('abcdef');
+    // resolvedBaseUrl 同样不得泄露完整 apiKey
+    expect(summary.resolvedBaseUrl).not.toContain('sk-abcdef');
+    expect(summary.resolvedBaseUrl).toContain('****');
+  });
+
+  it('validateInput defaults missing gpuSize to 24G', () => {
+    // 未提供 gpuSize 时应默认 24G，而不是拒绝
+    const result = service.validateInput({ name: 'x', type: 'runninghub', config: { apiKey: 'k' } });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.config).toEqual({ apiKey: 'k', gpuSize: '24G' });
+    }
   });
 
   it('emits change events', () => {

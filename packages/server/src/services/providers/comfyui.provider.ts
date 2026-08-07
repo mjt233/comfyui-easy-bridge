@@ -36,6 +36,11 @@ export class ComfyUIProvider implements ExecutionProvider {
     return this.config.baseUrl;
   }
 
+  /** 对外展示地址与内部地址一致（comfyui 配置不含敏感信息） */
+  getDisplayBaseUrl(): string {
+    return this.config.baseUrl;
+  }
+
   /** 提交 prompt 到 /prompt */
   submitPrompt(body: string): Promise<ExecutionResult> {
     return submitPromptRequest(this.getBaseUrl(), body);
