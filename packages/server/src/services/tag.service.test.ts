@@ -111,4 +111,25 @@ describe('TagService', () => {
     expect(updated.name).toBe('新');
     expect(JSON.parse(updated.metadataDef)).toHaveLength(1);
   });
+
+  it('自定义 ID 创建标签', () => {
+    const tag = service.create({ id: 'my-custom', name: '自定义ID', parentId: null, metadataDef: [] });
+    expect(tag.id).toBe('my-custom');
+    expect(service.getById('my-custom')?.name).toBe('自定义ID');
+  });
+
+  it('自定义 ID 非法格式抛 missing_parameter', () => {
+    // 含空格与非法字符（%），不符合 ID 格式
+    expect(() => service.create({ id: 'bad id!', name: 'x', parentId: null, metadataDef: [] }))
+      .toThrowError(/missing_parameter/);
+    // 空串视为未提供，回退自动生成 uuid
+    const tag = service.create({ id: '  ', name: '空白ID', parentId: null, metadataDef: [] });
+    expect(tag.id).not.toBe('  ');
+  });
+
+  it('自定义 ID 已存在抛 tag_conflict', () => {
+    // 与预设标签 ID 冲突
+    expect(() => service.create({ id: 'text-to-image', name: 'x', parentId: null, metadataDef: [] }))
+      .toThrowError(/tag_conflict/);
+  });
 });

@@ -6,6 +6,8 @@ import type { TagMetadataFieldDef } from '../services/tag.types';
 
 /** 宽松输入（容忍来自 HTTP body 的任意值） */
 interface TagBodyLike {
+  /** 标签 ID（unknown；仅创建时生效，空串由服务层规范化为自动生成） */
+  id?: unknown;
   /** 标签显示名（unknown，由服务层校验） */
   name?: unknown;
   /** 父标签 ID（unknown，空串由服务层规范化为 null） */
@@ -38,6 +40,7 @@ export function createTagsController(db: BetterSQLite3Database<typeof schema>) {
       const body = req.body as TagBodyLike;
       try {
         const tag = tagService.create({
+          id: typeof body.id === 'string' ? body.id : undefined,
           name: typeof body.name === 'string' ? body.name : '',
           parentId: typeof body.parentId === 'string' ? body.parentId : null,
           metadataDef: body.metadataDef as TagMetadataFieldDef[] | undefined,

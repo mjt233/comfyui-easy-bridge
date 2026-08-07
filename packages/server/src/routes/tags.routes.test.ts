@@ -107,4 +107,22 @@ describe('标签管理 API', () => {
     expect(res.status).toBe(404);
     expect(res.body.code).toBe('tag_not_found');
   });
+
+  it('POST /api/tags 支持自定义 ID', async () => {
+    const res = await request(app)
+      .post('/api/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'custom-id-1', name: '自定义', parentId: null, metadataDef: [] });
+    expect(res.status).toBe(201);
+    expect(res.body.id).toBe('custom-id-1');
+  });
+
+  it('POST /api/tags 自定义 ID 与预设冲突返回 409 tag_conflict', async () => {
+    const res = await request(app)
+      .post('/api/tags')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'text-to-image', name: '冲突', parentId: null, metadataDef: [] });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('tag_conflict');
+  });
 });

@@ -138,6 +138,17 @@
             {{ dialogError }}
           </v-alert>
 
+          <!-- 标签 ID：仅新建时填写（编辑时不可改）；留空自动生成 -->
+          <v-text-field
+            v-model="form.id"
+            label="标签 ID"
+            :disabled="dialog.isEdit"
+            hint="可选；留空自动生成。仅含字母、数字、连字符、下划线，且全局唯一"
+            persistent-hint
+            variant="outlined"
+            class="mb-4"
+          />
+
           <v-text-field
             v-model="form.name"
             label="显示名"
@@ -359,13 +370,15 @@ const dialog = ref<{
 
 /** 标签表单模型 */
 const form = ref<{
+  /** 标签 ID（仅新建时填写；编辑时不可改） */
+  id: string;
   /** 显示名 */
   name: string;
   /** 父标签 ID；null=顶层 */
   parentId: string | null;
   /** 元数据字段编辑行 */
   metadataDef: MetadataFieldRow[];
-}>({ name: '', parentId: null, metadataDef: [] });
+}>({ id: '', name: '', parentId: null, metadataDef: [] });
 
 /** 弹窗内保存中 */
 const saving = ref(false);
@@ -448,6 +461,7 @@ function friendlyApiError(err: unknown, codeMap: Record<string, string>): string
 function openCreateDialog(parentTag: TagTreeNode | null): void {
   dialog.value = { show: true, isEdit: false, id: '' };
   form.value = {
+    id: '',
     name: '',
     parentId: parentTag ? parentTag.id : null,
     metadataDef: [],
@@ -464,6 +478,7 @@ function openEditDialog(tag: TagTreeNode): void {
   if (tag.isPreset === 1) return;
   dialog.value = { show: true, isEdit: true, id: tag.id };
   form.value = {
+    id: tag.id,
     name: tag.name,
     parentId: tag.parentId,
     // 浅拷贝字段定义，避免直接修改标签树数据
@@ -541,15 +556,16 @@ async function handleSave(): Promise<void> {
     if (dialog.value.isEdit) {
       await updateTag(dialog.value.id, { name, metadataDef });
     } else {
-      await createTag({ name, parentId: form.value.parentId, metadataDef });
+      // 自定义 ID 可选（空串时后端自动生成 uuid）
+      await createTag({ id: form.value.id, name, parentId: form.value.parentId, metadataDef });
     }
     dialog.value.show = false;
     // 新建/更新返回的是 DB 行而非树节点，直接重新拉取标签树最可靠
     await loadTags();
   } catch (err) {
-    // 后端拒绝时（重名/父标签不存在等）在弹窗内展示原因
+    // 后端拒绝时（重名/ID 冲突/父标签不存在等）在弹窗内展示原因
     dialogError.value = friendlyApiError(err, {
-      tag_conflict: '同层级下已存在同名标签',
+      tag_conflict: '同层级下已存在同名标签或该 ID 已被占用',
       tag_not_found: '父标签不存在或已被删除',
       tag_has_parent: '不能将标签设为已有父标签的子标签',
       missing_parameter: '参数校验失败，请检查填写内容',
