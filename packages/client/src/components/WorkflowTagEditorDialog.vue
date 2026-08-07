@@ -159,7 +159,12 @@
         <v-btn variant="text" :disabled="saving" @click="close">
           取消
         </v-btn>
-        <v-btn color="primary" :loading="saving" :disabled="saving" @click="handleSave">
+        <v-btn
+          color="primary"
+          :loading="saving"
+          :disabled="saving"
+          @click="handleSave"
+        >
           保存
         </v-btn>
       </v-card-actions>
