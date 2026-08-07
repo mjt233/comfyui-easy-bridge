@@ -9,6 +9,7 @@ import * as schema from '../models/schema';
 import { createProvidersRoutes } from './providers.routes';
 import { createSettingsRoutes } from './settings.routes';
 import { SettingsService } from '../services/settings.service';
+import { onProviderChange } from '../services/providers/provider.service';
 
 /**
  * 构造 :memory: 测试库（含 providers / settings / workflows 三表）与 Express 子应用。
@@ -73,6 +74,12 @@ describe('Provider API', () => {
       .post('/api/providers')
       .send({ name: '', type: 'comfyui', config: { baseUrl: 'x' } });
     expect(res.status).toBe(400);
+
+    // gpuSize 非法值应被拒绝（400），而非静默回退 24G
+    const badGpu = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'RH', type: 'runninghub', config: { apiKey: 'k', gpuSize: '12G' } });
+    expect(badGpu.status).toBe(400);
   });
 
   it('tests connection with given config via /test', async () => {
@@ -151,5 +158,80 @@ describe('Provider API', () => {
 
     const del = await supertest(app).delete('/api/providers/nonexistent');
     expect(del.status).toBe(404);
+  });
+
+  it('supports partial update with name only and keeps existing config', async () => {
+    const created = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'Original', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' } });
+    const providerId = created.body.id as string;
+
+    // 仅更新 name，不携带 config；应沿用原配置而非 400
+    const res = await supertest(app)
+      .put(`/api/providers/${providerId}`)
+      .send({ name: 'Renamed' });
+    expect(res.status).toBe(200);
+    expect(res.body.name).toBe('Renamed');
+    // 原配置保持不变
+    expect(res.body.config.baseUrl).toBe('http://localhost:8188');
+  });
+
+  it('returns 404 on testById for missing provider', async () => {
+    const res = await supertest(app).post('/api/providers/nonexistent/test');
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('provider_not_found');
+  });
+
+  it('tests connectivity of a saved provider via testById', async () => {
+    // 桩掉 fetch，模拟 system_stats 返回 2xx（连通）
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+
+    const created = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' } });
+    const providerId = created.body.id as string;
+
+    const res = await supertest(app).post(`/api/providers/${providerId}/test`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, message: '连接成功' });
+  });
+
+  it('returns ok:false with invalid-config message when saved config is corrupt', async () => {
+    // 直接插入 config 损坏的行（非法 JSON），绕过创建接口的校验
+    db.insert(schema.providers).values({
+      id: 'corrupt-1',
+      name: 'Corrupt',
+      type: 'comfyui',
+      config: '{not-json',
+      concurrency: 1,
+      enabled: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }).run();
+
+    const res = await supertest(app).post('/api/providers/corrupt-1/test');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: false, message: 'Provider config is invalid' });
+  });
+
+  it('notifies provider change when default provider is switched via settings', async () => {
+    const created = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'Default', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' } });
+    const providerId = created.body.id as string;
+
+    // 订阅模块级变更总线，验证默认切换触发重建通知
+    const listener = vi.fn();
+    const unsubscribe = onProviderChange(listener);
+    try {
+      const res = await supertest(app)
+        .put('/api/settings')
+        .send({ key: 'default_provider_id', value: providerId });
+      expect(res.status).toBe(200);
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      // 清理订阅，避免影响其他用例
+      unsubscribe();
+    }
   });
 });
