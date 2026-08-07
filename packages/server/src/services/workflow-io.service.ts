@@ -32,6 +32,8 @@ interface ExportWorkflow {
   rawJson: string;
   /** 备注说明（Markdown） */
   description: string;
+  /** 执行提供商实例 ID；null 表示使用全局默认实例 */
+  providerId: string | null;
   /** 创建时间 */
   createdAt: string;
   /** 更新时间 */
@@ -119,6 +121,8 @@ export class WorkflowIOService {
         name: wf.name,
         rawJson: wf.rawJson,
         description: wf.description ?? '',
+        // 携带执行提供商实例 ID（旧版导出缺省时回退 null）
+        providerId: wf.providerId ?? null,
         createdAt: wf.createdAt,
         updatedAt: wf.updatedAt,
         params: params.map((p) => ({
@@ -183,6 +187,8 @@ export class WorkflowIOService {
           // 旧版导出无 declaredParams 时回退空数组
           declaredParams: JSON.stringify(entry.declaredParams ?? []),
           description: entry.description ?? '',
+          // 旧版导出无 providerId 时回退 null（使用全局默认实例）
+          providerId: entry.providerId ?? null,
           createdAt: entry.createdAt ?? new Date().toISOString(),
           updatedAt: entry.updatedAt ?? new Date().toISOString(),
         }).run();
@@ -267,6 +273,8 @@ export class WorkflowIOService {
       buildScriptEnabled: existing.buildScriptEnabled,
       declaredParams: existing.declaredParams,
       description: existing.description ?? '',
+      // 复制品保留源工作流的执行提供商覆盖（不回退全局默认）
+      providerId: existing.providerId,
       createdAt: now,
       updatedAt: now,
     }).run();

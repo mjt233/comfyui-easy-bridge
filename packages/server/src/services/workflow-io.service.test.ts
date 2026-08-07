@@ -243,4 +243,68 @@ describe('WorkflowIOService', () => {
     const env = createEnv();
     expect(env.ioService.duplicate('missing')).toBeNull();
   });
+
+  it('duplicate preserves providerId', () => {
+    const env = createEnv();
+    // 创建工作流并指定执行提供商实例
+    env.workflowService.create({ id: 'src-prov', name: 'WF-prov', rawJson: '{}', providerId: 'prov-1' });
+
+    const copy = env.ioService.duplicate('src-prov');
+    expect(copy).not.toBeNull();
+    // 复制品保留源工作流的 providerId（不回退全局默认）
+    expect(copy!.providerId).toBe('prov-1');
+  });
+
+  it('export includes providerId in manifest', async () => {
+    const env = createEnv();
+    env.workflowService.create({ id: 'wf-prov-export', name: 'WF-export', rawJson: '{}', providerId: 'prov-1' });
+
+    const zipBuffer = await env.ioService.exportWorkflows(['wf-prov-export']);
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const manifest = JSON.parse(await zip.file('manifest.json')!.async('string')) as {
+      workflows: Array<{ providerId: string | null }>;
+    };
+    expect(manifest.workflows).toHaveLength(1);
+    // 清单中携带执行提供商实例 ID
+    expect(manifest.workflows[0].providerId).toBe('prov-1');
+  });
+
+  it('export then import round-trips providerId', async () => {
+    const envA = createEnv();
+    envA.workflowService.create({ id: 'wf-prov-rt', name: 'WF-rt', rawJson: '{}', providerId: 'prov-1' });
+
+    const zipBuffer = await envA.ioService.exportWorkflows(['wf-prov-rt']);
+    const envB = createEnv();
+    const result = await envB.ioService.importWorkflows(zipBuffer);
+    expect(result.imported).toBe(1);
+    // 导入后 providerId 恢复（不回退全局默认）
+    expect(envB.workflowService.getById('wf-prov-rt')?.providerId).toBe('prov-1');
+  });
+
+  it('import of legacy export without providerId defaults to null', async () => {
+    const env = createEnv();
+    // 手工构造不含 providerId 字段的旧版导出清单
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workflows: [{
+        id: 'wf-legacy',
+        name: 'WF-legacy',
+        rawJson: '{}',
+        description: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        params: [],
+        declaredParams: [],
+        attachments: [],
+      }],
+    }));
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const result = await env.ioService.importWorkflows(buffer);
+    expect(result.imported).toBe(1);
+    // 旧版导出无 providerId → 导入后为 null（使用全局默认实例）
+    expect(env.workflowService.getById('wf-legacy')?.providerId).toBeNull();
+  });
 });
