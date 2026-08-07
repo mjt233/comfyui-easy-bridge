@@ -61,8 +61,9 @@
                   </v-btn>
                 </div>
                 <v-expand-transition>
-                  <!-- 展开/收起由 v-show 控制，配合 v-expand-transition 实现平滑过渡 -->
-                  <div v-show="expandedMetadata[child.id]" class="d-flex flex-column ga-2 pt-1">
+                  <!-- 展开/收起由 v-if 控制（不能用 v-show：v-expand-transition 会覆盖 v-show 的
+                       display:none，导致内容在收起态仍可见）；输入值绑定在持久的 metadataInputs 上，重建不丢数据 -->
+                  <div v-if="expandedMetadata[child.id]" class="d-flex flex-column ga-2 pt-1">
                     <!-- 按字段类型渲染输入控件：number→数字框 / string→文本框 / boolean→开关 -->
                     <template v-for="field in child.metadataDef" :key="field.key">
                       <v-text-field
