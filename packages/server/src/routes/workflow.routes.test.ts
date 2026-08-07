@@ -110,11 +110,12 @@ describe('Workflow API', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  it('POST /api/workflows/:id/execute without auth returns 400 (no base URL)', async () => {
+  it('POST /api/workflows/:id/execute without auth returns 400 (no provider)', async () => {
     const res = await supertest(app)
       .post('/api/workflows/test-flow/execute')
       .send({ img_desc: 'cat' });
     expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
   });
 
   it('GET /api/workflows without auth returns 401', async () => {
@@ -726,11 +727,13 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-flow', name: 'Sim', rawJson: JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } }) });
-    // simulate 会按声明配置上传媒体，需先配置 ComfyUI base URL
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // simulate 需先配置执行提供商（媒体上传与 URL 解析均来自提供商）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
     const res = await supertest(app)
       .post('/api/workflows/sim-flow/build/simulate')
@@ -753,11 +756,13 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-bad', name: 'Bad', rawJson: '{}' });
-    // simulate 需要 ComfyUI base URL 已配置（baseUrl 检查在脚本执行之前）
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // simulate 需先配置执行提供商（提供商解析在脚本执行之前）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
     const res = await supertest(app)
       .post('/api/workflows/sim-bad/build/simulate')
@@ -780,11 +785,13 @@ describe('Workflow API', () => {
       .put('/api/workflows/exec-flow/build-script')
       .set('Authorization', `Bearer ${token}`)
       .send({ script: 'export default function build(ctx: any) { ctx.setInput(\'1\', \'seed\', 777); return { workflow: ctx.workflow, params: [] }; }', enabled: true });
-    // 设置 ComfyUI base URL
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
     const res = await supertest(app).post('/api/workflows/exec-flow/execute').send({});
     // 提交会失败（ComfyUI 不可达），但任务日志中应含脚本修改后的 seed
@@ -807,10 +814,13 @@ describe('Workflow API', () => {
       .put('/api/workflows/exec-bad/build-script')
       .set('Authorization', `Bearer ${token}`)
       .send({ script: 'export default function build() { throw new Error(\'broken\'); }', enabled: true });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
     const res = await supertest(app).post('/api/workflows/exec-bad/execute').send({});
     expect(res.status).toBe(200);
@@ -823,6 +833,22 @@ describe('Workflow API', () => {
     expect(task?.errorMessage).toContain('broken');
   });
 
+  it('POST execute returns provider_not_configured when no provider exists', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-no-provider', name: 'NoProvider', rawJson: '{}' });
+
+    // 无任何提供商实例（beforeEach 已清空），执行应返回 provider_not_configured
+    const res = await supertest(app)
+      .post('/api/workflows/exec-no-provider/execute')
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
+  });
+
   it('execute records original request form with file metadata', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
@@ -831,10 +857,13 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'exec-form', name: 'ExecForm', rawJson });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
     const res = await supertest(app)
       .post('/api/workflows/exec-form/execute')
@@ -869,12 +898,15 @@ describe('Workflow API', () => {
       .post('/api/workflows')
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'sim-multi', name: 'SimMulti', rawJson: JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } }) });
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://localhost:9999' });
+    // 创建 comfyui 提供商并设为默认（simulate 通过 ProviderService 解析）
+    const provider = new ProviderService(db).create({
+      name: 'Test Comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
 
-    // 模拟 ComfyUI 上传成功（返回确定文件名），避免依赖 9999 可达性
+    // 模拟 ComfyUI 上传成功（返回确定文件名），避免依赖网络可达性
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => ({
       ok: true,

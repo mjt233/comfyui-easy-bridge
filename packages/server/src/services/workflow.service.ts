@@ -15,6 +15,8 @@ interface CreateWorkflowInput {
   rawJson: string;
   /** 备注说明（Markdown）；缺省为空串 */
   description?: string;
+  /** 执行提供商实例 ID；缺省为 null（用全局默认） */
+  providerId?: string | null;
 }
 
 /**
@@ -29,6 +31,8 @@ interface UpdateWorkflowInput {
   rawJson?: string;
   /** 可选新备注说明（Markdown） */
   description?: string;
+  /** 执行提供商实例 ID；可清空为 null（回退全局默认） */
+  providerId?: string | null;
 }
 
 /**
@@ -126,6 +130,7 @@ export class WorkflowService {
       name: input.name,
       rawJson: input.rawJson,
       description: input.description ?? '',
+      providerId: input.providerId ?? null,
       createdAt: now,
       updatedAt: now,
     }).run();
@@ -176,6 +181,7 @@ export class WorkflowService {
           buildScriptEnabled: existing.buildScriptEnabled,
           declaredParams: existing.declaredParams,
           description: input.description ?? existing.description,
+          providerId: input.providerId ?? existing.providerId,
           createdAt: existing.createdAt,
           updatedAt: now,
         }).run();
