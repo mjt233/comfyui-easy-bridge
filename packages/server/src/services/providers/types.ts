@@ -65,7 +65,7 @@ export interface ExecutionProvider {
   submitPrompt(body: string): Promise<ExecutionResult>;
   /** 上传媒体文件，返回注入工作流节点的文件名 */
   uploadMedia(file: UploadFileInput, mediaType: MediaType): Promise<string>;
-  /** 拉取指定 prompt 的 history */
+  /** 拉取指定 prompt 的 history；非 2xx 或网络错误时可能抛错，调用方需自行捕获 */
   fetchHistory(promptId: string): Promise<unknown>;
   /** 中断任务，可带 promptId 轮询确认停止 */
   interrupt(promptId?: string): Promise<boolean>;
