@@ -138,8 +138,9 @@ export class WorkflowTagService {
 
   /**
    * 组装工作流标签的嵌套分组响应结构。
+   * 分组顺序与组内子标签顺序均按关联记录插入顺序（即上次整组打标顺序）。
    * @param workflowId 工作流 ID
-   * @returns 父标签分组数组（按创建时间升序）
+   * @returns 父标签分组数组
    */
   getTagGroups(workflowId: string): WorkflowTagGroup[] {
     const assocs = this.db.select().from(schema.workflowTags).where(eq(schema.workflowTags.workflowId, workflowId)).all();
