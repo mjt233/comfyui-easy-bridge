@@ -1,6 +1,6 @@
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
-import { SettingsService } from './settings.service';
+import { ProviderService } from './providers/provider.service';
 import { BUILD_SCRIPT_DTS_HEADER, BUILD_RESULT_DTS, RUNTIME_PARAM_DTS, buildBuildContextDts } from './build-script-api';
 
 /**
@@ -217,15 +217,17 @@ export function summarizeNodeInfo(raw: Record<string, unknown>): Record<string, 
 
 /**
  * 获取节点类摘要（含 TTL 缓存与并发去重）。
- * ComfyUI 未配置、拉取失败或超时时返回 null（不抛错）。
- * @param db Drizzle 实例（读取 comfyui_base_url 设置）
+ * 仅从原生 ComfyUI 类型提供商获取；无可用实例、拉取失败或超时时返回 null（不抛错）。
+ * @param db Drizzle 实例（读取提供商配置）
  * @returns 节点类摘要或 null
  */
 export async function getNodeInfoCached(
   db: BetterSQLite3Database<typeof schema>,
 ): Promise<Record<string, NodeClassInfo> | null> {
-  const baseUrl = new SettingsService(db).get('comfyui_base_url');
-  if (!baseUrl) return null;
+  // 仅从原生 ComfyUI 类型提供商获取节点信息（RunningHub 实例不参与）
+  const provider = new ProviderService(db).getNodeInfoProvider();
+  if (!provider) return null;
+  const baseUrl = provider.getBaseUrl();
 
   // TTL 内直接返回缓存（成功用长 TTL，失败用短负缓存 TTL）
   const cached = cache.get(baseUrl);

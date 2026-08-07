@@ -15,6 +15,7 @@ import { createSettingsRoutes } from './settings.routes';
 import { createTaskRoutes } from './task.routes';
 import { nodeInfoServiceConfig, clearNodeInfoCache } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
+import { ProviderService } from '../services/providers/provider.service';
 
 // 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
@@ -50,6 +51,7 @@ describe('Workflow API', () => {
         created_at TEXT NOT NULL
       );
       CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     db = drizzle(sqlite, { schema });
@@ -64,8 +66,11 @@ describe('Workflow API', () => {
 
   beforeEach(() => {
     clearNodeInfoCache();
-    // 清空 comfyui_base_url，保证静态 d.ts 用例不受测试顺序污染
+    // 清空 comfyui_base_url 与 default_provider_id，保证静态 d.ts 用例不受测试顺序污染
     new SettingsService(db).set('comfyui_base_url', '');
+    new SettingsService(db).set('default_provider_id', '');
+    // 清空提供商，避免 node-info/build-api 用例互相污染
+    db.delete(schema.providers).run();
     // 恢复默认 fetch 实现（部分用例会覆盖它）
     nodeInfoServiceConfig.fetchImpl = async (url: string, init?: { signal?: AbortSignal }) => {
       const res = await fetch(url, init);
@@ -485,11 +490,13 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 配置 comfyui_base_url 并注入假 object_info
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    // 创建 comfyui 提供商并设为默认，注入假 object_info
+    const provider = new ProviderService(db).create({
+      name: 'local comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
     nodeInfoServiceConfig.fetchImpl = async () => ({
       ok: true,
       status: 200,
@@ -517,8 +524,9 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 确保未配置 comfyui_base_url（beforeEach 已清空，此处显式再清一次）
-    new SettingsService(db).set('comfyui_base_url', '');
+    // 确保无 comfyui 提供商（beforeEach 已清空，此处显式再清一次）
+    db.delete(schema.providers).run();
+    new SettingsService(db).set('default_provider_id', '');
 
     const res = await supertest(app)
       .get('/api/workflows/build-api.d.ts')
@@ -532,11 +540,13 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 配置 comfyui_base_url 并注入假 object_info
-    await supertest(app)
-      .put('/api/settings')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ key: 'comfyui_base_url', value: 'http://comfy:8188' });
+    // 创建 comfyui 提供商并设为默认，注入假 object_info
+    const provider = new ProviderService(db).create({
+      name: 'local comfy',
+      type: 'comfyui',
+      config: { baseUrl: 'http://comfy:8188' },
+    });
+    new ProviderService(db).setDefault(provider.id);
     nodeInfoServiceConfig.fetchImpl = async () => ({
       ok: true,
       status: 200,
@@ -594,8 +604,9 @@ describe('Workflow API', () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 确保未配置 comfyui_base_url
-    new SettingsService(db).set('comfyui_base_url', '');
+    // 确保无 comfyui 提供商
+    db.delete(schema.providers).run();
+    new SettingsService(db).set('default_provider_id', '');
 
     const res = await supertest(app)
       .get('/api/workflows/node-info')
