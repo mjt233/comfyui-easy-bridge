@@ -1,4 +1,4 @@
-import { eq, desc, inArray, count } from 'drizzle-orm';
+import { eq, desc, inArray, count, and } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
@@ -21,6 +21,8 @@ export interface CreateTaskInput {
   comfyuiResponse: string | null;
   /** ComfyUI 返回的 prompt_id，为 null 表示提交失败 */
   promptId: string | null;
+  /** 实际使用的提供商实例 ID */
+  providerId?: string | null;
 }
 
 /** 输出文件信息 */
@@ -69,6 +71,7 @@ export class TaskService {
       comfyuiRequestBody: input.comfyuiRequestBody,
       comfyuiResponse: input.comfyuiResponse,
       promptId: input.promptId,
+      providerId: input.providerId ?? null,
       status: input.promptId ? 'pending' : 'failed',
       errorMessage: null,
       createdAt: now,
@@ -104,10 +107,14 @@ export class TaskService {
     return this.getById(id)!;
   }
 
-  /** 查询所有 pending 状态的任务（供 PollingService 轮询使用） */
-  listPending() {
+  /** 查询所有 pending 状态的任务（供 PollingService 轮询使用）；可按提供商实例过滤 */
+  listPending(providerId?: string) {
+    // drizzle 的 where() 二次调用会覆盖前一次条件，因此带提供商过滤时用 and() 组合状态与提供商条件
+    const condition = providerId
+      ? and(eq(schema.taskLogs.status, 'pending'), eq(schema.taskLogs.providerId, providerId))
+      : eq(schema.taskLogs.status, 'pending');
     return this.db.select().from(schema.taskLogs)
-      .where(eq(schema.taskLogs.status, 'pending'))
+      .where(condition)
       .all();
   }
 
@@ -119,17 +126,25 @@ export class TaskService {
     return result.changes;
   }
 
-  /** 统计指定状态的任务数 */
-  countByStatus(status: string): number {
+  /** 统计指定状态的任务数；可按提供商实例过滤 */
+  countByStatus(status: string, providerId?: string): number {
+    // 带提供商过滤时用 and() 组合条件，避免 where() 二次调用覆盖状态条件
+    const condition = providerId
+      ? and(eq(schema.taskLogs.status, status), eq(schema.taskLogs.providerId, providerId))
+      : eq(schema.taskLogs.status, status);
     const row = this.db.select({ c: count() }).from(schema.taskLogs)
-      .where(eq(schema.taskLogs.status, status)).get();
+      .where(condition).get();
     return row?.c ?? 0;
   }
 
-  /** 获取所有 queued 任务（按提交时间升序） */
-  listQueued() {
+  /** 获取所有 queued 任务（按提交时间升序）；可按提供商实例过滤 */
+  listQueued(providerId?: string) {
+    // 带提供商过滤时用 and() 组合条件，避免 where() 二次调用覆盖状态条件
+    const condition = providerId
+      ? and(eq(schema.taskLogs.status, 'queued'), eq(schema.taskLogs.providerId, providerId))
+      : eq(schema.taskLogs.status, 'queued');
     return this.db.select().from(schema.taskLogs)
-      .where(eq(schema.taskLogs.status, 'queued'))
+      .where(condition)
       .orderBy(schema.taskLogs.createdAt).all();
   }
 
