@@ -69,6 +69,7 @@ pnpm --filter server test:watch    # vitest watch 模式
 - 类型：`comfyui`（`config.baseUrl`）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）
 - 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
 - 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）；`services/execution.service.ts` 按实例维护任务跟踪器
+- **API Key 回显与编辑原则**：`apiKey` 永不回显明文（列表/摘要一律打码，编辑弹窗留空不预填）；保存时 API Key 留空 = 不修改原 Key，仅输入新值才更新（前端留空则省略 `config` 回传，后端仅显式提供 `config` 时才覆盖）
 
 ## 数据库
 

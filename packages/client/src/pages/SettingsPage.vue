@@ -164,7 +164,7 @@
               label="API Key"
               variant="outlined"
               class="mb-4"
-              :hint="providerDialog.isEdit ? '保持不变则沿用原 Key' : undefined"
+              :hint="providerDialog.isEdit ? '编辑时留空表示不修改，沿用原 Key' : undefined"
             />
             <v-radio-group
               v-model="providerForm.gpuSize"
@@ -378,8 +378,9 @@ function openEditDialog(p: ProviderSummary) {
   const config = p.config;
   // 防御式读取：配置可能缺失字段（服务端 config 损坏时为空对象）
   const baseUrl = 'baseUrl' in config ? config.baseUrl : '';
-  const apiKey = 'apiKey' in config ? config.apiKey : '';
   const gpuSize = 'gpuSize' in config ? config.gpuSize : '24G';
+  // API Key 不回显：编辑时始终留空，留空表示不修改（沿用原 Key）
+  const apiKey = '';
   providerDialog.value = { show: true, isEdit: true, id: p.id, original: p };
   providerForm.value = {
     name: p.name,
@@ -425,19 +426,13 @@ function buildConfigPayload(): ProviderConfigInput {
 }
 
 /**
- * 判断 runninghub 编辑时 apiKey 是否被用户改动。
- * 摘要中的 apiKey 是打码值（如 'sk12****'），若表单值仍等于打码值视为未改动，
- * 保存时不应回传 config，避免打码值覆盖真实 key。
- * @returns 是否改动
+ * 判断 runninghub 编辑时 API Key 是否被用户修改。
+ * 编辑弹窗中 API Key 始终留空不回显：留空视为未修改（沿用原 Key），
+ * 输入非空值视为修改为新 Key。
+ * @returns 是否修改
  */
 function apiKeyChanged(): boolean {
-  const original = providerDialog.value.original;
-  // 非编辑场景或缺失原摘要时视为已改动
-  if (!original) return true;
-  const config = original.config;
-  // 原配置损坏（缺失 apiKey）时视为已改动
-  if (!('apiKey' in config)) return true;
-  return providerForm.value.apiKey !== config.apiKey;
+  return providerForm.value.apiKey.trim() !== '';
 }
 
 /**
@@ -453,11 +448,18 @@ function gpuSizeChanged(): boolean {
 
 /**
  * 弹窗内测试当前表单配置的连通性（测试失败不阻止保存）。
- * 编辑 runninghub 且 API Key 未改动（打码值）时，改用真实存储的 Key 测试。
+ * 编辑 runninghub 且 API Key 留空（未修改）时，改用真实存储的 Key 测试。
  */
 async function handleDialogTest() {
   // 基础校验：缺必填字段时给出即时提示
-  if (providerForm.value.type === 'runninghub' && !providerForm.value.apiKey.trim()) {
+  // 编辑且原类型为 runninghub 时，API Key 留空视为沿用原 Key（走已保存实例测试）
+  const isEdit = providerDialog.value.isEdit;
+  const isRunningHubKeepKey = isEdit
+    && providerForm.value.type === 'runninghub'
+    && providerDialog.value.original?.type === 'runninghub'
+    && !apiKeyChanged();
+  // 新建或从其他类型切换为 runninghub 时，必须填写 API Key
+  if (providerForm.value.type === 'runninghub' && !isRunningHubKeepKey && !providerForm.value.apiKey.trim()) {
     providerTestResult.value = { ok: false, message: '请先填写 API Key' };
     return;
   }
@@ -468,13 +470,9 @@ async function handleDialogTest() {
   testing.value = true;
   providerTestResult.value = null;
   try {
-    // 编辑模式 + runninghub + API Key 未改动（仍为打码值）时，
-    // 用真实存储的 Key 测试，避免将打码值作为配置提交
-    const isEdit = providerDialog.value.isEdit;
-    const isRunningHubUnchangedKey = isEdit
-      && providerForm.value.type === 'runninghub'
-      && !apiKeyChanged();
-    if (isRunningHubUnchangedKey) {
+    // 编辑模式 + runninghub + API Key 留空（未修改）时，
+    // 用真实存储的 Key 测试，避免将空 Key 作为配置提交
+    if (isRunningHubKeepKey) {
       providerTestResult.value = await testProviderById(providerDialog.value.id);
     } else {
       providerTestResult.value = await testProviderConfig(providerForm.value.type, buildConfigPayload());
@@ -500,7 +498,18 @@ async function handleSaveProvider() {
     providerError.value = '请填写 ComfyUI 服务地址';
     return;
   }
-  if (providerForm.value.type === 'runninghub' && providerForm.value.apiKey.trim() === '') {
+  // runninghub API Key 校验：新建或从其他类型切换为 runninghub 时必须填写；
+  // 编辑且原类型为 runninghub 时留空表示不修改（沿用原 Key）
+  const isEditMode = providerDialog.value.isEdit;
+  const isRunningHubKeepKey = isEditMode
+    && providerForm.value.type === 'runninghub'
+    && providerDialog.value.original?.type === 'runninghub'
+    && providerForm.value.apiKey.trim() === '';
+  if (
+    providerForm.value.type === 'runninghub'
+    && !isRunningHubKeepKey
+    && providerForm.value.apiKey.trim() === ''
+  ) {
     providerError.value = '请填写 RunningHub API Key';
     return;
   }
@@ -515,8 +524,8 @@ async function handleSaveProvider() {
       const original = providerDialog.value.original;
       // 类型是否被切换（切换时必须同时回传 type 与新的 config）
       const typeChanged = original ? providerForm.value.type !== original.type : true;
-      // GPU 显存修改需要重新输入 API Key：打码值不能回传，只能整段提交 config
-      if (gpuSizeChanged() && !apiKeyChanged()) {
+      // GPU 显存修改需要重新输入 API Key：留空无法回传 config（空 Key 非法），只能整段提交
+      if (!typeChanged && gpuSizeChanged() && !apiKeyChanged()) {
         providerError.value = '修改 GPU 显存需重新输入 API Key 才能生效';
         return;
       }
@@ -530,7 +539,7 @@ async function handleSaveProvider() {
       // 仅在这些情况回传 config：
       // - comfyui：baseUrl 未打码，始终回传
       // - 类型切换：需要新格式的配置
-      // - runninghub 且用户改动了 apiKey（未改动时省略 config，保留服务端真实 key）
+      // - runninghub 且用户输入了新 API Key（留空时省略 config，保留服务端真实 key）
       if (typeChanged || providerForm.value.type === 'comfyui' || apiKeyChanged()) {
         payload.config = buildConfigPayload();
       }

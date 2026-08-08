@@ -156,6 +156,8 @@ PUT /api/providers/:id
 
 支持部分更新：仅提交需要修改的字段，`config` 缺省时沿用原配置、未显式提供 `type` 时沿用原类型。校验失败返回 `400`，实例不存在返回 `404`。
 
+> **API Key 编辑约定**：runninghub 的 `apiKey` 永不明文回显（列表/详情均为打码值），编辑时省略 `config`（或省略 `apiKey`）表示沿用原 Key；仅在需要更换 Key 时才提交新的 `config.apiKey`。
+
 ### 删除提供商实例
 
 ```
