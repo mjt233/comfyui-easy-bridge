@@ -71,7 +71,8 @@ Authorization: Bearer <token>
       "alias": "seed",
       "label": "随机种子",
       "paramType": "number",
-      "defaultValue": null
+      "defaultValue": null,
+      "nodeRawValue": "1"
     }
   ],
   "tags": [
@@ -140,6 +141,7 @@ Authorization: Bearer <token>
 | `label` | string \| null | 展示标签 |
 | `paramType` | string | 参数类型：`text` \| `number` \| `boolean` \| `image` \| `video` \| `audio` |
 | `defaultValue` | string \| null | 默认值覆盖；`null` 表示使用 `rawJson` 原值 |
+| `nodeRawValue` | string \| null | `rawJson` 中该字段的原始值（字符串化）；`rawJson` 中无对应字段或解析失败时为 `null` |
 
 ### 2.6 `tags` 字段结构（嵌套分组）
 

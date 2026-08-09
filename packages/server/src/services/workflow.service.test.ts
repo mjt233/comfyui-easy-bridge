@@ -353,4 +353,29 @@ describe('WorkflowService', () => {
       { alias: 'a', label: null, paramType: 'text', defaultValue: null },
     ]);
   });
+
+  it('getParamsWithRawValue attaches nodeRawValue from rawJson', () => {
+    // rawJson 中字段 seed=1、steps=20
+    service.create({
+      id: 'raw-flow',
+      name: 'Raw',
+      rawJson: JSON.stringify({ '1': { inputs: { seed: 1, steps: 20 }, class_type: 'KSampler' } }),
+    });
+    service.addParam({ workflowId: 'raw-flow', nodeId: '1', fieldName: 'seed', alias: 'seed', defaultValue: null });
+    // 即使配置了覆盖值，nodeRawValue 仍取 rawJson 原值
+    service.addParam({ workflowId: 'raw-flow', nodeId: '1', fieldName: 'steps', alias: null, defaultValue: '30' });
+
+    const params = service.getParamsWithRawValue('raw-flow');
+    expect(params.find((p) => p.fieldName === 'seed')?.nodeRawValue).toBe('1');
+    expect(params.find((p) => p.fieldName === 'steps')?.nodeRawValue).toBe('20');
+  });
+
+  it('getParamsWithRawValue returns null when field missing or rawJson corrupt', () => {
+    service.create({ id: 'raw-flow2', name: 'Raw2', rawJson: 'not-json' });
+    service.addParam({ workflowId: 'raw-flow2', nodeId: '1', fieldName: 'missing', alias: 'x', defaultValue: null });
+
+    const params = service.getParamsWithRawValue('raw-flow2');
+    // 损坏 rawJson 解析失败 → nodeRawValue 为 null
+    expect(params[0].nodeRawValue).toBeNull();
+  });
 });

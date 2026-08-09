@@ -244,11 +244,19 @@ describe('Workflow API', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ id: 'wf-detail', name: 'Detail Test', rawJson: JSON.stringify({ '1': { 'inputs': { 'v': 'x' }, 'class_type': 'T', '_meta': { 'title': 'T' } } }) });
 
+    // 新增一条参数配置，用于验证明细接口附带的 nodeRawValue
+    await supertest(app)
+      .post('/api/workflows/wf-detail/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'v', alias: 'alias_v' });
+
     const res = await supertest(app)
       .get('/api/workflows/wf-detail')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.params).toBeDefined();
+    // params 元素附带 rawJson 中该字段的原始值
+    expect(res.body.params[0]).toMatchObject({ nodeId: '1', fieldName: 'v', nodeRawValue: 'x' });
   });
 
   it('PUT /api/workflows/:id updates workflow', async () => {

@@ -418,6 +418,8 @@ async function loadApiDocs() {
         label: dp.label,
         paramType: dp.paramType || 'text',
         defaultValue: dp.defaultValue,
+        // 动态声明字段不对应真实节点，无 rawJson 原值
+        nodeRawValue: null,
       });
     }
     apiParams.value = callableParams;

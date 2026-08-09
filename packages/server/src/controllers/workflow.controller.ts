@@ -143,7 +143,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      const params = workflowService.getParams(id);
+      // 明细响应附带 nodeRawValue（rawJson 中该字段的原值），供前端展示/比对
+      const params = workflowService.getParamsWithRawValue(id);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,
@@ -176,8 +177,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      // 与 getById 返回结构保持一致：补充 params，供前端直接作为 WorkflowDetail 使用
-      const params = workflowService.getParams(id);
+      // 与 getById 返回结构保持一致：补充 params（含 nodeRawValue），供前端直接作为 WorkflowDetail 使用
+      const params = workflowService.getParamsWithRawValue(id);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,
@@ -238,8 +239,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(404).json({ error: 'Workflow not found', code: 'workflow_not_found' });
         return;
       }
-      // 与 getById 返回结构保持一致
-      const params = workflowService.getParams(id);
+      // 与 getById 返回结构保持一致（params 含 nodeRawValue）
+      const params = workflowService.getParamsWithRawValue(id);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,

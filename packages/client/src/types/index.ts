@@ -80,6 +80,8 @@ export interface WorkflowParam {
   paramType: string;
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: string | null;
+  /** rawJson 中该字段的原始值（字符串化）；无对应字段时为 null */
+  nodeRawValue: string | null;
 }
 
 export interface WorkflowDetail extends Workflow {

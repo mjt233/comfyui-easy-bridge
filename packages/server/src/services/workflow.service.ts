@@ -274,6 +274,40 @@ export class WorkflowService {
   }
 
   /**
+   * 列出工作流参数，并附带 rawJson 中该字段的原始值（nodeRawValue）。
+   * 供明细查询等展示场景使用；执行/模拟路径仍用 getParams（避免额外 JSON 解析开销）。
+   * @param workflowId 工作流 ID
+   * @returns 参数列表（每项含 nodeRawValue；rawJson 中无对应字段或解析失败时为 null）
+   */
+  getParamsWithRawValue(workflowId: string) {
+    // 先取基础参数行
+    const params = this.getParams(workflowId);
+    // 解析 rawJson，构建 "nodeId:fieldName" → 原始值 的映射
+    const wf = this.getById(workflowId);
+    const rawMap = new Map<string, string>();
+    if (wf) {
+      try {
+        const json = JSON.parse(wf.rawJson) as Record<string, { inputs?: Record<string, unknown> }>;
+        for (const [nodeId, node] of Object.entries(json)) {
+          const inputs = node?.inputs ?? {};
+          for (const [fieldName, fieldVal] of Object.entries(inputs)) {
+            // 跳过数组连接字段（与前端 parseNodes 逻辑一致）
+            if (Array.isArray(fieldVal)) continue;
+            rawMap.set(`${nodeId}:${fieldName}`, String(fieldVal));
+          }
+        }
+      } catch {
+        // rawJson 损坏时忽略，nodeRawValue 统一为 null
+      }
+    }
+    // 为每行附带节点原始值
+    return params.map((p) => ({
+      ...p,
+      nodeRawValue: rawMap.get(`${p.nodeId}:${p.fieldName}`) ?? null,
+    }));
+  }
+
+  /**
    * 更新参数配置
    * @param id 参数行 ID
    * @param input 更新字段
