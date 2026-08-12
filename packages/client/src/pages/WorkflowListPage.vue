@@ -416,6 +416,14 @@
           </template>
         </v-card-text>
         <v-card-actions>
+          <v-btn
+            variant="text"
+            prepend-icon="mdi-code-tags"
+            :disabled="executeLoading || submitting"
+            @click="openCodeExamples"
+          >
+            查看代码案例
+          </v-btn>
           <v-spacer />
           <v-btn variant="text" :disabled="submitting" @click="executeDialog = false">
             取消
@@ -426,6 +434,15 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <execute-code-examples-dialog
+      v-model="codeExamplesDialog"
+      :workflow-id="codeExampleRequest?.workflowId ?? ''"
+      :workflow-name="codeExampleRequest?.workflowName ?? ''"
+      :alias-values="codeExampleRequest?.aliasValues ?? {}"
+      :files="codeExampleRequest?.files ?? {}"
+      :param-type-overrides="codeExampleRequest?.paramTypeOverrides ?? {}"
+    />
 
     <v-dialog v-model="deleteDialog" max-width="400">
       <v-card>
@@ -482,6 +499,7 @@ import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
 import WorkflowTagEditorDialog from '@/components/WorkflowTagEditorDialog.vue';
+import ExecuteCodeExamplesDialog from '@/components/ExecuteCodeExamplesDialog.vue';
 
 interface ExecuteField {
   alias: string;
@@ -495,6 +513,20 @@ interface ExecuteField {
   overrideType: string;
   /** 是否为动态字段静态声明（无对应节点） */
   dynamic?: boolean;
+}
+
+/** 代码案例请求快照（按当前执行表单生成，与实际提交一致） */
+interface ExecuteExampleRequest {
+  /** 工作流 ID */
+  workflowId: string;
+  /** 工作流名称（展示用） */
+  workflowName: string;
+  /** 提交的 JSON 别名值（媒体文件字段不在其中） */
+  aliasValues: Record<string, string | number | boolean>;
+  /** 媒体文件：别名 → 文件名列表（示例路径占位用） */
+  files: Record<string, string[]>;
+  /** 本次执行类型覆盖（别名 → 类型） */
+  paramTypeOverrides: Record<string, string>;
 }
 
 const router = useRouter();
@@ -633,6 +665,10 @@ const showExecuteDescription = ref(false);
 const executeForm = reactive<Record<string, string | boolean>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
 const executeFiles = reactive<Record<string, File[]>>({});
+/** 代码案例对话框可见性 */
+const codeExamplesDialog = ref(false);
+/** 代码案例请求快照（打开对话框时按当前表单生成） */
+const codeExampleRequest = ref<ExecuteExampleRequest | null>(null);
 
 /** 参数类型选项（执行对话框类型覆盖下拉） */
 const paramTypeOptions = ['text', 'number', 'boolean', 'image', 'video', 'audio'];
@@ -1006,6 +1042,60 @@ async function confirmExecute() {
   } finally {
     submitting.value = false;
   }
+}
+
+/**
+ * 打开代码案例对话框：按当前执行表单（字段类型覆盖/值/文件/自定义字段）
+ * 组装请求快照，供各编程语言调用示例生成（与实际提交逻辑一致）。
+ */
+function openCodeExamples(): void {
+  if (!executeTarget.value) return;
+  const aliasValues: Record<string, string | number | boolean> = {};
+  const files: Record<string, string[]> = {};
+  const paramTypeOverrides: Record<string, string> = {};
+  // 已配置字段：按覆盖类型收集（与 confirmExecute 一致）
+  for (const field of executeFields.value) {
+    if (field.overrideType !== field.paramType) {
+      paramTypeOverrides[field.alias] = field.overrideType;
+    }
+    const type = field.overrideType;
+    if (type === 'boolean') {
+      aliasValues[field.alias] = Boolean(executeForm[field.alias]);
+    } else if (type === 'image' || type === 'video' || type === 'audio') {
+      const fileList = executeFiles[field.alias];
+      if (fileList && fileList.length > 0) {
+        files[field.alias] = fileList.map((f) => f.name);
+      }
+    } else {
+      aliasValues[field.alias] = String(executeForm[field.alias] ?? '');
+    }
+  }
+  // 手动自定义字段（与 confirmExecute 一致）
+  for (const f of manualFields.value) {
+    const key = f.key.trim();
+    if (!key) continue;
+    if (f.type === 'boolean') {
+      aliasValues[key] = f.booleanValue;
+    } else if (f.type === 'number') {
+      aliasValues[key] = f.value === '' ? '' : Number(f.value);
+    } else if (f.type === 'image' || f.type === 'video' || f.type === 'audio') {
+      const fileList = manualFiles.value[key];
+      if (fileList && fileList.length > 0) {
+        files[key] = fileList.map((x) => x.name);
+      }
+    } else {
+      aliasValues[key] = f.value;
+    }
+  }
+  const wf = workflows.value.find((w) => w.id === executeTarget.value);
+  codeExampleRequest.value = {
+    workflowId: executeTarget.value,
+    workflowName: wf?.name ?? '',
+    aliasValues,
+    files,
+    paramTypeOverrides,
+  };
+  codeExamplesDialog.value = true;
 }
 
 function handleLogout() {
