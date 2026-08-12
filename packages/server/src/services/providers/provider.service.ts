@@ -295,17 +295,21 @@ export class ProviderService {
       return { ok: false, error: 'invalid type' };
     }
     if (raw.type === 'comfyui') {
-      // comfyui 需要非空 baseUrl
-      const baseUrl = (raw.config as { baseUrl?: unknown } | undefined)?.baseUrl;
+      // comfyui 需要非空 baseUrl；autoCleanup/inputDir 可选（缺省回退默认值）
+      const cfg = raw.config as { baseUrl?: unknown; autoCleanup?: unknown; inputDir?: unknown } | undefined;
+      const baseUrl = cfg?.baseUrl;
       if (typeof baseUrl !== 'string' || baseUrl.trim() === '') {
         return { ok: false, error: 'baseUrl is required' };
       }
+      // autoCleanup 仅接受布尔值，否则回退 false；inputDir 为字符串时 trim，否则回退空串
+      const autoCleanup = typeof cfg?.autoCleanup === 'boolean' ? cfg.autoCleanup : false;
+      const inputDir = typeof cfg?.inputDir === 'string' ? cfg.inputDir.trim() : '';
       return {
         ok: true,
         value: {
           name,
           type: 'comfyui',
-          config: { baseUrl: baseUrl.trim() },
+          config: { baseUrl: baseUrl.trim(), autoCleanup, inputDir },
           concurrency: this.normalizeConcurrency(raw.concurrency),
           enabled: this.normalizeEnabled(raw.enabled),
         },

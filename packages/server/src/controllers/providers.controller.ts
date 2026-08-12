@@ -11,7 +11,7 @@ import type { ProviderConfig, ProviderType } from '../services/providers/types';
  * @param raw 原始 config
  * @returns 宽松配置结构（字段缺失时回退空值）
  */
-function parseConfigBody(type: ProviderType, raw: unknown): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown } {
+function parseConfigBody(type: ProviderType, raw: unknown): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown; autoCleanup?: unknown; inputDir?: unknown } {
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   if (type === 'runninghub') {
     return {
@@ -20,7 +20,12 @@ function parseConfigBody(type: ProviderType, raw: unknown): { baseUrl?: unknown;
       gpuSize: obj.gpuSize,
     };
   }
-  return { baseUrl: typeof obj.baseUrl === 'string' ? obj.baseUrl : '' };
+  // autoCleanup/inputDir 原样透出，非法值交给 validateInput 规范化
+  return {
+    baseUrl: typeof obj.baseUrl === 'string' ? obj.baseUrl : '',
+    autoCleanup: obj.autoCleanup,
+    inputDir: obj.inputDir,
+  };
 }
 
 /** 提供商管理控制器：路由层与 ProviderService 之间的薄适配层 */

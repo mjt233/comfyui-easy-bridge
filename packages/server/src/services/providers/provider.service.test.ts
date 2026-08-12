@@ -203,7 +203,33 @@ describe('ProviderService', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.concurrency).toBe(3);
-      expect(result.value.config).toEqual({ baseUrl: 'http://x' });
+      // comfyui 配置始终包含 autoCleanup/inputDir 默认值
+      expect(result.value.config).toEqual({ baseUrl: 'http://x', autoCleanup: false, inputDir: '' });
+    }
+  });
+
+  it('validateInput normalizes comfyui autoCleanup and inputDir', () => {
+    const result = service.validateInput({
+      name: 'x',
+      type: 'comfyui',
+      config: { baseUrl: 'http://x', autoCleanup: true, inputDir: ' C:\\comfy\\input ' },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // autoCleanup 保留布尔值，inputDir 去首尾空白
+      expect(result.value.config).toEqual({ baseUrl: 'http://x', autoCleanup: true, inputDir: 'C:\\comfy\\input' });
+    }
+  });
+
+  it('validateInput falls back autoCleanup to false for non-boolean values', () => {
+    const result = service.validateInput({
+      name: 'x',
+      type: 'comfyui',
+      config: { baseUrl: 'http://x', autoCleanup: 'yes' as unknown as boolean },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.config).toEqual({ baseUrl: 'http://x', autoCleanup: false, inputDir: '' });
     }
   });
 

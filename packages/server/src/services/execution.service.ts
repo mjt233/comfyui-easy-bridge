@@ -3,6 +3,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { TaskService, type OutputFile } from './task.service';
 import { ProviderService } from './providers/provider.service';
+import { cleanupTaskUploads } from './cleanup.service';
 import { COMFYUI_CLIENT_ID } from './providers/types';
 import type { ExecutionProvider } from './providers/types';
 
@@ -245,6 +246,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
           errorMessage: result.errorMessage ?? 'Submit failed',
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
         });
+        // 提交失败同样产生孤儿上传文件，触发自动清理
+        cleanupTaskUploads(provider, nextTask.uploadedFiles);
       }
     } catch (err) {
       console.error(`[ExecutionService:${providerId}] drainQueue error`, err);
@@ -260,6 +263,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
     taskService.updateStatus(task.id, { status: 'completed' });
     // 任务已进入终态，清理其连续失败计数
     historyErrorCounts.delete(task.id);
+    // 终态后触发自动清理本次上传的资产
+    cleanupTaskUploads(provider, task.uploadedFiles);
     fetchHistoryAndExtractOutputs(promptId)
       .catch(err => console.error(`[ExecutionService:${providerId}] fetch outputs error`, err));
     drainQueue();
@@ -275,6 +280,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
     });
     // 任务已进入终态，清理其连续失败计数
     historyErrorCounts.delete(task.id);
+    // 终态后触发自动清理本次上传的资产
+    cleanupTaskUploads(provider, task.uploadedFiles);
     drainQueue();
   }
 
@@ -309,6 +316,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       if (files.length > 0) {
         taskService.updateOutputFiles(taskId, files);
       }
+      // 终态后触发自动清理本次上传的资产
+      cleanupTaskUploads(provider, taskService.getById(taskId)?.uploadedFiles);
       drainQueue();
       return true;
     }
@@ -320,6 +329,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
     });
     // 任务已进入终态，清理其连续失败计数
     historyErrorCounts.delete(taskId);
+    // 终态后触发自动清理本次上传的资产
+    cleanupTaskUploads(provider, taskService.getById(taskId)?.uploadedFiles);
     drainQueue();
     return true;
   }
@@ -422,6 +433,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
                 status: 'failed',
                 errorMessage: err instanceof Error ? `History check failed: ${err.message}` : 'History check failed',
               });
+              // 终态后触发自动清理本次上传的资产
+              cleanupTaskUploads(provider, task.uploadedFiles);
               drainQueue();
             }
             // 未达阈值则下一轮重试

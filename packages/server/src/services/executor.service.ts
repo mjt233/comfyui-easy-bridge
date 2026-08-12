@@ -236,6 +236,42 @@ export async function processMediaParams(
 }
 
 /**
+ * 从合并后的别名值中收集本次上传到执行端的资产文件名。
+ * 与 processMediaParams 的写入规则一致：媒体参数（image/video/audio）在
+ * finalAliasValues 中的值即为上传后的存储文件名（多文件/同别名多参数时为 string[]）。
+ * 供任务创建时写入 uploaded_files，用于终态后的自动清理。
+ * @param params 参数配置列表
+ * @param finalAliasValues processMediaParams 返回的合并别名值
+ * @returns 上传的文件名数组（无上传时为空数组）
+ */
+export function collectUploadedFilenames(
+  params: RuntimeParam[],
+  finalAliasValues: Record<string, unknown>,
+): string[] {
+  const filenames: string[] = [];
+  const seenAliases = new Set<string>();
+  for (const param of params) {
+    // 仅媒体类型参数的上传结果才是存储文件名
+    if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
+    // 无别名的参数不参与上传
+    if (param.alias == null || param.alias === '') continue;
+    // 同一别名只收集一次（同别名多参数共享同一批上传文件）
+    if (seenAliases.has(param.alias)) continue;
+    seenAliases.add(param.alias);
+    const value = finalAliasValues[param.alias];
+    if (Array.isArray(value)) {
+      // 多文件/同别名多参数：值为文件名数组
+      for (const item of value) {
+        if (typeof item === 'string' && item !== '') filenames.push(item);
+      }
+    } else if (typeof value === 'string' && value !== '') {
+      filenames.push(value);
+    }
+  }
+  return filenames;
+}
+
+/**
  * 提交工作流到执行端执行。
  * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回。
  * @param rawJson 原始工作流 API JSON 字符串

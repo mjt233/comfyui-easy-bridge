@@ -8,9 +8,11 @@ import {
   executeWorkflow,
   applyAliases,
   processMediaParams,
+  collectUploadedFilenames,
   resolveSubmittedAliasValues,
   toRuntimeParams,
 } from '../services/executor.service';
+import { cleanupTaskUploads } from '../services/cleanup.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
 import { runBuildScript } from '../services/build.service';
@@ -319,6 +321,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 按声明配置上传媒体（真实上传，模拟与真实执行一致）
         const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, provider);
 
+        // 预览上传的文件不再被任何执行使用，立即触发自动清理
+        cleanupTaskUploads(provider, JSON.stringify(collectUploadedFilenames(effectiveParams, uploadedAliasValues)));
+
         // 注入并返回
         const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);
         res.json({ json: finalJson, params: effectiveParams });
@@ -600,6 +605,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
         const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
 
+        // 收集本次上传的资产文件名（供任务终态后自动清理）
+        const uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues));
+
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
         const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);
 
@@ -623,6 +631,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             comfyuiResponse: null,
             promptId: null,
             providerId: provider.id,
+            uploadedFiles: uploadedFilesJson,
           });
           // 覆盖为 queued 状态
           taskService.updateStatus(task.id, { status: 'queued' });
@@ -646,6 +655,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
           promptId: result.promptId,
           providerId: provider.id,
+          uploadedFiles: uploadedFilesJson,
         });
 
         if (!result.success) {
@@ -653,6 +663,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             status: 'failed',
             errorMessage: result.errorMessage ?? 'Unknown error',
           });
+          // 提交失败的任务不会被跟踪器置终态，这里直接触发自动清理本次上传的资产
+          cleanupTaskUploads(provider, uploadedFilesJson);
         }
 
         res.json({

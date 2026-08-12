@@ -50,7 +50,7 @@ describe('Workflow API', () => {
         mimetype TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, completed_at TEXT);
       CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE tags (
@@ -928,6 +928,57 @@ describe('Workflow API', () => {
     expect(form.files[0].alias).toBe('frame_0');
     expect(form.files[0].filename).toBe('frame0.png');
     expect(form.files[0].size).toBe(Buffer.byteLength('fake-image-bytes'));
+  });
+
+  it('execute stores uploaded media filenames in task uploaded_files', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const rawJson = JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-upload-files', name: 'ExecUploadFiles', rawJson });
+    // 声明媒体参数（image 类型 + alias），execute 时才会真正上传文件
+    await supertest(app)
+      .post('/api/workflows/exec-upload-files/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null })
+      .expect(201);
+    // 创建 comfyui 提供商并设为默认（execute 通过 ProviderService 解析）
+    setupDefaultProvider();
+
+    // 模拟 ComfyUI：/upload/image 返回存储名，/prompt 返回 prompt_id
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/upload/image')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 'uploaded-ref.png' }),
+          text: async () => JSON.stringify({ name: 'uploaded-ref.png' }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ prompt_id: 'pid-cleanup' }),
+        json: async () => ({ prompt_id: 'pid-cleanup' }),
+      } as unknown as Response;
+    }));
+
+    const res = await supertest(app)
+      .post('/api/workflows/exec-upload-files/execute')
+      .field('params', JSON.stringify({}))
+      .attach('ref_images', Buffer.from('fake-image-bytes'), 'photo.png');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('pending');
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 任务记录本次上传到 ComfyUI 的文件名（供终态后自动清理）
+    expect(JSON.parse(task.body.uploadedFiles as string)).toEqual(['uploaded-ref.png']);
   });
 
   it('simulate with multipart media upload returns json and params', async () => {

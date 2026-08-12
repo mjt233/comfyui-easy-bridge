@@ -1,3 +1,5 @@
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { buildUniqueUploadFilename } from '../upload.service';
 import {
   buildViewUrl,
@@ -66,6 +68,41 @@ export class ComfyUIProvider implements ExecutionProvider {
       throw new Error('ComfyUI upload failed: missing name');
     }
     return result.name;
+  }
+
+  /**
+   * 清理本次上传的资产文件（本地文件系统删除）。
+   * ComfyUI 未提供删除文件的 API，因此仅当配置了本地输入目录（inputDir）时
+   * 才能直接删除文件；inputDir 为空时静默跳过并记录日志。
+   * 每个文件名先取 basename 再拼接到 inputDir 内，并校验解析后路径仍在 inputDir
+   * 之内（防止路径穿越）；文件不存在（ENOENT）时忽略，其他错误仅记录日志。
+   * @param filenames 本次上传的文件名（ComfyUI 存储名）
+   */
+  async cleanupUploadedFiles(filenames: string[]): Promise<void> {
+    const inputDir = this.config.inputDir?.trim();
+    // 未配置本地输入目录时无法清理（无删除 API 兜底），仅记录日志
+    if (!inputDir) {
+      console.warn(`[ComfyUIProvider:${this.id}] autoCleanup enabled but inputDir is empty, skip cleanup`);
+      return;
+    }
+    const resolvedDir = path.resolve(inputDir);
+    for (const filename of filenames) {
+      // 仅允许删除输入目录内的文件：取 basename 防目录穿越
+      const target = path.resolve(resolvedDir, path.basename(filename));
+      // 双保险：解析后路径必须仍在输入目录内，否则跳过
+      if (!target.startsWith(resolvedDir + path.sep) && target !== resolvedDir) {
+        console.warn(`[ComfyUIProvider:${this.id}] skip cleanup outside inputDir: ${filename}`);
+        continue;
+      }
+      try {
+        await fs.unlink(target);
+      } catch (err) {
+        // 文件已不存在视为清理成功；其他错误仅记录日志，不影响任务
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error(`[ComfyUIProvider:${this.id}] cleanup failed for ${filename}`, err);
+        }
+      }
+    }
   }
 
   /** 拉取 history（非 2xx 抛错，调用方捕获） */

@@ -3,11 +3,13 @@ export type ProviderType = 'comfyui' | 'runninghub';
 
 /**
  * 提供商配置（按类型区分的判别联合）。
- * - comfyui: { baseUrl }
+ * - comfyui: { baseUrl, autoCleanup?, inputDir? }
+ *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
+ *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
  */
 export type ProviderConfigInput =
-  | { baseUrl: string }
+  | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }
   | { apiKey: string; gpuSize: '24G' | '48G' };
 
 /**

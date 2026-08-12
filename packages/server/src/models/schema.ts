@@ -47,6 +47,8 @@ export const taskLogs = sqliteTable('task_logs', {
   comfyuiRequestBody: text('comfyui_request_body'),
   comfyuiResponse: text('comfyui_response'),
   outputFiles: text('output_files'),
+  /** 本次上传到执行端的资产文件名 JSON 数组（供终态后自动清理）；旧任务可能为 null */
+  uploadedFiles: text('uploaded_files').notNull().default('[]'),
   status: text('status').notNull().default('pending'),
   errorMessage: text('error_message'),
   progress: integer('progress'),

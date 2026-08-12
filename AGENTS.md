@@ -66,7 +66,8 @@ pnpm --filter server test:watch    # vitest watch 模式
 ## 执行提供商
 
 - 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
-- 类型：`comfyui`（`config.baseUrl`）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）
+- 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）
+- **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`simulateBuild` 预览上传后立即清理；`inputDir` 为空则跳过并记日志
 - 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
 - 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）；`services/execution.service.ts` 按实例维护任务跟踪器
 - **API Key 回显与编辑原则**：`apiKey` 永不回显明文（列表/摘要一律打码，编辑弹窗留空不预填）；保存时 API Key 留空 = 不修改原 Key，仅输入新值才更新（前端留空则省略 `config` 回传，后端仅显式提供 `config` 时才覆盖）

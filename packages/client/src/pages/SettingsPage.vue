@@ -145,7 +145,7 @@
             class="mb-4"
           />
 
-          <!-- comfyui 类型：仅需服务地址 -->
+          <!-- comfyui 类型：服务地址 + 资产自动清理配置 -->
           <template v-if="providerForm.type === 'comfyui'">
             <v-text-field
               v-model="providerForm.baseUrl"
@@ -154,6 +154,22 @@
               variant="outlined"
               class="mb-4"
               placeholder="http://localhost:8188"
+            />
+            <v-switch
+              v-model="providerForm.autoCleanup"
+              label="自动清理上传的资产"
+              hint="任务完成后自动删除本次上传到 ComfyUI 输入目录的文件，避免重复文件堆积"
+              color="primary"
+              class="mb-2"
+            />
+            <v-text-field
+              v-if="providerForm.autoCleanup"
+              v-model="providerForm.inputDir"
+              label="ComfyUI 输入目录（本地路径）"
+              hint="ComfyUI 未提供删除文件的 API，需通过本地路径删除；仅当 ComfyUI 与本站部署在同一台机器时有效"
+              variant="outlined"
+              class="mb-4"
+              placeholder="C:\\...\\ComfyUI\\input"
             />
           </template>
 
@@ -279,6 +295,10 @@ const providerForm = ref<{
   type: ProviderType;
   /** comfyui 服务地址 */
   baseUrl: string;
+  /** comfyui 是否自动清理上传的资产 */
+  autoCleanup: boolean;
+  /** comfyui 输入目录本地路径（同机部署时用于删除上传文件） */
+  inputDir: string;
   /** runninghub API Key */
   apiKey: string;
   /** runninghub GPU 显存档位 */
@@ -291,6 +311,8 @@ const providerForm = ref<{
   name: '',
   type: 'comfyui',
   baseUrl: '',
+  autoCleanup: false,
+  inputDir: '',
   apiKey: '',
   gpuSize: '24G',
   concurrency: 1,
@@ -361,6 +383,8 @@ function openCreateDialog() {
     name: '',
     type: 'comfyui',
     baseUrl: '',
+    autoCleanup: false,
+    inputDir: '',
     apiKey: '',
     gpuSize: '24G',
     concurrency: 1,
@@ -378,6 +402,8 @@ function openEditDialog(p: ProviderSummary) {
   const config = p.config;
   // 防御式读取：配置可能缺失字段（服务端 config 损坏时为空对象）
   const baseUrl = 'baseUrl' in config ? config.baseUrl : '';
+  const autoCleanup = 'autoCleanup' in config && typeof config.autoCleanup === 'boolean' ? config.autoCleanup : false;
+  const inputDir = 'inputDir' in config && typeof config.inputDir === 'string' ? config.inputDir : '';
   const gpuSize = 'gpuSize' in config ? config.gpuSize : '24G';
   // API Key 不回显：编辑时始终留空，留空表示不修改（沿用原 Key）
   const apiKey = '';
@@ -386,6 +412,8 @@ function openEditDialog(p: ProviderSummary) {
     name: p.name,
     type: p.type,
     baseUrl,
+    autoCleanup,
+    inputDir,
     apiKey,
     gpuSize,
     concurrency: p.concurrency,
@@ -411,7 +439,9 @@ function providerSubtitle(p: ProviderSummary): string {
     detail = config.baseUrl;
   }
   const status = p.enabled ? '已启用' : '已停用';
-  return `${typeLabel} · ${detail} · 并发 ${p.concurrency} · ${status}`;
+  // comfyui 开启自动清理时在子标题中标注，便于一眼识别
+  const autoCleanup = 'autoCleanup' in config && config.autoCleanup === true;
+  return `${typeLabel} · ${detail} · 并发 ${p.concurrency} · ${status}${autoCleanup ? ' · 自动清理' : ''}`;
 }
 
 /**
@@ -422,7 +452,11 @@ function buildConfigPayload(): ProviderConfigInput {
   if (providerForm.value.type === 'runninghub') {
     return { apiKey: providerForm.value.apiKey.trim(), gpuSize: providerForm.value.gpuSize };
   }
-  return { baseUrl: providerForm.value.baseUrl.trim() };
+  return {
+    baseUrl: providerForm.value.baseUrl.trim(),
+    autoCleanup: providerForm.value.autoCleanup,
+    inputDir: providerForm.value.inputDir.trim(),
+  };
 }
 
 /**

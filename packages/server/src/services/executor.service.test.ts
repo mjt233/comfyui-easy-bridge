@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyAliases,
+  collectUploadedFilenames,
   processMediaParams,
   resolveSubmittedAliasValues,
 } from './executor.service';
@@ -353,5 +354,47 @@ describe('processMediaParams', () => {
     const { provider } = makeProviderStub([]);
     const uploaded = await processMediaParams(params, {}, files, provider);
     expect(typeof uploaded.ref_images).toBe('string');
+  });
+});
+
+describe('collectUploadedFilenames', () => {
+  it('collects uploaded filenames for media params and skips text params', () => {
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
+      { nodeId: 'txt1', fieldName: 'value', alias: 'prompt', label: null, paramType: 'text', defaultValue: null },
+    ];
+    // 与 processMediaParams 写入一致：媒体参数值为上传后的存储文件名
+    const values: Record<string, unknown> = { img: 'photo_a1b2c3.png', prompt: 'hello' };
+    expect(collectUploadedFilenames(params, values)).toEqual(['photo_a1b2c3.png']);
+  });
+
+  it('collects array values for multi-file aliases and dedups by alias', () => {
+    // 同别名多参数：值为文件名数组，按出现顺序收集且同一别名只收集一次
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 0 },
+      { nodeId: 'load2', fieldName: 'image', alias: 'ref_images', label: null, paramType: 'image', defaultValue: null, fileIndex: 1 },
+      { nodeId: 'load3', fieldName: 'video', alias: 'clip', label: null, paramType: 'video', defaultValue: null },
+    ];
+    const values: Record<string, unknown> = { ref_images: ['a.png', 'b.png'], clip: 'c.mp4' };
+    expect(collectUploadedFilenames(params, values)).toEqual(['a.png', 'b.png', 'c.mp4']);
+  });
+
+  it('ignores non-string and empty values', () => {
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
+    ];
+    // 非字符串（异常值）与空串均不应进入清理名单
+    expect(collectUploadedFilenames(params, { img: 42 })).toEqual([]);
+    expect(collectUploadedFilenames(params, { img: '' })).toEqual([]);
+    expect(collectUploadedFilenames(params, { img: ['a.png', 42] })).toEqual(['a.png']);
+  });
+
+  it('returns empty when no media params or no uploads', () => {
+    expect(collectUploadedFilenames([], {})).toEqual([]);
+    // 无别名的媒体参数不参与上传，不应收集
+    const params: RuntimeParam[] = [
+      { nodeId: 'load1', fieldName: 'image', alias: null, label: null, paramType: 'image', defaultValue: null },
+    ];
+    expect(collectUploadedFilenames(params, { img: 'a.png' })).toEqual([]);
   });
 });

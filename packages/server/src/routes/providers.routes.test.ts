@@ -72,6 +72,25 @@ describe('Provider API', () => {
     expect(listed.body[0].resolvedBaseUrl).not.toContain('sk-12345678');
   });
 
+  it('persists comfyui autoCleanup and inputDir in config', async () => {
+    const created = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://localhost:8188', autoCleanup: true, inputDir: 'C:\\comfy\\input' } });
+    expect(created.status).toBe(201);
+    // 自动清理开关与本地输入目录原样透出到摘要配置
+    expect(created.body.config.autoCleanup).toBe(true);
+    expect(created.body.config.inputDir).toBe('C:\\comfy\\input');
+  });
+
+  it('defaults comfyui autoCleanup to false and inputDir to empty', async () => {
+    const created = await supertest(app)
+      .post('/api/providers')
+      .send({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' } });
+    expect(created.status).toBe(201);
+    expect(created.body.config.autoCleanup).toBe(false);
+    expect(created.body.config.inputDir).toBe('');
+  });
+
   it('rejects invalid input with 400', async () => {
     const res = await supertest(app)
       .post('/api/providers')

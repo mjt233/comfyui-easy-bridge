@@ -5,11 +5,13 @@ export type ProviderType = 'comfyui' | 'runninghub';
 
 /**
  * 提供商实例配置（按类型区分的判别联合）。
- * - comfyui: { baseUrl }
+ * - comfyui: { baseUrl, autoCleanup?, inputDir? }
+ *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
+ *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
  */
 export type ProviderConfig =
-  | { baseUrl: string }
+  | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }
   | { apiKey: string; gpuSize: '24G' | '48G' };
 
 /** 执行工作流的结果 */
@@ -67,6 +69,13 @@ export interface ExecutionProvider {
   submitPrompt(body: string): Promise<ExecutionResult>;
   /** 上传媒体文件，返回注入工作流节点的文件名 */
   uploadMedia(file: UploadFileInput, mediaType: MediaType): Promise<string>;
+  /**
+   * 清理上传的资产文件（可选能力）。
+   * 仅支持本地文件系统删除的提供商（原生 ComfyUI + 本地输入目录）实现；
+   * 未实现或不可用时调用方直接跳过。实现内部负责路径安全与错误吞并。
+   * @param filenames 本次上传的文件名（ComfyUI 存储名）
+   */
+  cleanupUploadedFiles?(filenames: string[]): Promise<void>;
   /** 拉取指定 prompt 的 history；非 2xx 或网络错误时可能抛错，调用方需自行捕获 */
   fetchHistory(promptId: string): Promise<unknown>;
   /** 中断任务，可带 promptId 轮询确认停止 */
