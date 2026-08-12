@@ -22,6 +22,7 @@ const PRESET_TAGS: ReadonlyArray<{ id: string; name: string; parentId: string | 
   { id: 'audio-input', name: '音频输入', parentId: 'image-to-video', metadataDef: '[]' },
   { id: 'audio-output', name: '音频输出', parentId: 'image-to-video', metadataDef: '[]' },
   { id: 'tts-voice-design', name: 'TTS音色设计', parentId: null, metadataDef: '[]' },
+  { id: 'tts-voice-clone', name: 'TTS音色克隆', parentId: null, metadataDef: '[]' },
 ];
 
 /**

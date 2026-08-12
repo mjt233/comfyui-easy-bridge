@@ -14,7 +14,7 @@ describe('迁移 v5 工作流标签', () => {
     const rows = sqlite.prepare('SELECT id, name, parent_id, is_preset FROM tags ORDER BY created_at').all() as Array<{
       id: string; name: string; parent_id: string | null; is_preset: number;
     }>;
-    expect(rows.length).toBe(11);
+    expect(rows.length).toBe(12);
     const imageToVideo = rows.find((r) => r.id === 'image-to-video');
     expect(imageToVideo?.name).toBe('图生视频');
     expect(imageToVideo?.is_preset).toBe(1);
@@ -29,6 +29,6 @@ describe('迁移 v5 工作流标签', () => {
   it('重复执行迁移幂等', () => {
     runMigrations(sqlite); // 再次执行不应报错
     const count = sqlite.prepare('SELECT COUNT(*) AS c FROM tags').get() as { c: number };
-    expect(count.c).toBe(11);
+    expect(count.c).toBe(12);
   });
 });

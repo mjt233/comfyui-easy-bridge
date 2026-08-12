@@ -166,6 +166,7 @@ GET /api/workflows?tags=image-to-video
 | `image-to-video` | 图生视频 | `audio-input` | 音频输入 | 无 |
 | `image-to-video` | 图生视频 | `audio-output` | 音频输出 | 无 |
 | `tts-voice-design` | TTS音色设计 | — | — | 无 |
+| `tts-voice-clone` | TTS音色克隆 | — | — | 无 |
 
 **「全能参考」元数据字段定义**（`reference`）：
 

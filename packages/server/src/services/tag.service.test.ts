@@ -18,7 +18,7 @@ describe('TagService', () => {
   });
 
   it('列出全部标签（含预设种子）', () => {
-    expect(service.list().length).toBe(11);
+    expect(service.list().length).toBe(12);
   });
 
   it('组装标签树（父含 children）', () => {
