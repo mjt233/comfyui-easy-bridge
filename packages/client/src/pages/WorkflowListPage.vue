@@ -128,7 +128,12 @@
         <!-- 有筛选条件时空态提示：新建的工作流无标签，不会出现在当前筛选下 -->
         <template v-if="selectedTagIds.size > 0">
           没有匹配所选标签的工作流
-          <v-btn size="small" variant="text" color="primary" @click="clearFilter">
+          <v-btn
+            size="small"
+            variant="text"
+            color="primary"
+            @click="clearFilter"
+          >
             清空筛选
           </v-btn>
         </template>
@@ -268,67 +273,73 @@
           />
           <template v-for="field in executeFields" :key="field.alias">
             <!-- 单行布局：输入控件（自带 label）+ 字段类型下拉（覆盖仅本次有效，不写回配置） -->
-            <div class="d-flex align-center ga-3 mb-2">
+            <div class="d-flex align-center ga-3 mb-2 workflow-form-field-line">
               <!-- 输入控件（弹性宽度，label 即字段名称） -->
-              <v-switch
-                v-if="field.overrideType === 'boolean'"
-                v-model="executeForm[field.alias]"
-                :label="field.label || field.alias"
-                :hint="fieldHint(field)"
-                persistent-hint
-                color="primary"
-                density="compact"
-                class="flex-grow-1"
-                hide-details="auto"
-              />
-              <v-file-input
-                v-else-if="isMediaType(field.overrideType)"
-                :label="field.label || field.alias"
-                :hint="fieldHint(field)"
-                persistent-hint
-                variant="outlined"
-                density="compact"
-                class="flex-grow-1"
-                multiple
-                :accept="acceptType(field.overrideType)"
-                @update:model-value="(v: File | File[] | null) => {
-                  if (v) {
-                    executeFiles[field.alias] = Array.isArray(v) ? v : [v];
-                  } else {
-                    delete executeFiles[field.alias];
-                  }
-                }"
-              />
-              <v-textarea
-                v-else
-                v-model="executeForm[field.alias]"
-                :label="field.label || field.alias"
-                :hint="fieldHint(field)"
-                persistent-hint
-                variant="outlined"
-                density="compact"
-                class="flex-grow-1"
-                :rows="1"
-                max-rows="4"
-                auto-grow
-              />
-              <!-- 字段类型下拉（固定宽度） -->
-              <v-select
-                v-model="field.overrideType"
-                :items="paramTypeOptions"
-                label="类型"
-                density="compact"
-                variant="outlined"
-                hide-details
-                style="width: 130px; flex-shrink: 0"
-                @update:model-value="onOverrideTypeChange(field)"
-              />
+              <div style="flex: 1;">
+                <v-switch
+                  v-if="field.overrideType === 'boolean'"
+                  v-model="executeForm[field.alias]"
+                  :label="field.label || field.alias"
+                  :hint="fieldHint(field)"
+                  persistent-hint
+                  color="primary"
+                  density="compact"
+                  class="flex-grow-1"
+                  hide-details="auto"
+                />
+                <v-file-input
+                  v-else-if="isMediaType(field.overrideType)"
+                  :label="field.label || field.alias"
+                  :hint="fieldHint(field)"
+                  persistent-hint
+                  variant="outlined"
+                  density="compact"
+                  class="flex-grow-1"
+                  multiple
+                  :accept="acceptType(field.overrideType)"
+                  @update:model-value="(v: File | File[] | null) => {
+                    if (v) {
+                      executeFiles[field.alias] = Array.isArray(v) ? v : [v];
+                    } else {
+                      delete executeFiles[field.alias];
+                    }
+                  }"
+                />
+                <v-textarea
+                  v-else
+                  v-model="executeForm[field.alias]"
+                  :label="field.label || field.alias"
+                  :hint="fieldHint(field)"
+                  persistent-hint
+                  variant="outlined"
+                  density="compact"
+                  class="flex-grow-1"
+                  :rows="1"
+                  max-rows="4"
+                  auto-grow
+                />
+              </div>
+              <div style="width: 130px;">
+                <!-- 字段类型下拉（固定宽度） -->
+                <v-select
+                  v-model="field.overrideType"
+                  :items="paramTypeOptions"
+                  label="类型"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="width: 130px; flex-shrink: 0"
+                  class="mb-6"
+                  @update:model-value="onOverrideTypeChange(field)"
+                />
+              </div>
             </div>
+            
+            <v-divider class="my-2" />
           </template>
 
           <!-- 手动添加的自定义字段 -->
           <template v-if="!executeLoading">
-            <v-divider class="my-2" />
             <div class="d-flex align-center mb-2">
               <span class="text-subtitle-2">自定义字段</span>
               <v-spacer />
@@ -1009,4 +1020,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.workflow-form-field-line {
+  padding-top: 12px;
+}
 </style>
