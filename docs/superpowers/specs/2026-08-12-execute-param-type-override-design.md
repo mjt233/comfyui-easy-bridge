@@ -7,13 +7,14 @@
 1. **已配置字段类型固定**：已配置参数的类型由工作流持久化配置决定，无法在本次执行时临时更改（如把 `text` 字段临时当图片上传、把 `image` 字段临时当文本传值），只能通过「自定义字段」额外新增，无法覆盖既有字段。
 2. **媒体字段只能传文件**：`image/video/audio` 字段只能选择本地文件上传，无法直接输入一个字符串值（如 ComfyUI 服务端已存在的文件名），限制了引用服务端已有资产的场景。
 
-目标：在执行对话框内为**已配置字段**提供「仅本次执行」的类型覆盖能力，并为媒体字段提供「上传文件 / 输入值」双模式，且不修改工作流持久化配置。
+目标：在执行对话框内为**已配置字段**提供「仅本次执行」的类型覆盖能力（媒体字段如需直接传值，将类型切换为 `text` 即可），且不修改工作流持久化配置。
 
 ## 关键决策（已与用户确认）
 
 | 决策点 | 结论 |
 |--------|------|
-| 实现方案 | **方案 A：后端支持本次执行类型覆盖（`paramTypeOverrides`）+ 前端类型下拉 + 媒体文本值模式** |
+| 实现方案 | **方案 A：后端支持本次执行类型覆盖（`paramTypeOverrides`）+ 前端类型下拉** |
+| 媒体传值 | 媒体字段仅提供文件上传；需要直接输入值（如服务端已有文件名）时，用户将类型切换为 `text` 即可（无需单独「输入值」模式） |
 | 覆盖范围 | 仅作用于**已配置/声明字段**；「自定义字段」保持现状（本身就带类型选择） |
 | 生效时机 | 覆盖在动态构建脚本之后应用（用户显式覆盖优先于脚本声明） |
 | 持久化 | 覆盖仅本次请求有效，不写回 workflow_params 表 |
@@ -85,27 +86,23 @@ interface ExecuteField {
   dynamic?: boolean;
   /** 本次执行覆盖类型（默认 = paramType，仅本次有效） */
   overrideType: string;
-  /** 媒体字段输入模式：'file' 上传文件 / 'text' 直接输入值 */
-  mediaMode: 'file' | 'text';
 }
 ```
 
 ### UI
 
 - 每个已配置字段行新增一个**类型下拉**（6 种类型），`v-model` 绑定 `field.overrideType`，默认显示 `paramType`；改动后输入控件按 `overrideType` 渲染，关闭对话框即丢弃
-- boolean → `v-switch`；text/number → 文本域；媒体 → 「上传文件 / 输入值」模式切换（`v-btn-toggle`）+ 对应控件
-- 媒体「输入值」模式：`v-text-field` 绑定 `executeForm[alias]`（字符串），提交进 `aliasValues`
-- 媒体「上传文件」模式：`v-file-input` 绑定 `executeFiles[alias]`
+- boolean → `v-switch`；text/number → 文本域；媒体 → `v-file-input`（仅文件上传）
+- **媒体字段需要直接输入值时，用户将类型下拉切换为 `text`**，即可输入服务端已有文件名/路径（提交进 `aliasValues`，后端不触发上传）；媒体字段 hint 提示该操作
+- 切换类型时重置表单值与已选文件（`onOverrideTypeChange`），避免旧类型残留值污染
 
 ### 提交逻辑（confirmExecute）
 
 - 对每个 `executeFields` 字段按 `overrideType` 组装：
   - boolean → `aliasValues[alias] = Boolean(executeForm[alias])`
-  - number → `aliasValues[alias] = Number(...)`（空串传 `''`）
-  - text → `aliasValues[alias] = String(...)`
-  - 媒体 + 文件模式且有文件 → `files[alias]`
-  - 媒体 + 文本模式且有值 → `aliasValues[alias] = String(...)`
-  - 媒体无值 → 跳过（节点保留原值）
+  - text/number → `aliasValues[alias] = String(...)`（类型转换由后端按覆盖后 paramType 完成）
+  - 媒体 + 有文件 → `files[alias]`；无文件 → 跳过（节点保留原值）
+  - 媒体需直接传值时用户已把类型切换为 text，走文本分支
 - 收集 `paramTypeOverrides[alias] = overrideType`（仅当与 `paramType` 不同），随请求提交
 - `manualFields` 自定义字段逻辑保持不变
 

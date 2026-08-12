@@ -293,45 +293,24 @@
               class="mb-2"
               hide-details="auto"
             />
-            <!-- 媒体：上传文件 / 输入值 双模式 -->
-            <div v-else-if="isMediaType(field.overrideType)" class="mb-2">
-              <v-btn-toggle
-                v-model="field.mediaMode"
-                density="compact"
-                variant="outlined"
-                divided
-                mandatory
-                class="mb-1"
-              >
-                <v-btn value="file" size="small">上传文件</v-btn>
-                <v-btn value="text" size="small">输入值</v-btn>
-              </v-btn-toggle>
-              <v-file-input
-                v-if="field.mediaMode === 'file'"
-                :hint="fieldHint(field)"
-                persistent-hint
-                variant="outlined"
-                density="compact"
-                multiple
-                :accept="acceptType(field.overrideType)"
-                @update:model-value="(v: File | File[] | null) => {
-                  if (v) {
-                    executeFiles[field.alias] = Array.isArray(v) ? v : [v];
-                  } else {
-                    delete executeFiles[field.alias];
-                  }
-                }"
-              />
-              <v-text-field
-                v-else
-                v-model="executeForm[field.alias]"
-                :hint="`${fieldHint(field)} · 直接输入服务端已有文件名/路径，不触发上传`"
-                persistent-hint
-                variant="outlined"
-                density="compact"
-                placeholder="例如 existing.png"
-              />
-            </div>
+            <!-- 媒体：文件上传（需要输入值时把类型切换为 text） -->
+            <v-file-input
+              v-else-if="isMediaType(field.overrideType)"
+              :hint="fieldHint(field)"
+              persistent-hint
+              variant="outlined"
+              density="compact"
+              class="mb-2"
+              multiple
+              :accept="acceptType(field.overrideType)"
+              @update:model-value="(v: File | File[] | null) => {
+                if (v) {
+                  executeFiles[field.alias] = Array.isArray(v) ? v : [v];
+                } else {
+                  delete executeFiles[field.alias];
+                }
+              }"
+            />
             <!-- text / number：文本域 -->
             <v-textarea
               v-else
@@ -503,8 +482,6 @@ interface ExecuteField {
   paramType: string;
   /** 本次执行覆盖类型（默认 = paramType，仅本次执行有效，不写回配置） */
   overrideType: string;
-  /** 媒体字段输入模式：'file' 上传文件 / 'text' 直接输入值 */
-  mediaMode: 'file' | 'text';
   /** 是否为动态字段静态声明（无对应节点） */
   dynamic?: boolean;
 }
@@ -659,7 +636,8 @@ function fieldHint(field: ExecuteField): string {
   }
   const base = `节点: ${field.nodeTitle} · ${field.fieldName}`;
   const isMedia = ['image', 'video', 'audio'].includes(field.overrideType);
-  return isMedia ? base : `${base} · ${field.overrideType}`;
+  // 媒体字段提示：需要直接输入值时可将类型切换为 text
+  return isMedia ? `${base} · 输入值请切换为 text 类型` : `${base} · ${field.overrideType}`;
 }
 
 /**
@@ -701,8 +679,7 @@ function isMediaType(paramType: string): boolean {
  * @param field 被切换类型的字段
  */
 function onOverrideTypeChange(field: ExecuteField): void {
-  // 媒体字段重置回「上传文件」模式并清空已选文件
-  field.mediaMode = 'file';
+  // 清空已选文件，避免旧媒体文件残留
   delete executeFiles[field.alias];
   // 按新类型重置表单值：布尔用 false，其余清空
   if (field.overrideType === 'boolean') {
@@ -914,7 +891,6 @@ async function handleExecute(id: string) {
         paramType: param.paramType || 'text',
         // 本次执行类型覆盖初始为持久化/声明类型（仅本次有效）
         overrideType: param.paramType || 'text',
-        mediaMode: 'file',
       });
       // 设置默认值：覆盖优先，否则 rawJson 原值；boolean 用开关布尔值
       const effectiveDefault = param.defaultValue != null
@@ -940,7 +916,6 @@ async function handleExecute(id: string) {
         paramType: dp.paramType || 'text',
         // 动态声明字段同样支持本次执行类型覆盖
         overrideType: dp.paramType || 'text',
-        mediaMode: 'file',
         dynamic: true,
       });
       // 按声明的默认值预填表单（boolean 用开关布尔值）
@@ -977,17 +952,10 @@ async function confirmExecute() {
       if (type === 'boolean') {
         aliasValues[field.alias] = Boolean(executeForm[field.alias]);
       } else if (type === 'image' || type === 'video' || type === 'audio') {
-        // 媒体字段：文本模式传字符串值（后端不触发上传），文件模式走文件上传
-        if (field.mediaMode === 'text') {
-          const val = executeForm[field.alias];
-          if (typeof val === 'string' && val.trim() !== '') {
-            aliasValues[field.alias] = val;
-          }
-        } else {
-          const fileList = executeFiles[field.alias];
-          if (fileList && fileList.length > 0) {
-            files[field.alias] = fileList;
-          }
+        // 媒体字段走文件上传；需要直接输入值时把类型切换为 text（走 aliasValues）
+        const fileList = executeFiles[field.alias];
+        if (fileList && fileList.length > 0) {
+          files[field.alias] = fileList;
         }
       } else {
         // text / number：字符串提交，类型转换由后端按（覆盖后的）paramType 完成
