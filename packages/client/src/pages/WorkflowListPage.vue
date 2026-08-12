@@ -227,7 +227,7 @@
       </v-list-item>
     </v-list>
 
-    <v-dialog v-model="executeDialog" max-width="500" :loading="executeLoading">
+    <v-dialog v-model="executeDialog" max-width="760" :loading="executeLoading">
       <v-card>
         <v-card-title>执行工作流</v-card-title>
         <v-card-text>
@@ -267,10 +267,52 @@
             class="mb-3"
           />
           <template v-for="field in executeFields" :key="field.alias">
-            <!-- 字段头部：标签 + 本次执行类型覆盖下拉（仅本次有效，不写回配置） -->
-            <div class="d-flex align-center ga-2 mb-1">
-              <span class="text-subtitle-2">{{ field.label || field.alias }}</span>
-              <v-spacer />
+            <!-- 单行布局：输入控件（自带 label）+ 字段类型下拉（覆盖仅本次有效，不写回配置） -->
+            <div class="d-flex align-center ga-3 mb-2">
+              <!-- 输入控件（弹性宽度，label 即字段名称） -->
+              <v-switch
+                v-if="field.overrideType === 'boolean'"
+                v-model="executeForm[field.alias]"
+                :label="field.label || field.alias"
+                :hint="fieldHint(field)"
+                persistent-hint
+                color="primary"
+                density="compact"
+                class="flex-grow-1"
+                hide-details="auto"
+              />
+              <v-file-input
+                v-else-if="isMediaType(field.overrideType)"
+                :label="field.label || field.alias"
+                :hint="fieldHint(field)"
+                persistent-hint
+                variant="outlined"
+                density="compact"
+                class="flex-grow-1"
+                multiple
+                :accept="acceptType(field.overrideType)"
+                @update:model-value="(v: File | File[] | null) => {
+                  if (v) {
+                    executeFiles[field.alias] = Array.isArray(v) ? v : [v];
+                  } else {
+                    delete executeFiles[field.alias];
+                  }
+                }"
+              />
+              <v-textarea
+                v-else
+                v-model="executeForm[field.alias]"
+                :label="field.label || field.alias"
+                :hint="fieldHint(field)"
+                persistent-hint
+                variant="outlined"
+                density="compact"
+                class="flex-grow-1"
+                :rows="1"
+                max-rows="4"
+                auto-grow
+              />
+              <!-- 字段类型下拉（固定宽度） -->
               <v-select
                 v-model="field.overrideType"
                 :items="paramTypeOptions"
@@ -278,52 +320,10 @@
                 density="compact"
                 variant="outlined"
                 hide-details
-                style="max-width: 140px"
+                style="width: 130px; flex-shrink: 0"
                 @update:model-value="onOverrideTypeChange(field)"
               />
             </div>
-            <!-- boolean：开关 -->
-            <v-switch
-              v-if="field.overrideType === 'boolean'"
-              v-model="executeForm[field.alias]"
-              :hint="fieldHint(field)"
-              persistent-hint
-              color="primary"
-              density="compact"
-              class="mb-2"
-              hide-details="auto"
-            />
-            <!-- 媒体：文件上传（需要输入值时把类型切换为 text） -->
-            <v-file-input
-              v-else-if="isMediaType(field.overrideType)"
-              :hint="fieldHint(field)"
-              persistent-hint
-              variant="outlined"
-              density="compact"
-              class="mb-2"
-              multiple
-              :accept="acceptType(field.overrideType)"
-              @update:model-value="(v: File | File[] | null) => {
-                if (v) {
-                  executeFiles[field.alias] = Array.isArray(v) ? v : [v];
-                } else {
-                  delete executeFiles[field.alias];
-                }
-              }"
-            />
-            <!-- text / number：文本域 -->
-            <v-textarea
-              v-else
-              v-model="executeForm[field.alias]"
-              :hint="fieldHint(field)"
-              persistent-hint
-              variant="outlined"
-              density="compact"
-              class="mb-2"
-              :rows="1"
-              max-rows="6"
-              auto-grow
-            />
           </template>
 
           <!-- 手动添加的自定义字段 -->
