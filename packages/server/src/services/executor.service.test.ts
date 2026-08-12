@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyAliases,
+  applyParamTypeOverrides,
   collectUploadedFilenames,
   processMediaParams,
   resolveSubmittedAliasValues,
@@ -357,15 +358,55 @@ describe('processMediaParams', () => {
   });
 });
 
+describe('applyParamTypeOverrides', () => {
+  it('overrides paramType for aliased params and returns a new array', () => {
+    const params: RuntimeParam[] = [
+      { nodeId: '1', fieldName: 'a', alias: 'img', label: null, paramType: 'text', defaultValue: null },
+      { nodeId: '2', fieldName: 'b', alias: 'txt', label: null, paramType: 'image', defaultValue: null },
+    ];
+    const result = applyParamTypeOverrides(params, { img: 'image' });
+    // 被覆盖的参数类型更新；未覆盖的保持不变
+    expect(result[0].paramType).toBe('image');
+    expect(result[1].paramType).toBe('image');
+    // 返回新数组且不修改原参数
+    expect(result).not.toBe(params);
+    expect(params[0].paramType).toBe('text');
+  });
+
+  it('ignores invalid override types and params without alias', () => {
+    const params: RuntimeParam[] = [
+      { nodeId: '1', fieldName: 'a', alias: 'img', label: null, paramType: 'text', defaultValue: null },
+      { nodeId: '2', fieldName: 'b', alias: null, label: null, paramType: 'text', defaultValue: null },
+    ];
+    const result = applyParamTypeOverrides(params, { img: 'video', nope: 'image' });
+    // img → video 合法生效；nope 别名不在参数中；无别名参数不受影响
+    expect(result[0].paramType).toBe('video');
+    expect(result[1].paramType).toBe('text');
+  });
+
+  it('ignores override values outside the allowed type whitelist', () => {
+    const params: RuntimeParam[] = [
+      { nodeId: '1', fieldName: 'a', alias: 'img', label: null, paramType: 'text', defaultValue: null },
+    ];
+    expect(applyParamTypeOverrides(params, { img: 'blob' })[0].paramType).toBe('text');
+    expect(applyParamTypeOverrides(params, { img: '' })[0].paramType).toBe('text');
+  });
+});
+
 describe('collectUploadedFilenames', () => {
-  it('collects uploaded filenames for media params and skips text params', () => {
+  // 上传文件桩（类型与 processMediaParams 的 files 入参一致）
+  const fileStub = (name: string) => ({ buffer: Buffer.from(name), originalname: name, mimetype: 'application/octet-stream' });
+
+  it('collects only filenames of media aliases that actually had files uploaded', () => {
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
+      { nodeId: 'load2', fieldName: 'image', alias: 'txt_img', label: null, paramType: 'image', defaultValue: null },
       { nodeId: 'txt1', fieldName: 'value', alias: 'prompt', label: null, paramType: 'text', defaultValue: null },
     ];
-    // 与 processMediaParams 写入一致：媒体参数值为上传后的存储文件名
-    const values: Record<string, unknown> = { img: 'photo_a1b2c3.png', prompt: 'hello' };
-    expect(collectUploadedFilenames(params, values)).toEqual(['photo_a1b2c3.png']);
+    // img 有文件上传；txt_img 仅传了文本值（无文件）→ 不应进入清理名单
+    const values: Record<string, unknown> = { img: 'photo_a1b2c3.png', txt_img: 'existing.png', prompt: 'hello' };
+    const files = { img: [fileStub('a.png')] };
+    expect(collectUploadedFilenames(params, values, files)).toEqual(['photo_a1b2c3.png']);
   });
 
   it('collects array values for multi-file aliases and dedups by alias', () => {
@@ -376,25 +417,28 @@ describe('collectUploadedFilenames', () => {
       { nodeId: 'load3', fieldName: 'video', alias: 'clip', label: null, paramType: 'video', defaultValue: null },
     ];
     const values: Record<string, unknown> = { ref_images: ['a.png', 'b.png'], clip: 'c.mp4' };
-    expect(collectUploadedFilenames(params, values)).toEqual(['a.png', 'b.png', 'c.mp4']);
+    const files = { ref_images: [fileStub('a.png'), fileStub('b.png')], clip: [fileStub('c.mp4')] };
+    expect(collectUploadedFilenames(params, values, files)).toEqual(['a.png', 'b.png', 'c.mp4']);
   });
 
   it('ignores non-string and empty values', () => {
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null },
     ];
+    const files = { img: [fileStub('a.png')] };
     // 非字符串（异常值）与空串均不应进入清理名单
-    expect(collectUploadedFilenames(params, { img: 42 })).toEqual([]);
-    expect(collectUploadedFilenames(params, { img: '' })).toEqual([]);
-    expect(collectUploadedFilenames(params, { img: ['a.png', 42] })).toEqual(['a.png']);
+    expect(collectUploadedFilenames(params, { img: 42 }, files)).toEqual([]);
+    expect(collectUploadedFilenames(params, { img: '' }, files)).toEqual([]);
+    expect(collectUploadedFilenames(params, { img: ['a.png', 42] }, files)).toEqual(['a.png']);
   });
 
   it('returns empty when no media params or no uploads', () => {
-    expect(collectUploadedFilenames([], {})).toEqual([]);
+    expect(collectUploadedFilenames([], {}, {})).toEqual([]);
     // 无别名的媒体参数不参与上传，不应收集
     const params: RuntimeParam[] = [
       { nodeId: 'load1', fieldName: 'image', alias: null, label: null, paramType: 'image', defaultValue: null },
     ];
-    expect(collectUploadedFilenames(params, { img: 'a.png' })).toEqual([]);
+    // 无文件上传（files 为空）→ 即使值是字符串也不收集（避免误删服务端已有文件）
+    expect(collectUploadedFilenames(params, { img: 'a.png' }, {})).toEqual([]);
   });
 });

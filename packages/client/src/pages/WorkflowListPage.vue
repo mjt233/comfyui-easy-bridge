@@ -267,10 +267,25 @@
             class="mb-3"
           />
           <template v-for="field in executeFields" :key="field.alias">
+            <!-- 字段头部：标签 + 本次执行类型覆盖下拉（仅本次有效，不写回配置） -->
+            <div class="d-flex align-center ga-2 mb-1">
+              <span class="text-subtitle-2">{{ field.label || field.alias }}</span>
+              <v-spacer />
+              <v-select
+                v-model="field.overrideType"
+                :items="paramTypeOptions"
+                label="类型"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 140px"
+                @update:model-value="onOverrideTypeChange(field)"
+              />
+            </div>
+            <!-- boolean：开关 -->
             <v-switch
-              v-if="field.paramType === 'boolean'"
+              v-if="field.overrideType === 'boolean'"
               v-model="executeForm[field.alias]"
-              :label="field.label || field.alias"
               :hint="fieldHint(field)"
               persistent-hint
               color="primary"
@@ -278,10 +293,49 @@
               class="mb-2"
               hide-details="auto"
             />
+            <!-- 媒体：上传文件 / 输入值 双模式 -->
+            <div v-else-if="isMediaType(field.overrideType)" class="mb-2">
+              <v-btn-toggle
+                v-model="field.mediaMode"
+                density="compact"
+                variant="outlined"
+                divided
+                mandatory
+                class="mb-1"
+              >
+                <v-btn value="file" size="small">上传文件</v-btn>
+                <v-btn value="text" size="small">输入值</v-btn>
+              </v-btn-toggle>
+              <v-file-input
+                v-if="field.mediaMode === 'file'"
+                :hint="fieldHint(field)"
+                persistent-hint
+                variant="outlined"
+                density="compact"
+                multiple
+                :accept="acceptType(field.overrideType)"
+                @update:model-value="(v: File | File[] | null) => {
+                  if (v) {
+                    executeFiles[field.alias] = Array.isArray(v) ? v : [v];
+                  } else {
+                    delete executeFiles[field.alias];
+                  }
+                }"
+              />
+              <v-text-field
+                v-else
+                v-model="executeForm[field.alias]"
+                :hint="`${fieldHint(field)} · 直接输入服务端已有文件名/路径，不触发上传`"
+                persistent-hint
+                variant="outlined"
+                density="compact"
+                placeholder="例如 existing.png"
+              />
+            </div>
+            <!-- text / number：文本域 -->
             <v-textarea
-              v-else-if="isTextLikeParam(field.paramType)"
+              v-else
               v-model="executeForm[field.alias]"
-              :label="field.label || field.alias"
               :hint="fieldHint(field)"
               persistent-hint
               variant="outlined"
@@ -290,24 +344,6 @@
               :rows="1"
               max-rows="6"
               auto-grow
-            />
-            <v-file-input
-              v-else
-              :label="field.label || field.alias"
-              :hint="fieldHint(field)"
-              persistent-hint
-              variant="outlined"
-              density="compact"
-              class="mb-2"
-              multiple
-              :accept="acceptType(field.paramType)"
-              @update:model-value="(v: File | File[] | null) => {
-                if (v) {
-                  executeFiles[field.alias] = Array.isArray(v) ? v : [v];
-                } else {
-                  delete executeFiles[field.alias];
-                }
-              }"
             />
           </template>
 
@@ -465,6 +501,10 @@ interface ExecuteField {
   /** 节点标题（动态声明字段为空串） */
   nodeTitle: string;
   paramType: string;
+  /** 本次执行覆盖类型（默认 = paramType，仅本次执行有效，不写回配置） */
+  overrideType: string;
+  /** 媒体字段输入模式：'file' 上传文件 / 'text' 直接输入值 */
+  mediaMode: 'file' | 'text';
   /** 是否为动态字段静态声明（无对应节点） */
   dynamic?: boolean;
 }
@@ -606,17 +646,20 @@ const executeForm = reactive<Record<string, string | boolean>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
 const executeFiles = reactive<Record<string, File[]>>({});
 
+/** 参数类型选项（执行对话框类型覆盖下拉） */
+const paramTypeOptions = ['text', 'number', 'boolean', 'image', 'video', 'audio'];
+
 /**
  * 执行字段提示文本：动态声明字段显示「动态字段」，静态参数显示节点/字段/类型
  * @param field 执行字段
  */
 function fieldHint(field: ExecuteField): string {
   if (field.dynamic) {
-    return `动态字段 · ${field.paramType}`;
+    return `动态字段 · ${field.overrideType}`;
   }
   const base = `节点: ${field.nodeTitle} · ${field.fieldName}`;
-  const isMedia = ['image', 'video', 'audio'].includes(field.paramType);
-  return isMedia ? base : `${base} · ${field.paramType}`;
+  const isMedia = ['image', 'video', 'audio'].includes(field.overrideType);
+  return isMedia ? base : `${base} · ${field.overrideType}`;
 }
 
 /**
@@ -646,11 +689,27 @@ function addManualField(): void {
 }
 
 /**
- * 是否为文本类参数（非媒体上传、非 boolean 开关）
+ * 是否为媒体类型
  * @param paramType 参数类型
  */
-function isTextLikeParam(paramType: string): boolean {
-  return !['image', 'video', 'audio', 'boolean'].includes(paramType);
+function isMediaType(paramType: string): boolean {
+  return ['image', 'video', 'audio'].includes(paramType);
+}
+
+/**
+ * 切换字段类型覆盖后重置表单值（避免旧类型残留值污染新类型控件）
+ * @param field 被切换类型的字段
+ */
+function onOverrideTypeChange(field: ExecuteField): void {
+  // 媒体字段重置回「上传文件」模式并清空已选文件
+  field.mediaMode = 'file';
+  delete executeFiles[field.alias];
+  // 按新类型重置表单值：布尔用 false，其余清空
+  if (field.overrideType === 'boolean') {
+    executeForm[field.alias] = false;
+  } else {
+    executeForm[field.alias] = '';
+  }
 }
 
 /**
@@ -853,6 +912,9 @@ async function handleExecute(id: string) {
         fieldName: param.fieldName,
         nodeTitle,
         paramType: param.paramType || 'text',
+        // 本次执行类型覆盖初始为持久化/声明类型（仅本次有效）
+        overrideType: param.paramType || 'text',
+        mediaMode: 'file',
       });
       // 设置默认值：覆盖优先，否则 rawJson 原值；boolean 用开关布尔值
       const effectiveDefault = param.defaultValue != null
@@ -876,6 +938,9 @@ async function handleExecute(id: string) {
         fieldName: '',
         nodeTitle: '',
         paramType: dp.paramType || 'text',
+        // 动态声明字段同样支持本次执行类型覆盖
+        overrideType: dp.paramType || 'text',
+        mediaMode: 'file',
         dynamic: true,
       });
       // 按声明的默认值预填表单（boolean 用开关布尔值）
@@ -900,22 +965,35 @@ async function confirmExecute() {
   submitting.value = true;
   try {
     const aliasValues: Record<string, string | number | boolean> = {};
+    /** 本次执行类型覆盖（别名 → 类型），仅当与持久化类型不同时收集 */
+    const paramTypeOverrides: Record<string, string> = {};
+    const files: Record<string, File[]> = {};
     for (const field of executeFields.value) {
-      // 媒体参数由 files 承载；表单中可能无对应文本值
-      if (field.paramType === 'image' || field.paramType === 'video' || field.paramType === 'audio') {
-        continue;
+      // 收集本次执行类型覆盖（覆盖仅本次请求有效）
+      if (field.overrideType !== field.paramType) {
+        paramTypeOverrides[field.alias] = field.overrideType;
       }
-      const val = executeForm[field.alias];
-      if (field.paramType === 'boolean') {
-        aliasValues[field.alias] = Boolean(val);
+      const type = field.overrideType;
+      if (type === 'boolean') {
+        aliasValues[field.alias] = Boolean(executeForm[field.alias]);
+      } else if (type === 'image' || type === 'video' || type === 'audio') {
+        // 媒体字段：文本模式传字符串值（后端不触发上传），文件模式走文件上传
+        if (field.mediaMode === 'text') {
+          const val = executeForm[field.alias];
+          if (typeof val === 'string' && val.trim() !== '') {
+            aliasValues[field.alias] = val;
+          }
+        } else {
+          const fileList = executeFiles[field.alias];
+          if (fileList && fileList.length > 0) {
+            files[field.alias] = fileList;
+          }
+        }
       } else {
+        // text / number：字符串提交，类型转换由后端按（覆盖后的）paramType 完成
+        const val = executeForm[field.alias];
         aliasValues[field.alias] = String(val ?? '');
       }
-    }
-    const files: Record<string, File[]> = {};
-    // 已配置媒体参数的文件（每个别名一个数组，支持多文件）
-    for (const [alias, fileList] of Object.entries(executeFiles)) {
-      files[alias] = fileList;
     }
     // 手动添加的自定义字段：非媒体并入 aliasValues（boolean/number 转换），媒体并入 files
     for (const f of manualFields.value) {
@@ -935,7 +1013,13 @@ async function confirmExecute() {
       }
     }
     const hasFiles = Object.keys(files).length > 0;
-    const result = await executeWorkflow(executeTarget.value, aliasValues, hasFiles ? files : undefined);
+    const hasOverrides = Object.keys(paramTypeOverrides).length > 0;
+    const result = await executeWorkflow(
+      executeTarget.value,
+      aliasValues,
+      hasFiles ? files : undefined,
+      hasOverrides ? paramTypeOverrides : undefined,
+    );
     snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
   } catch {

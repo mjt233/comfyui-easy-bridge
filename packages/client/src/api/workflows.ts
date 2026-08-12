@@ -98,15 +98,25 @@ export async function executeWorkflow(
   aliasValues: Record<string, string | number | boolean>,
   /** 媒体文件：按别名分组，每个别名可多文件（后端 multer 按重复 fieldname 收集为数组） */
   files?: Record<string, File[]>,
+  /** 本次执行类型覆盖（别名 → text/boolean/number/image/video/audio），仅本次请求有效 */
+  paramTypeOverrides?: Record<string, string>,
 ): Promise<ExecuteResult> {
-  // 无媒体文件时走普通 JSON 请求
+  const hasOverrides = paramTypeOverrides && Object.keys(paramTypeOverrides).length > 0;
+  // 无媒体文件时走普通 JSON 请求（有覆盖时携带保留键 paramTypeOverrides）
   if (!files || Object.keys(files).length === 0) {
-    const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, aliasValues);
+    const body = hasOverrides
+      ? { ...aliasValues, paramTypeOverrides }
+      : aliasValues;
+    const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, body);
     return res.data;
   }
   // 有媒体文件时走 multipart：params 为 JSON 文本字段，文件以别名为字段名（同一别名多文件重复追加）
   const formData = new FormData();
   formData.append('params', JSON.stringify(aliasValues));
+  // 本次执行类型覆盖以 JSON 字符串表单字段携带（保留键）
+  if (hasOverrides) {
+    formData.append('paramTypeOverrides', JSON.stringify(paramTypeOverrides));
+  }
   for (const [alias, fileList] of Object.entries(files)) {
     for (const file of fileList) {
       formData.append(alias, file);

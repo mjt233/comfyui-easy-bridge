@@ -7,6 +7,7 @@ import { WorkflowIOService } from '../services/workflow-io.service';
 import {
   executeWorkflow,
   applyAliases,
+  applyParamTypeOverrides,
   processMediaParams,
   collectUploadedFilenames,
   resolveSubmittedAliasValues,
@@ -322,7 +323,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, provider);
 
         // 预览上传的文件不再被任何执行使用，立即触发自动清理
-        cleanupTaskUploads(provider, JSON.stringify(collectUploadedFilenames(effectiveParams, uploadedAliasValues)));
+        cleanupTaskUploads(provider, JSON.stringify(collectUploadedFilenames(effectiveParams, uploadedAliasValues, filesMeta)));
 
         // 注入并返回
         const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);
@@ -540,10 +541,23 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 解析 multipart 或 JSON 请求（值可能是 string/number/boolean）
         const isMultipart = req.is('multipart/form-data');
         let aliasValues: Record<string, unknown>;
+        /** 本次执行类型覆盖（别名 → text/boolean/number/image/video/audio），仅本次执行有效 */
+        let paramTypeOverrides: Record<string, string> = {};
         let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]>;
 
         if (isMultipart) {
           aliasValues = JSON.parse(req.body.params || '{}') as Record<string, unknown>;
+          // 本次执行类型覆盖：表单字段 paramTypeOverrides 为 JSON 字符串 { 别名: 类型 }
+          const rawOverrides = (req.body.paramTypeOverrides as string | undefined) || '{}';
+          try {
+            const parsed = JSON.parse(rawOverrides) as unknown;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              paramTypeOverrides = parsed as Record<string, string>;
+            }
+          } catch {
+            // 覆盖字段解析失败时忽略，不影响执行
+            paramTypeOverrides = {};
+          }
           const multerFiles = (req.files as Express.Multer.File[]) || [];
           uploadedFiles = {};
           for (const f of multerFiles) {
@@ -557,7 +571,13 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             });
           }
         } else {
-          aliasValues = req.body as Record<string, unknown>;
+          // 提取保留键 paramTypeOverrides（本次执行类型覆盖），其余字段作为别名值注入
+          const body = req.body as Record<string, unknown>;
+          const { paramTypeOverrides: rawOverrides, ...rest } = body;
+          aliasValues = rest;
+          if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
+            paramTypeOverrides = rawOverrides as Record<string, string>;
+          }
           uploadedFiles = {};
         }
 
@@ -602,11 +622,14 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           effectiveParams = buildResult.params ?? baseParams;
         }
 
+        // 应用本次执行类型覆盖（用户显式覆盖优先于静态配置/脚本声明，仅本次执行有效）
+        effectiveParams = applyParamTypeOverrides(effectiveParams, paramTypeOverrides);
+
         // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
         const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
 
-        // 收集本次上传的资产文件名（供任务终态后自动清理）
-        const uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues));
+        // 收集本次上传的资产文件名（供任务终态后自动清理；仅统计实际上传的文件）
+        const uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues, uploadedFiles));
 
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
         const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);

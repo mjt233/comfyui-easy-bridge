@@ -3,6 +3,32 @@ import type { ExecutionProvider, ExecutionResult } from './providers/types';
 // re-export 供既有引用方使用（COMFYUI_CLIENT_ID / ExecutionResult 定义已迁至 providers/types）
 export { COMFYUI_CLIENT_ID, type ExecutionResult } from './providers/types';
 
+/** 允许的参数类型白名单（本次执行类型覆盖仅接受这些类型） */
+const VALID_PARAM_TYPES = new Set(['text', 'boolean', 'number', 'image', 'video', 'audio']);
+
+/**
+ * 应用本次执行类型覆盖（别名 → 覆盖类型），返回新数组（不可变）。
+ * 仅对非空 alias 的参数生效；覆盖类型不在白名单内时忽略该覆盖。
+ * 覆盖后下游 processMediaParams / applyAliases / collectUploadedFilenames
+ * 会自动使用覆盖后的 paramType，无需改动核心逻辑。
+ * @param params 运行参数列表
+ * @param overrides 本次执行类型覆盖映射（别名 → text/boolean/number/image/video/audio）
+ * @returns 应用覆盖后的新参数数组
+ */
+export function applyParamTypeOverrides(
+  params: RuntimeParam[],
+  overrides: Record<string, string>,
+): RuntimeParam[] {
+  return params.map((p) => {
+    // 无别名的参数不对外传参，不接受覆盖
+    if (p.alias == null || p.alias === '') return p;
+    const overrideType = overrides[p.alias];
+    // 覆盖类型非法（不在白名单）时保留原类型
+    if (!overrideType || !VALID_PARAM_TYPES.has(overrideType)) return p;
+    return { ...p, paramType: overrideType };
+  });
+}
+
 /**
  * 工作流参数配置（别名映射 + 可选默认值覆盖）
  */
@@ -236,17 +262,21 @@ export async function processMediaParams(
 }
 
 /**
- * 从合并后的别名值中收集本次上传到执行端的资产文件名。
+ * 从合并后的别名值中收集本次实际上传到执行端的资产文件名。
  * 与 processMediaParams 的写入规则一致：媒体参数（image/video/audio）在
  * finalAliasValues 中的值即为上传后的存储文件名（多文件/同别名多参数时为 string[]）。
+ * 仅收集 files 中确实存在文件（本次真正上传）的媒体别名，
+ * 避免媒体字段直接传文本值（如服务端已有文件名）时被误加入清理名单导致误删。
  * 供任务创建时写入 uploaded_files，用于终态后的自动清理。
  * @param params 参数配置列表
  * @param finalAliasValues processMediaParams 返回的合并别名值
- * @returns 上传的文件名数组（无上传时为空数组）
+ * @param files 本次请求上传的文件（按别名分组）；媒体文本值场景下对应别名无文件
+ * @returns 实际上传的文件名数组（无上传时为空数组）
  */
 export function collectUploadedFilenames(
   params: RuntimeParam[],
   finalAliasValues: Record<string, unknown>,
+  files: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>,
 ): string[] {
   const filenames: string[] = [];
   const seenAliases = new Set<string>();
@@ -258,6 +288,9 @@ export function collectUploadedFilenames(
     // 同一别名只收集一次（同别名多参数共享同一批上传文件）
     if (seenAliases.has(param.alias)) continue;
     seenAliases.add(param.alias);
+    // 该别名本次未上传文件（仅传了文本值）→ 不收集，避免误删服务端已有文件
+    const fileList = files[param.alias];
+    if (!fileList || fileList.length === 0) continue;
     const value = finalAliasValues[param.alias];
     if (Array.isArray(value)) {
       // 多文件/同别名多参数：值为文件名数组

@@ -981,6 +981,122 @@ describe('Workflow API', () => {
     expect(JSON.parse(task.body.uploadedFiles as string)).toEqual(['uploaded-ref.png']);
   });
 
+  it('execute applies per-execution type override: text param overridden to image uploads file and injects filename', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const rawJson = JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-override', name: 'ExecOverride', rawJson });
+    // 参数持久化为 text 类型（本次执行覆盖为 image 后应真正上传文件）
+    await supertest(app)
+      .post('/api/workflows/exec-override/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'text', defaultValue: null })
+      .expect(201);
+    setupDefaultProvider();
+
+    // 记录 fetch 调用 URL，断言覆盖类型生效后确实发生了上传
+    const calledUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calledUrls.push(url);
+      if (url.endsWith('/upload/image')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ name: 'uploaded-ref.png' }),
+          text: async () => JSON.stringify({ name: 'uploaded-ref.png' }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ prompt_id: 'pid-override' }),
+        json: async () => ({ prompt_id: 'pid-override' }),
+      } as unknown as Response;
+    }));
+
+    // multipart：params 为空，paramTypeOverrides 声明 img → image，并挂文件
+    const res = await supertest(app)
+      .post('/api/workflows/exec-override/execute')
+      .field('params', JSON.stringify({}))
+      .field('paramTypeOverrides', JSON.stringify({ img: 'image' }))
+      .attach('img', Buffer.from('fake-image-bytes'), 'photo.png');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('pending');
+
+    // 覆盖为 image 后文件被真正上传（未覆盖前 text 参数不会上传）
+    expect(calledUrls.some((u) => u.endsWith('/upload/image'))).toBe(true);
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 上传返回的文件名已注入到节点 inputs
+    const body = JSON.parse(task.body.comfyuiRequestBody as string) as { prompt: { '1': { inputs: { image: string } } } };
+    expect(body.prompt['1'].inputs.image).toBe('uploaded-ref.png');
+    // 任务记录本次上传文件名（供自动清理）
+    expect(JSON.parse(task.body.uploadedFiles as string)).toEqual(['uploaded-ref.png']);
+
+    // 覆盖仅本次执行有效：持久化参数类型保持不变
+    const wfDetail = await supertest(app)
+      .get('/api/workflows/exec-override')
+      .set('Authorization', `Bearer ${token}`);
+    expect((wfDetail.body.params as Array<{ paramType: string }>)[0].paramType).toBe('text');
+  });
+
+  it('execute JSON mode extracts paramTypeOverrides reserved key and injects media text value', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    const rawJson = JSON.stringify({ '1': { inputs: { image: '' }, class_type: 'LoadImage' } });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'exec-override-json', name: 'ExecOverrideJson', rawJson });
+    // 参数持久化为 image 类型（本次覆盖为 text 后直接注入字符串值，不触发上传）
+    await supertest(app)
+      .post('/api/workflows/exec-override-json/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ nodeId: '1', fieldName: 'image', alias: 'img', label: null, paramType: 'image', defaultValue: null })
+      .expect(201);
+    setupDefaultProvider();
+
+    // 只 stub /prompt：覆盖为 text 后不应发生任何上传
+    const calledUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calledUrls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ prompt_id: 'pid-json-ov' }),
+        json: async () => ({ prompt_id: 'pid-json-ov' }),
+      } as unknown as Response;
+    }));
+
+    // JSON 模式：body 含保留键 paramTypeOverrides（image → text）与媒体文本值
+    const res = await supertest(app)
+      .post('/api/workflows/exec-override-json/execute')
+      .send({ img: 'existing.png', paramTypeOverrides: { img: 'text' } });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('pending');
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 文本值直接注入节点（未走上传）
+    const body = JSON.parse(task.body.comfyuiRequestBody as string) as { prompt: { '1': { inputs: { image: string } } } };
+    expect(body.prompt['1'].inputs.image).toBe('existing.png');
+    // 保留键 paramTypeOverrides 不应作为别名值注入 prompt
+    expect(JSON.stringify(body.prompt)).not.toContain('paramTypeOverrides');
+    // 无实际上传 → 清理名单为空
+    expect(JSON.parse(task.body.uploadedFiles as string)).toEqual([]);
+    // 未发生媒体上传调用
+    expect(calledUrls.some((u) => u.includes('/upload/'))).toBe(false);
+  });
+
   it('simulate with multipart media upload returns json and params', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
