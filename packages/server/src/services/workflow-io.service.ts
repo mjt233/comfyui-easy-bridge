@@ -54,6 +54,10 @@ interface ExportWorkflow {
   name: string;
   /** 原始 JSON 字符串 */
   rawJson: string;
+  /** 动态构建脚本源码；空串表示未配置 */
+  buildScript: string;
+  /** 是否启用动态构建（0/1） */
+  buildScriptEnabled: number;
   /** 备注说明（Markdown） */
   description: string;
   /** 执行提供商实例 ID；null 表示使用全局默认实例 */
@@ -83,7 +87,7 @@ interface ExportWorkflow {
  * 导出清单（manifest.json 的结构）
  */
 interface ExportManifest {
-  /** 格式版本号（v2 起包含标签定义与关联） */
+  /** 格式版本号（v3 起包含动态构建脚本；v2 起包含标签定义与关联） */
   version: number;
   /** 导出时间 */
   exportedAt: string;
@@ -108,7 +112,7 @@ export interface ImportResult {
 /**
  * 工作流导入导出服务：多选导出为 ZIP、批量导入 ZIP。
  * ZIP 结构：
- *   manifest.json    { version, exportedAt, tags: [...], workflows: [...] }（v2 起含标签）
+ *   manifest.json    { version, exportedAt, tags: [...], workflows: [...] }（v3 起含动态构建脚本；v2 起含标签）
  *   attachments/     附件二进制文件（storedName）
  */
 export class WorkflowIOService {
@@ -131,8 +135,8 @@ export class WorkflowIOService {
   async exportWorkflows(ids: string[]): Promise<Buffer> {
     const zip = new JSZip();
     const manifest: ExportManifest = {
-      // 导出恒为 v2（含标签定义与关联）
-      version: 2,
+      // 导出恒为 v3（含动态构建脚本、标签定义与关联）
+      version: 3,
       exportedAt: new Date().toISOString(),
       tags: [],
       workflows: [],
@@ -171,6 +175,9 @@ export class WorkflowIOService {
         id: wf.id,
         name: wf.name,
         rawJson: wf.rawJson,
+        // 动态构建脚本与启用状态
+        buildScript: wf.buildScript,
+        buildScriptEnabled: wf.buildScriptEnabled,
         description: wf.description ?? '',
         // 携带执行提供商实例 ID（旧版导出缺省时回退 null）
         providerId: wf.providerId ?? null,
@@ -265,6 +272,9 @@ export class WorkflowIOService {
           id: newId,
           name: entry.name,
           rawJson: entry.rawJson,
+          // 动态构建脚本与启用状态（v3 起导出；旧版缺省时回退禁用）
+          buildScript: entry.buildScript ?? '',
+          buildScriptEnabled: entry.buildScriptEnabled ?? 0,
           // 旧版导出无 declaredParams 时回退空数组
           declaredParams: JSON.stringify(entry.declaredParams ?? []),
           description: entry.description ?? '',

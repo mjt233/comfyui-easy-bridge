@@ -132,6 +132,51 @@ describe('WorkflowIOService', () => {
     ]);
   });
 
+  it('export then import round-trips dynamic build script', async () => {
+    const envA = createEnv();
+    const { id } = seedWorkflow(envA, 'wf-bs');
+    // 配置动态构建脚本并启用
+    envA.workflowService.updateBuildScript(id, { script: 'export default (ctx) => ctx.workflow', enabled: true });
+
+    const zipBuffer = await envA.ioService.exportWorkflows([id]);
+    const envB = createEnv();
+    const result = await envB.ioService.importWorkflows(zipBuffer);
+    expect(result.imported).toBe(1);
+    // 动态构建脚本与启用状态完整还原
+    const wf = envB.workflowService.getById(id);
+    expect(wf?.buildScript).toBe('export default (ctx) => ctx.workflow');
+    expect(wf?.buildScriptEnabled).toBe(1);
+  });
+
+  it('import of legacy export without buildScript defaults to disabled', async () => {
+    const env = createEnv();
+    // 手工构造不含 buildScript 字段的 v2 旧版导出清单
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      workflows: [{
+        id: 'wf-legacy-bs',
+        name: 'WF-legacy-bs',
+        rawJson: '{}',
+        description: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        params: [],
+        declaredParams: [],
+        attachments: [],
+      }],
+    }));
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const result = await env.ioService.importWorkflows(buffer);
+    expect(result.imported).toBe(1);
+    // 旧版导出无 buildScript → 导入后为空脚本且未启用
+    const wf = env.workflowService.getById('wf-legacy-bs');
+    expect(wf?.buildScript).toBe('');
+    expect(wf?.buildScriptEnabled).toBe(0);
+  });
+
   it('import renames workflow when ID conflicts', async () => {
     const env = createEnv();
     const { id } = seedWorkflow(env, 'wf-dup');
@@ -339,7 +384,7 @@ describe('WorkflowIOService', () => {
       tags: Array<{ id: string; name: string; parentId: string | null; isPreset: number }>;
       workflows: Array<{ id: string; tags: Array<{ tagId: string; metadataValues: Record<string, number> }> }>;
     };
-    expect(manifest.version).toBe(2);
+    expect(manifest.version).toBe(3);
     expect(manifest.tags.find((t) => t.id === 'reference')?.isPreset).toBe(1);
     expect(manifest.tags.find((t) => t.id === custom.id)?.name).toBe('自定义标签');
     const wfTags = manifest.workflows.find((w) => w.id === 'wf-tag')!.tags;
@@ -359,6 +404,60 @@ describe('WorkflowIOService', () => {
     expect(ref.configuredMetadata).toEqual({ maxImageCount: 12 });
     // 导入后自定义标签已重建
     expect(new TagService(db2).getById(custom.id)?.name).toBe('自定义标签');
+  });
+
+  it('自定义标签导出后导入全新系统：同 ID 完整还原（父子关系 + 元数据定义 + 关联值）', async () => {
+    // 源系统：迁移种子 + 自定义标签
+    const sqlite1 = new Database(':memory:');
+    runMigrations(sqlite1);
+    const db1 = drizzle(sqlite1, { schema });
+    const io1 = new WorkflowIOService(db1);
+    const tagService1 = new TagService(db1);
+    // 自定义顶层标签 + 自定义子标签（挂在其下，含元数据字段定义）
+    const customParent = tagService1.create({ name: '我的分组', parentId: null, metadataDef: [] });
+    const customChild = tagService1.create({
+      name: '我的子标签',
+      parentId: customParent.id,
+      metadataDef: [{ key: 'count', label: '数量', type: 'number', defaultValue: 1 }],
+    });
+    db1.insert(schema.workflows).values({
+      id: 'wf-custom', name: '自定义流', rawJson: '{}', createdAt: '2026-01-01', updatedAt: '2026-01-01',
+    }).run();
+    const wt1 = new WorkflowTagService(db1);
+    wt1.setWorkflowTags('wf-custom', [
+      { tagId: customParent.id },
+      { tagId: customChild.id, metadataValues: { count: 5 } },
+    ]);
+
+    // 导出
+    const zip = await io1.exportWorkflows(['wf-custom']);
+
+    // 导入到全新系统（仅迁移种子，无任何自定义数据）
+    const sqlite2 = new Database(':memory:');
+    runMigrations(sqlite2);
+    const db2 = drizzle(sqlite2, { schema });
+    const io2 = new WorkflowIOService(db2);
+    const result = await io2.importWorkflows(zip);
+    expect(result.imported).toBe(1);
+
+    // 自定义标签按原 ID 重建，名称 / 父子关系 / 自定义属性保留
+    const tagService2 = new TagService(db2);
+    const restoredParent = tagService2.getById(customParent.id);
+    expect(restoredParent?.name).toBe('我的分组');
+    expect(restoredParent?.isPreset).toBe(0);
+    const restoredChild = tagService2.getById(customChild.id);
+    expect(restoredChild?.name).toBe('我的子标签');
+    expect(restoredChild?.parentId).toBe(customParent.id);
+    expect(restoredChild?.isPreset).toBe(0);
+    expect(restoredChild?.metadataDef).toContain('count');
+
+    // 关联还原（含用户配置的元数据值）
+    const groups = new WorkflowTagService(db2).getTagGroups('wf-custom');
+    const parentGroup = groups.find((g) => g.id === customParent.id)!;
+    expect(parentGroup).toBeDefined();
+    expect(parentGroup.tags.map((t) => t.id)).toEqual([customChild.id]);
+    const child = parentGroup.tags[0];
+    expect(child.configuredMetadata).toEqual({ count: 5 });
   });
 
   it('v1 旧包（无 tags）导入行为不变', async () => {

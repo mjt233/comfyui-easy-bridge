@@ -167,13 +167,13 @@ PUT /api/workflows/:id/tags   # 整组替换 { tags: [{ tagId, metadataValues? }
   - 选中**子标签** → 有效集合 = {该子标签}
 - SQL 实现：每个选中标签一个 `EXISTS` 子查询（`workflow_tags` 中 `tagId IN (有效集合)`），多条件 AND
 
-## 导入导出（manifest v2）
+## 导入导出（manifest v3）
 
-ZIP 结构不变（`manifest.json` + `attachments/`），`manifest.json` 升级为 v2：
+ZIP 结构不变（`manifest.json` + `attachments/`），`manifest.json` 为 v3（v2 起含标签定义与关联，v3 起含动态构建脚本）：
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "exportedAt": "2026-08-07T...",
   "tags": [
     { "id": "image-to-video", "name": "图生视频", "parentId": null, "isPreset": true, "metadataDef": [] },
@@ -182,6 +182,7 @@ ZIP 结构不变（`manifest.json` + `attachments/`），`manifest.json` 升级�
   "workflows": [
     {
       "id": "...", "name": "...", "rawJson": "...", "description": "",
+      "buildScript": "export default (ctx) => ctx.workflow", "buildScriptEnabled": 1,
       "providerId": null, "createdAt": "...", "updatedAt": "...",
       "params": [ ... ], "declaredParams": [ ... ], "attachments": [ ... ],
       "tags": [
@@ -192,12 +193,13 @@ ZIP 结构不变（`manifest.json` + `attachments/`），`manifest.json` 升级�
 }
 ```
 
-- **导出**：收集选中工作流用到的全部标签定义（去重）进顶层 `tags`（按 `parentId` 排序，父在前）；每个工作流带 `tags` 关联数组（含用户元数据原始值）
+- **导出**：收集选中工作流用到的全部标签定义（去重）进顶层 `tags`（按 `parentId` 排序，父在前）；每个工作流带 `tags` 关联数组（含用户元数据原始值），并携带 `buildScript` / `buildScriptEnabled`（动态构建脚本）
 - **导入**：
   1. 处理标签定义：id 已存在 → 复用（不覆盖）；不存在 → 按导出字段创建（先父后子；`isPreset` 按导出值保留，导入的预设与迁移种子同 id 故正常复用）
-  2. 创建/更新工作流后写入 `workflow_tags` 关联（含 `metadataValues`）
+  2. 创建/更新工作流后写入 `workflow_tags` 关联（含 `metadataValues`），并还原 `buildScript` / `buildScriptEnabled`
   3. 防御校验：若关联含子标签但缺父标签 → 自动补父标签关联（正常导出的数据不会出现，仅防御）
-- **向后兼容**：v1 包（无 `tags` 字段）导入行为不变，标签忽略
+- **自定义标签导入全新系统**：自定义标签按原 ID 重建（名称 / 父子关系 / `isPreset=0` / `metadataDef` 均保留），预设标签复用迁移种子，关联与元数据值完整还原
+- **向后兼容**：v1/v2 包（无 `tags` 或 `buildScript` 字段）导入行为不变——标签忽略、构建脚本回退为空且未启用
 
 ## 前端
 
