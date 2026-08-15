@@ -6,7 +6,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: comfyui-easy-bridge:latest
+    image: xiaotao233/comfyui-easy-bridge:latest
     container_name: comfyui-easy-bridge
     ports:
       # 宿主机端口:容器端口；如需改宿主机端口改左侧即可（如 8080:10721）
