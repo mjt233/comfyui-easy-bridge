@@ -1,3 +1,5 @@
+import path from 'node:path';
+import fs from 'node:fs';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -28,6 +30,36 @@ app.use('/api/settings', createSettingsRoutes(db));
 app.use('/api/providers', createProvidersRoutes(db));
 app.use('/api/tasks', createTaskRoutes(db));
 app.use('/api/tags', createTagsRoutes(db));
+
+/**
+ * 解析前端构建产物目录（单容器部署时托管 SPA）。
+ * 依序尝试：CLIENT_DIST 环境变量 → monorepo 内 packages/client/dist → 工作目录下 client/dist。
+ * 仅当目录中存在 index.html 时返回，否则返回 null（纯 API 模式，跳过静态托管）。
+ */
+function resolveClientDist(): string | null {
+  const candidates: string[] = [
+    process.env.CLIENT_DIST ?? '',
+    path.resolve(__dirname, '../../client/dist'),
+    path.resolve(process.cwd(), 'client/dist'),
+  ];
+  for (const dir of candidates) {
+    // 跳过空字符串候选，并校验构建产物确实存在
+    if (dir && fs.existsSync(path.join(dir, 'index.html'))) {
+      return dir;
+    }
+  }
+  return null;
+}
+
+const clientDist = resolveClientDist();
+if (clientDist) {
+  // 静态托管前端构建产物（需在 API 路由之后注册，避免遮蔽 /api 前缀）
+  app.use(express.static(clientDist));
+  // SPA history 路由回退：非 /api 前缀的 GET 请求一律返回 index.html
+  app.get(/^\/(?!api(?:$|\/)).*/, (_req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 app.use(errorHandler);
 

@@ -95,6 +95,18 @@ pnpm dev:client   # 前端 (Vite HMR, 代理 /api → 10721)
 
 > 默认管理员密码: `0d000721`（首次启动后自动 bcrypt 哈希存储，请及时修改）
 
+### Docker 部署（单容器）
+
+```bash
+docker compose up -d --build
+```
+
+- 构建过程见 `Dockerfile`（多阶段：pnpm 安装 → 编译 server/client → 裁剪生产依赖的运行时镜像）
+- 前端由后端 Express 统一托管，访问 `http://<host>:10721` 即可（`/api/*` 仍为纯 JSON 接口）
+- SQLite 数据库、附件与任务输出持久化在宿主机 `./data` 目录（映射到容器 `/app/data`）
+- 生产环境请通过 `.env` 文件或环境变量设置 `JWT_SECRET`（见 `docker-compose.yml`），
+  否则将使用代码内置的开发密钥，存在 token 伪造风险
+
 ---
 
 ## 操作流程

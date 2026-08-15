@@ -1,0 +1,23 @@
+# ComfyUI Easy Bridge 单容器部署
+# 使用方式：docker compose up -d --build
+# 构建详情见 Dockerfile（多阶段：构建 → 运行时）
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: comfyui-easy-bridge:latest
+    container_name: comfyui-easy-bridge
+    ports:
+      # 宿主机端口:容器端口；如需改宿主机端口改左侧即可（如 8080:10721）
+      - "10721:10721"
+    environment:
+      - PORT=10721
+      - DATA_DIR=/app/data
+      # 生产环境务必通过 .env 文件或环境变量覆盖 JWT_SECRET，
+      # 否则使用与代码默认值一致的开发密钥，存在 token 伪造风险
+      - JWT_SECRET=${JWT_SECRET:-comfyui-easy-bridge-secret-key-change-in-production}
+    volumes:
+      # SQLite 数据库 + 附件 + 任务输出文件持久化
+      - ./data:/app/data
+    restart: unless-stopped

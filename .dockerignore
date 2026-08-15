@@ -1,0 +1,12 @@
+.git
+.gitignore
+.vscode
+node_modules
+**/node_modules
+data
+.pnpm-store
+**/dist
+**/*.log
+Dockerfile
+docker-compose.yml
+.dockerignore
