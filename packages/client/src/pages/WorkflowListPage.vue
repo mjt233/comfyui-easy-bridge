@@ -76,9 +76,10 @@
       </v-col>
     </v-row>
 
-    <!-- 多选导出 / 批量导入工具栏 -->
-    <v-row v-if="workflows.length > 0" class="mb-2 align-center">
-      <v-col cols="auto">
+    <!-- 多选导出 / 批量导入工具栏（列表为空时仍保留导入按钮，便于从空态直接导入 ZIP） -->
+    <v-row class="mb-2 align-center">
+      <!-- 列表非空时才显示全选与已选计数 -->
+      <v-col v-if="workflows.length > 0" cols="auto">
         <v-checkbox
           label="全选"
           :model-value="allSelected"
@@ -87,12 +88,14 @@
           @update:model-value="toggleSelectAll"
         />
       </v-col>
-      <v-col cols="auto">
+      <v-col v-if="workflows.length > 0" cols="auto">
         <span class="text-caption text-grey">已选 {{ selectedIds.size }} 项</span>
       </v-col>
       <v-spacer />
       <v-col cols="auto">
+        <!-- 列表非空时才显示导出按钮（无选中项时禁用） -->
         <v-btn
+          v-if="workflows.length > 0"
           color="primary"
           variant="tonal"
           prepend-icon="mdi-export"
@@ -138,7 +141,7 @@
           </v-btn>
         </template>
         <template v-else>
-          暂无工作流，点击上方按钮新建
+          暂无工作流，点击上方按钮新建或导入
         </template>
       </v-card-text>
     </v-card>
