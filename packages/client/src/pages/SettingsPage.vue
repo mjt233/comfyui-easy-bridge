@@ -233,6 +233,56 @@
           color="primary"
           @update:model-value="handleAuthToggle"
         />
+
+        <v-divider class="my-4" />
+
+        <!-- 修改管理员密码表单 -->
+        <v-alert
+          v-if="pwdError"
+          type="error"
+          closable
+          class="mb-4"
+          @click:close="pwdError = ''"
+        >
+          {{ pwdError }}
+        </v-alert>
+
+        <v-form ref="pwdForm" @submit.prevent="handleChangePassword">
+          <v-text-field
+            v-model="pwdFormModel.oldPassword"
+            label="当前密码"
+            type="password"
+            variant="outlined"
+            class="mb-3"
+            autocomplete="current-password"
+            :rules="[requiredRule]"
+          />
+          <v-text-field
+            v-model="pwdFormModel.newPassword"
+            label="新密码"
+            type="password"
+            variant="outlined"
+            class="mb-3"
+            autocomplete="new-password"
+            :rules="[requiredRule, minLengthRule]"
+          />
+          <v-text-field
+            v-model="pwdFormModel.confirmPassword"
+            label="确认新密码"
+            type="password"
+            variant="outlined"
+            class="mb-3"
+            autocomplete="new-password"
+            :rules="[requiredRule, confirmRule]"
+          />
+          <v-btn
+            color="primary"
+            :loading="changingPassword"
+            @click="handleChangePassword"
+          >
+            修改密码
+          </v-btn>
+        </v-form>
       </v-card-text>
     </v-card>
 
@@ -244,8 +294,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import type { VForm } from 'vuetify/components';
 import { getSettings, updateSetting } from '@/api/settings';
-import { getAuthStatus } from '@/api/auth';
+import { getAuthStatus, changePassword } from '@/api/auth';
 import { authEnabled } from '@/api/auth-status';
 import {
   createProvider,
@@ -269,6 +320,41 @@ const error = ref('');
 const saving = ref(false);
 /** 顶部提示条 */
 const snackbar = ref({ show: false, text: '', color: 'success' });
+/** 修改密码表单引用（v-form 校验） */
+const pwdForm = ref<VForm | null>(null);
+/** 修改密码表单模型 */
+const pwdFormModel = ref({ oldPassword: '', newPassword: '', confirmPassword: '' });
+/** 修改密码是否进行中 */
+const changingPassword = ref(false);
+/** 修改密码错误提示 */
+const pwdError = ref('');
+
+/**
+ * 必填校验规则。
+ * @param v 输入值
+ * @returns 通过返回 true，否则返回错误文案
+ */
+function requiredRule(v: string): boolean | string {
+  return v !== '' || '不能为空';
+}
+
+/**
+ * 新密码最短长度校验规则（与后端 MIN_PASSWORD_LENGTH 保持一致）。
+ * @param v 输入值
+ * @returns 通过返回 true，否则返回错误文案
+ */
+function minLengthRule(v: string): boolean | string {
+  return v.length >= 6 || '新密码至少 6 位';
+}
+
+/**
+ * 确认密码一致性校验规则。
+ * @param v 确认密码输入值
+ * @returns 通过返回 true，否则返回错误文案
+ */
+function confirmRule(v: string): boolean | string {
+  return v === pwdFormModel.value.newPassword || '两次输入的密码不一致';
+}
 
 /** 执行提供商实例列表 */
 const providers = ref<ProviderSummary[]>([]);
@@ -356,6 +442,34 @@ async function handleAuthToggle(val: boolean | null) {
   } catch {
     error.value = '保存身份验证设置失败';
     authEnabledLocal.value = !val;
+  }
+}
+
+/**
+ * 提交修改密码：表单校验通过后调用后端接口，成功后清除本地 token 并跳转登录页。
+ * 旧 token 已随密码修改失效，必须使用新密码重新登录。
+ */
+async function handleChangePassword() {
+  if (!pwdForm.value) return;
+  // 先做前端表单校验（必填 / 长度 / 两次一致）
+  const { valid } = await pwdForm.value.validate();
+  if (!valid) return;
+  changingPassword.value = true;
+  pwdError.value = '';
+  try {
+    await changePassword(pwdFormModel.value.oldPassword, pwdFormModel.value.newPassword);
+    snackbar.value = { show: true, text: '密码修改成功，请使用新密码重新登录', color: 'success' };
+    // 延迟跳转，让用户看到成功提示后再进入登录页
+    window.setTimeout(() => {
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    }, 1200);
+  } catch (err) {
+    // 展示后端返回的具体错误（旧密码错误等），否则给出通用提示
+    const serverMsg = (err as { response?: { data?: { error?: string } } }).response?.data?.error;
+    pwdError.value = serverMsg ? `修改失败：${serverMsg}` : '修改失败：当前密码错误或网络异常';
+  } finally {
+    changingPassword.value = false;
   }
 }
 

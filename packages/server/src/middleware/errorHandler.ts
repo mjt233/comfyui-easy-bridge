@@ -13,6 +13,11 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
     return;
   }
 
+  if (err.message === 'New password too short') {
+    res.status(400).json({ error: err.message, code: 'invalid_parameter' });
+    return;
+  }
+
   if (err.message?.includes('UNIQUE constraint failed')) {
     res.status(409).json({ error: 'Alias already exists', code: 'alias_conflict' });
     return;

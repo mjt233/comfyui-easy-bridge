@@ -12,8 +12,9 @@
 获取工作流详情是**受保护端点**，需要先登录获取 Token：
 
 ```
-GET /api/auth/status      # 查询是否启用认证
-POST /api/auth/login      # 登录，body: { "password": "0d000721" }，返回 { "token": "<JWT>" }
+GET /api/auth/status                  # 查询是否启用认证
+POST /api/auth/login                  # 登录，body: { "password": "0d000721" }，返回 { "token": "<JWT>" }
+POST /api/auth/change-password        # 修改密码（需 Bearer token），body: { "oldPassword", "newPassword" }
 ```
 
 调用详情接口时请求头携带：

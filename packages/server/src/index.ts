@@ -11,6 +11,7 @@ import { createProvidersRoutes } from './routes/providers.routes';
 import { createTaskRoutes } from './routes/task.routes';
 import { createTagsRoutes } from './routes/tags.routes';
 import { errorHandler } from './middleware/errorHandler';
+import { ensureDefaultPassword } from './services/auth.service';
 import { startExecutionService } from './services/execution.service';
 
 const app: Express = express();
@@ -64,6 +65,8 @@ if (clientDist) {
 app.use(errorHandler);
 
 function startServer() {
+  // 启动时检查管理员密码：未设置过则写入默认密码 0d000721 的 bcrypt 哈希
+  ensureDefaultPassword(db);
   startExecutionService(db);
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
