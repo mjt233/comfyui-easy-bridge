@@ -1,6 +1,6 @@
 # 工作流相关 API 文档
 
-本文档覆盖五个核心 API：提供商管理、提交工作流执行、查看任务状态、中断任务、下载输出文件。
+本文档覆盖六个核心 API：提供商管理、提交工作流执行、标签管理、查看任务状态、中断任务、下载输出文件。
 
 **基础路径**: `/api`
 
@@ -31,6 +31,21 @@ Content-Type: application/json
 
 每个 key 为工作流参数中定义的 **alias**，value 为要注入工作流 JSON 的值。
 
+**保留键（可选）**：除 alias 外，请求体还可携带以下保留键，不会被注入工作流：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `providerId` | string | 本次执行显式指定的提供商实例 ID，仅本次执行有效。缺省时按「工作流配置的提供商 → 系统全局默认提供商」顺序解析；显式指定的实例不存在、已禁用或配置非法时返回 `400 provider_not_configured`（不回退）。可用实例 ID 见第 2 节 `GET /api/providers` |
+| `paramTypeOverrides` | object | 本次执行类型覆盖（alias → `text` / `boolean` / `number` / `image` / `video` / `audio`），仅本次执行有效，不写回工作流配置 |
+
+```json
+{
+  "prompt": "a cute cat",
+  "providerId": "uuid-string",
+  "paramTypeOverrides": { "img": "text" }
+}
+```
+
 **方式 B：multipart/form-data（含文件上传）**
 
 当参数类型为 `image` / `video` / `audio` 时使用。
@@ -38,12 +53,15 @@ Content-Type: application/json
 | 字段 | 说明 |
 |------|------|
 | `params` | JSON 字符串，包含所有文本参数值，如 `{"steps": 20, "prompt": "cat"}` |
+| `providerId` | 本次执行显式指定的提供商实例 ID（可选，字符串） |
+| `paramTypeOverrides` | 本次执行类型覆盖（可选，JSON 字符串，如 `{"img": "image"}`） |
 | `<alias>` | 每个文件类型参数对应一个字段，字段名为 alias，值为上传的文件 |
 
 示例：
 
 ```
 params: {"prompt": "a cute cat"}
+providerId: uuid-string
 input_image: <file>
 ```
 
@@ -76,11 +94,10 @@ input_image: <file>
 | 状态码 | code | 说明 |
 |--------|------|------|
 | `400` | `missing_parameter` | 必填参数缺失 |
-| `400` | `provider_not_configured` | 未配置默认执行提供商 / 工作流指定的提供商不存在或已禁用 |
+| `400` | `provider_not_configured` | 未配置默认执行提供商 / 工作流指定的提供商不存在或已禁用 / 显式指定的 `providerId` 不存在或已禁用 |
 | `404` | `workflow_not_found` | 工作流不存在 |
-| `502` | `comfyui_unreachable` | 执行提供商服务不可达 |
 
-> 说明：工作流执行通过「执行提供商」实例进行（见第 2 节「提供商管理」），执行端可能是 ComfyUI 原生或 RunningHub。`comfyui_response` 为执行端的原始响应体、`prompt_id` 语义不变，执行端地址不再来自全局 `comfyui_base_url` 设置。
+> 说明：工作流执行通过「执行提供商」实例进行（见第 2 节「提供商管理」），执行端可能是 ComfyUI 原生或 RunningHub。`comfyui_response` 为执行端的原始响应体、`prompt_id` 语义不变，执行端地址不再来自全局 `comfyui_base_url` 设置。执行端不可达等错误不会以 HTTP 错误返回，而是任务状态变为 `failed`（`task.status = "failed"`）。
 
 ---
 
@@ -191,6 +208,7 @@ POST /api/providers/:id/test
 - 全局默认实例通过设置 `default_provider_id` 指定（`PUT /api/settings`，body 为 `{ "key": "default_provider_id", "value": "<实例 ID>" }`）；默认实例被禁用时视为未配置。
 - 工作流的 `providerId` 字段（可空：`null` 或空字符串 = 使用全局默认）可覆盖默认实例，创建工作流（`POST /api/workflows`）与更新工作流（`PUT /api/workflows/:id`）时均可传入。
 - 执行时优先使用工作流指定的**启用中**的实例，否则回退全局默认；均不可用时 `POST /api/workflows/:id/execute` 返回 `400 provider_not_configured`。
+- **本次执行覆盖**：执行接口（`POST /api/workflows/:id/execute`）还支持在单次请求中显式指定提供商（保留键 `providerId`，JSON 模式为请求体顶层字段 / multipart 模式为表单字段），仅本次执行有效，不修改工作流配置。解析顺序为「**本次执行显式指定（须为启用状态）→ 工作流配置 → 全局默认**」；显式指定的实例不存在、已禁用或配置非法时返回 `400 provider_not_configured`（明确报错，不回退到工作流/默认）。
 
 ---
 
@@ -450,10 +468,10 @@ TOKEN=$(curl -s -X POST http://localhost:10721/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"password": "0d000721"}' | jq -r '.token')
 
-# 2. 提交工作流执行
+# 2. 提交工作流执行（可选：providerId 指定本次执行的提供商；不传则按 工作流配置 → 全局默认 解析）
 EXEC_RESULT=$(curl -s -X POST http://localhost:10721/api/workflows/txt2img/execute \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "a cute cat"}')
+  -d '{"prompt": "a cute cat", "providerId": "uuid-string"}')
 TASK_ID=$(echo $EXEC_RESULT | jq -r '.task_id')
 echo "Task ID: $TASK_ID"
 
@@ -482,11 +500,11 @@ curl -O "http://localhost:10721/api/tasks/$TASK_ID/output-files/output_001.png" 
 | code | HTTP 状态码 | 场景 |
 |------|------------|------|
 | `missing_parameter` | 400 | 必填参数缺失 |
-| `provider_not_configured` | 400 | 未配置默认执行提供商 / 工作流指定的实例不存在或已禁用 |
+| `provider_not_configured` | 400 | 未配置默认执行提供商 / 工作流指定的实例不存在或已禁用 / 显式指定的 `providerId` 不存在或已禁用 |
 | `invalid_status` | 400 | 任务状态不允许当前操作（如取消已完成的任务） |
 | `unauthorized` | 401 | Token 无效或过期 |
 | `workflow_not_found` | 404 | 工作流不存在 |
 | `task_not_found` | 404 | 任务不存在 |
 | `provider_not_found` | 404 | 提供商实例不存在 |
 | `default_provider_not_deletable` | 409 | 尝试删除全局默认提供商实例 |
-| `comfyui_unreachable` | 502 | 执行提供商服务不可达 |
+| `comfyui_unreachable` | 502 | 执行提供商服务不可达（任务输出相关接口 / 中间件兜底返回；执行接口本身以任务 `failed` 状态体现） |

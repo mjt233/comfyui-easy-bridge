@@ -530,19 +530,14 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           return;
         }
         const params = workflowService.getParams(id);
-        // 解析工作流执行提供商（工作流指定优先，否则全局默认）
-        const provider = providerService.resolveWorkflowProvider(id);
-        if (!provider) {
-          res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
-          return;
-        }
-        const baseUrl = provider.getBaseUrl();
 
         // 解析 multipart 或 JSON 请求（值可能是 string/number/boolean）
         const isMultipart = req.is('multipart/form-data');
         let aliasValues: Record<string, unknown>;
         /** 本次执行类型覆盖（别名 → text/boolean/number/image/video/audio），仅本次执行有效 */
         let paramTypeOverrides: Record<string, string> = {};
+        /** 本次执行显式指定的提供商实例 ID（保留键 providerId；空/非字符串视为未指定） */
+        let overrideProviderId: string | null = null;
         let uploadedFiles: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]>;
 
         if (isMultipart) {
@@ -558,6 +553,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             // 覆盖字段解析失败时忽略，不影响执行
             paramTypeOverrides = {};
           }
+          // 本次执行显式指定的提供商：表单字段 providerId（字符串，去空白；空串视为未指定）
+          const rawProviderId = req.body.providerId as string | undefined;
+          overrideProviderId = typeof rawProviderId === 'string' && rawProviderId.trim() !== '' ? rawProviderId.trim() : null;
           const multerFiles = (req.files as Express.Multer.File[]) || [];
           uploadedFiles = {};
           for (const f of multerFiles) {
@@ -571,15 +569,39 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             });
           }
         } else {
-          // 提取保留键 paramTypeOverrides（本次执行类型覆盖），其余字段作为别名值注入
+          // 提取保留键 paramTypeOverrides / providerId（本次执行覆盖），其余字段作为别名值注入
           const body = req.body as Record<string, unknown>;
-          const { paramTypeOverrides: rawOverrides, ...rest } = body;
+          const { paramTypeOverrides: rawOverrides, providerId: rawProviderId, ...rest } = body;
           aliasValues = rest;
           if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
             paramTypeOverrides = rawOverrides as Record<string, string>;
           }
+          // 本次执行显式指定的提供商：顶层保留键 providerId（非字符串/空串视为未指定）
+          overrideProviderId = typeof rawProviderId === 'string' && rawProviderId.trim() !== '' ? rawProviderId.trim() : null;
           uploadedFiles = {};
         }
+
+        // 解析执行提供商：本次执行显式指定（须为启用状态）> 工作流指定 > 全局默认
+        let provider: ExecutionProvider | null = null;
+        if (overrideProviderId) {
+          provider = providerService.getEnabledProviderById(overrideProviderId);
+          if (!provider) {
+            // 显式指定不可用（不存在/已禁用/config 非法）：明确报错，不回退
+            res.status(400).json({
+              error: 'Specified execution provider is not available',
+              code: 'provider_not_configured',
+            });
+            return;
+          }
+        } else {
+          // 未显式指定：按工作流配置解析（工作流指定优先，否则全局默认）
+          provider = providerService.resolveWorkflowProvider(id);
+          if (!provider) {
+            res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
+            return;
+          }
+        }
+        const baseUrl = provider.getBaseUrl();
 
         // 任务日志记录用户原始请求表单（保留原始值，含动态构建脚本消费的动态别名字段；文件仅记元数据）
         const originalFormJson = buildOriginalForm(aliasValues, uploadedFiles);

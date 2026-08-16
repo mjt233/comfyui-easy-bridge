@@ -177,13 +177,14 @@ function samplePSValue(paramType: string): string {
 }
 
 /**
- * 生成 JSON 请求体示例
+ * 生成 JSON 请求体示例（含可选保留键 providerId）
  * @param id 工作流 ID
  * @param params 已配置别名的参数列表
  */
 function genJsonSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
   const pairs = params.map(p => `    ${q(p.alias)}: ${sampleJsonValue(p.paramType)}`).join(',\n');
-  const jsonBody = `{\n${pairs}\n}`;
+  // 末尾附可选保留键 providerId（本次执行显式指定提供商；调用方可不传或替换为实际实例 ID）
+  const jsonBody = `{\n${pairs}${pairs !== '' ? ',\n' : ''}    ${q('providerId')}: "REPLACE_WITH_PROVIDER_ID"\n}`;
   return { jsonBody };
 }
 
@@ -213,31 +214,44 @@ function buildApiCode(id: string, params: Array<WorkflowParam & { alias: string 
   const textPyPairs = textParams.map(p => `${q(p.alias)}: ${samplePyValue(p.paramType)}`).join(', ');
   const textPyObj = `{ ${textPyPairs} }`;
 
+  // providerId 示例占位值（调用方替换为实际实例 ID；可在「设置 → 执行提供商」中查看）
+  const providerIdValue = 'REPLACE_WITH_PROVIDER_ID';
+  // providerId 参数说明注释（按各语言注释语法生成；说明可选性与缺省时的解析行为）
+  const providerCommentHash = '# 可选：providerId 指定本次执行的提供商实例 ID；不传则按 工作流配置 → 全局默认 解析';
+  const providerCommentSlash = '// 可选：providerId 指定本次执行的提供商实例 ID；不传则按 工作流配置 → 全局默认 解析';
+
   return {
     curl: {
-      json: `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
+      json: `${providerCommentHash}
+curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
   -H "Content-Type: application/json" \\
   -d '${jsonBody}'`,
       multipart: mediaParams.length > 0
-        ? `curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
+        ? `${providerCommentHash}
+curl -X POST http://localhost:10721/api/workflows/${id}/execute \\
   -F 'params=${textJsonObj}' \\
+  -F 'providerId=${providerIdValue}' \\
 ${mediaParams.map(p => `  -F "${p.alias}=@/path/to/${p.alias}.png"`).join(' \\\n')}`
         : '',
     },
     powershell: {
-      json: `$body = @{
+      json: `${providerCommentHash}
+$body = @{
 ${params.map(p => `  ${p.alias} = ${samplePSValue(p.paramType)}`).join('\n')}
+  providerId = "${providerIdValue}"
 } | ConvertTo-Json
 
 Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
         + '-Method Post -Body $body -ContentType "application/json"',
       multipart: mediaParams.length > 0
-        ? `$params = @{
+        ? `${providerCommentHash}
+$params = @{
 ${textParams.map(p => `  ${p.alias} = ${samplePSValue(p.paramType)}`).join('\n')}
 } | ConvertTo-Json
 
 $form = @{
   params = $params
+  providerId = "${providerIdValue}"
 ${mediaParams.map(p => `  ${p.alias} = Get-Item -Path "C:\\path\\to\\${p.alias}.png"`).join('\n')}
 }
 
@@ -248,9 +262,11 @@ Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
     python: {
       json: `import requests
 
+${providerCommentHash}
 url = "http://localhost:10721/api/workflows/${id}/execute"
 payload = {
 ${params.map(p => `    ${q(p.alias)}: ${samplePyValue(p.paramType)},`).join('\n')}
+    ${q('providerId')}: ${q(providerIdValue)},
 }
 resp = requests.post(url, json=payload)
 print(resp.json())`,
@@ -262,14 +278,17 @@ url = "http://localhost:10721/api/workflows/${id}/execute"
 payload = ${textPyObj}
 files = {}
 ${mediaParams.map(p => `files[${q(p.alias)}] = (${q(p.alias + '.png')}, open("/path/to/${p.alias}.png", "rb"), "application/octet-stream")`).join('\n')}
-resp = requests.post(url, data={"params": json.dumps(payload)}, files=files)
+${providerCommentHash}
+resp = requests.post(url, data={"params": json.dumps(payload), "providerId": ${q(providerIdValue)}}, files=files)
 print(resp.json())`
         : '',
     },
     nodejs: {
-      json: `const url = "http://localhost:10721/api/workflows/${id}/execute";
+      json: `${providerCommentSlash}
+const url = "http://localhost:10721/api/workflows/${id}/execute";
 const payload = {
 ${params.map(p => `  ${q(p.alias)}: ${sampleJsonValue(p.paramType)},`).join('\n')}
+  ${q('providerId')}: ${q(providerIdValue)},
 };
 
 const res = await fetch(url, {
@@ -286,6 +305,8 @@ const url = "http://localhost:10721/api/workflows/${id}/execute";
 const payload = ${textJsonObj};
 const formData = new FormData();
 formData.append("params", JSON.stringify(payload));
+${providerCommentSlash}
+formData.append("providerId", ${q(providerIdValue)});
 ${mediaParams.map(p => `const ${p.alias}Buffer = await readFile("/path/to/${p.alias}.png");
 formData.append(${q(p.alias)}, new Blob([${p.alias}Buffer]), ${q(p.alias + '.png')});`).join('\n')}
 
@@ -303,6 +324,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
+${providerCommentSlash}
 String url = "http://localhost:10721/api/workflows/${id}/execute";
 String json = "${escDouble(jsonBody.replace(/\n {4}/g, '\\n    ').replace(/\n/g, '\\n'))}";
 
@@ -324,6 +346,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 
+${providerCommentSlash}
 String boundary = UUID.randomUUID().toString();
 String url = "http://localhost:10721/api/workflows/${id}/execute";
 String paramsJson = "${escDouble(textJsonObj)}";
@@ -334,6 +357,11 @@ var bos = new java.io.ByteArrayOutputStream();
 bos.write(("--" + boundary + "\\r\\n").getBytes());
 bos.write("Content-Disposition: form-data; name=\\"params\\"\\r\\n\\r\\n".getBytes());
 bos.write(paramsJson.getBytes());
+bos.write("\\r\\n".getBytes());
+// providerId field（可选）
+bos.write(("--" + boundary + "\\r\\n").getBytes());
+bos.write("Content-Disposition: form-data; name=\\"providerId\\"\\r\\n\\r\\n".getBytes());
+bos.write("${providerIdValue}".getBytes());
 bos.write("\\r\\n".getBytes());
 
 // File fields

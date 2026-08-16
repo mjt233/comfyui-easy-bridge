@@ -152,6 +152,40 @@ routes → controllers → services → models (Drizzle)
 | PUT | `/api/workflows/:id/params/:paramId` | 编辑参数别名 |
 | DELETE | `/api/workflows/:id/params/:paramId` | 删除参数别名 |
 
+### 执行提供商管理（需认证）
+
+执行提供商（`comfyui` / `runninghub` 实例）的 CRUD 与连通性测试。列表接口用于获取「执行工作流」接口可选参数 `providerId` 的可用实例 ID。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/providers` | 获取提供商实例列表（runninghub 的 apiKey 已打码） |
+| POST | `/api/providers` | 新建提供商实例 |
+| PUT | `/api/providers/:id` | 更新提供商实例 |
+| DELETE | `/api/providers/:id` | 删除提供商实例（全局默认实例禁止删除，返回 409） |
+| POST | `/api/providers/test` | 用未保存的配置测试连通性 |
+| POST | `/api/providers/:id/test` | 测试已保存实例的连通性 |
+
+`GET /api/providers` 响应示例：
+
+```json
+[
+  {
+    "id": "3f2a1c9e-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "name": "本地 ComfyUI",
+    "type": "comfyui",
+    "config": { "baseUrl": "http://127.0.0.1:8188", "autoCleanup": false, "inputDir": "" },
+    "concurrency": 1,
+    "enabled": true,
+    "resolvedBaseUrl": "http://127.0.0.1:8188",
+    "trackingMode": "websocket"
+  }
+]
+```
+
+- `type`：`comfyui`（`config.baseUrl`，可选 `autoCleanup` / `inputDir`）或 `runninghub`（`config.apiKey` + `gpuSize: '24G' | '48G'`，基础地址由 apiKey 推导）
+- 系统全局默认实例由设置 `default_provider_id` 指定（`PUT /api/settings`）
+- **API Key 原则**：`apiKey` 永不回显明文（列表/摘要一律打码）；更新时 config 中留空 = 不修改原 Key，仅输入新值才更新
+
 ### 系统设置（需认证）
 
 | 方法 | 路径 | 说明 |
@@ -165,14 +199,26 @@ routes → controllers → services → models (Drizzle)
 |------|------|------|
 | POST | `/api/workflows/:id/execute` | 执行工作流 |
 
-请求体示例：
+请求体支持 JSON 与 multipart 两种格式（multipart 时参数值放 `params` 表单字段，JSON 序列化）。
+
+JSON 请求体示例：
 ```json
 {
-  "img_desc": "一只橘黄色的凶猛小猫..."
+  "img_desc": "一只橘黄色的凶猛小猫...",
+  "providerId": "3f2a1c9e-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 }
 ```
 
-响应：ComfyUI `POST /prompt` 的原始响应（透传）。
+可选保留键：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `paramTypeOverrides` | object | 本次执行类型覆盖（别名 → text/boolean/number/image/video/audio），仅本次执行有效 |
+| `providerId` | string | 本次执行显式指定的执行提供商实例 ID，仅本次执行有效。缺省时按「工作流配置的提供商 → 系统全局默认提供商」顺序解析；显式指定的实例不存在、已禁用或配置非法时返回 400 `provider_not_configured`（不回退） |
+
+multipart 时 `providerId` 为表单字段（字符串），`paramTypeOverrides` 为 JSON 字符串表单字段。
+
+响应：任务提交结果 `{ task_id, status, comfyui_response }`，其中 `status` 为 `pending`（已提交） / `queued`（超过并发上限排队中） / `failed`（提交失败或动态构建失败）。
 
 ## 认证设计
 
@@ -198,10 +244,13 @@ routes → controllers → services → models (Drizzle)
 | HTTP 状态码 | code | 场景 |
 |-------------|------|------|
 | 400 | `missing_parameter` | 必填参数缺失 |
+| 400 | `provider_not_configured` | 未配置默认提供商 / 显式指定的实例不存在、已禁用或配置非法 |
 | 401 | `unauthorized` | Token 无效/过期 |
 | 404 | `workflow_not_found` | 工作流 ID 不存在 |
+| 404 | `provider_not_found` | 提供商实例不存在 |
 | 409 | `alias_conflict` | 别名重复 |
-| 502 | `comfyui_unreachable` | ComfyUI 服务不可达 |
+| 409 | `default_provider_not_deletable` | 删除的是全局默认提供商实例 |
+| 503 | `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
 
 ### 前端处理
 

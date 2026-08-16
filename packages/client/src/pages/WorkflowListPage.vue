@@ -268,6 +268,19 @@
           >
             该工作流没有已配置别名的参数，可直接执行。
           </v-alert>
+          <v-select
+            v-model="executeProviderId"
+            :items="executeProviderOptions"
+            item-title="title"
+            item-value="value"
+            label="执行提供商"
+            variant="outlined"
+            density="compact"
+            class="mb-3"
+            :disabled="executeLoading"
+            :hint="executeProviderHint"
+            persistent-hint
+          />
           <v-progress-linear
             v-if="executeLoading"
             indeterminate
@@ -445,6 +458,7 @@
       :alias-values="codeExampleRequest?.aliasValues ?? {}"
       :files="codeExampleRequest?.files ?? {}"
       :param-type-overrides="codeExampleRequest?.paramTypeOverrides ?? {}"
+      :provider-id="codeExampleRequest?.providerId ?? null"
     />
 
     <v-dialog v-model="deleteDialog" max-width="400">
@@ -497,7 +511,8 @@ import {
   duplicateWorkflow,
 } from '@/api/workflows';
 import { listTags, setWorkflowTags } from '@/api/tags';
-import type { TagTreeNode, Workflow, WorkflowParam, WorkflowTagInput } from '@/types';
+import { listProviders } from '@/api/providers';
+import type { TagTreeNode, Workflow, WorkflowParam, WorkflowTagInput, ProviderSummary } from '@/types';
 import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
@@ -530,6 +545,8 @@ interface ExecuteExampleRequest {
   files: Record<string, string[]>;
   /** 本次执行类型覆盖（别名 → 类型） */
   paramTypeOverrides: Record<string, string>;
+  /** 本次执行显式指定的提供商实例 ID；null 表示缺省（由后端解析） */
+  providerId: string | null;
 }
 
 const router = useRouter();
@@ -668,10 +685,32 @@ const showExecuteDescription = ref(false);
 const executeForm = reactive<Record<string, string | boolean>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
 const executeFiles = reactive<Record<string, File[]>>({});
+/** 执行提供商实例列表（下拉选项数据源，仅启用实例） */
+const executeProviders = ref<ProviderSummary[]>([]);
+/** 本次执行显式指定的提供商实例 ID；空串 = 缺省（后端按 工作流配置 → 全局默认 解析） */
+const executeProviderId = ref('');
 /** 代码案例对话框可见性 */
 const codeExamplesDialog = ref(false);
 /** 代码案例请求快照（打开对话框时按当前表单生成） */
 const codeExampleRequest = ref<ExecuteExampleRequest | null>(null);
+
+/**
+ * 执行提供商下拉选项（仅启用中的实例；未配置任何可用实例时为空列表）
+ */
+const executeProviderOptions = computed(() =>
+  executeProviders.value
+    .filter((p) => p.enabled)
+    .map((p) => ({ title: p.name, value: p.id })),
+);
+
+/**
+ * 执行提供商下拉提示：展示当前选中实例的类型与解析地址
+ */
+const executeProviderHint = computed(() => {
+  const selected = executeProviders.value.find((p) => p.id === executeProviderId.value);
+  if (!selected) return '未选择执行提供商，将按工作流配置解析';
+  return `${selected.type} · ${selected.resolvedBaseUrl}`;
+});
 
 /** 参数类型选项（执行对话框类型覆盖下拉） */
 const paramTypeOptions = ['text', 'number', 'boolean', 'image', 'video', 'audio'];
@@ -915,9 +954,20 @@ async function handleExecute(id: string) {
   // 清空手动添加的自定义字段
   manualFields.value = [];
   manualFiles.value = {};
+  // 重置本次执行提供商选择（加载详情后预选解析出的提供商）
+  executeProviderId.value = '';
+  // 加载提供商列表（供下拉选择；失败不阻塞对话框，回退为空列表）
+  try {
+    executeProviders.value = await listProviders();
+  } catch {
+    console.warn('加载执行提供商列表失败');
+    executeProviders.value = [];
+  }
 
   try {
     const detail = await getWorkflow(id);
+    // 预选解析出的提供商（工作流指定优先，否则全局默认；未配置时为 null → 不预选）
+    executeProviderId.value = detail.resolvedProvider?.id ?? '';
     const workflow = JSON.parse(detail.rawJson);
     // 填充备注说明（Markdown 源文本）
     executeDescription.value = detail.description ?? '';
@@ -1037,6 +1087,8 @@ async function confirmExecute() {
       aliasValues,
       hasFiles ? files : undefined,
       hasOverrides ? paramTypeOverrides : undefined,
+      // 本次执行显式指定的提供商；空串 = 缺省（后端按 工作流配置 → 全局默认 解析）
+      executeProviderId.value || null,
     );
     snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
@@ -1097,6 +1149,7 @@ function openCodeExamples(): void {
     aliasValues,
     files,
     paramTypeOverrides,
+    providerId: executeProviderId.value || null,
   };
   codeExamplesDialog.value = true;
 }

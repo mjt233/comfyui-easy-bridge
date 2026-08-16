@@ -1211,6 +1211,149 @@ describe('Workflow API', () => {
     expect(task.body.comfyuiUrl).toContain('http://comfy-a:8188');
   });
 
+  it('execute with explicit providerId override wins over workflow provider and default', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 提供商 A 设为默认；工作流指定 B；本次执行显式指定 C（应优先于 A / B）
+    setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    const providerC = setupProvider('http://comfy-c:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-override', name: 'Override', rawJson: '{}', providerId: providerB.id });
+
+    // 模拟 ComfyUI /prompt 提交成功（返回确定 prompt_id）
+    vi.stubGlobal('fetch', (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ prompt_id: 'pid-override' }),
+    })) as unknown as typeof fetch);
+
+    // JSON 模式：body 顶层携带保留键 providerId
+    const res = await supertest(app)
+      .post('/api/workflows/wf-override/execute')
+      .send({ prompt: 'cat', providerId: providerC.id });
+    expect(res.status).toBe(200);
+    expect(res.body.task_id).toBeDefined();
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 任务记录本次执行显式指定的提供商 C
+    expect(task.body.providerId).toBe(providerC.id);
+    expect(task.body.comfyuiUrl).toContain('http://comfy-c:8188');
+    // 保留键 providerId 不应作为别名值注入 prompt
+    const body = JSON.parse(task.body.comfyuiRequestBody as string) as { prompt: object };
+    expect(JSON.stringify(body.prompt)).not.toContain('providerId');
+  });
+
+  it('execute with explicit providerId in multipart mode uses it', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 提供商 A 设为默认；工作流不指定 providerId；本次执行 multipart 显式指定 B
+    setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-override-multi', name: 'OverrideMulti', rawJson: '{}' });
+
+    // 模拟 ComfyUI /prompt 提交成功（返回确定 prompt_id）
+    vi.stubGlobal('fetch', (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ prompt_id: 'pid-multi' }),
+    })) as unknown as typeof fetch);
+
+    // multipart 模式：providerId 为表单字段
+    const res = await supertest(app)
+      .post('/api/workflows/wf-override-multi/execute')
+      .field('params', JSON.stringify({ prompt: 'cat' }))
+      .field('providerId', providerB.id);
+    expect(res.status).toBe(200);
+    expect(res.body.task_id).toBeDefined();
+
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(task.status).toBe(200);
+    // 任务记录 multipart 显式指定的提供商 B
+    expect(task.body.providerId).toBe(providerB.id);
+    expect(task.body.comfyuiUrl).toContain('http://comfy-b:8188');
+  });
+
+  it('execute with nonexistent explicit providerId returns 400 provider_not_configured', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 默认提供商存在，但显式指定的实例不存在 → 明确报错，不回退默认
+    setupDefaultProvider('http://comfy-a:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-override-missing', name: 'OverrideMissing', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-override-missing/execute')
+      .send({ providerId: 'no-such-provider' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
+  });
+
+  it('execute with disabled explicit providerId returns 400 provider_not_configured', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 默认提供商存在，但显式指定的实例已禁用 → 明确报错，不回退默认
+    setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    new ProviderService(db).update(providerB.id, { enabled: false });
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-override-disabled', name: 'OverrideDisabled', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-override-disabled/execute')
+      .send({ providerId: providerB.id });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
+  });
+
+  it('execute treats empty or non-string providerId as absent', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 默认提供商 A；工作流指定 B；空字符串 providerId 视为缺省 → 仍按工作流 B 解析
+    setupDefaultProvider('http://comfy-a:8188');
+    const providerB = setupProvider('http://comfy-b:8188');
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'wf-override-empty', name: 'OverrideEmpty', rawJson: '{}', providerId: providerB.id });
+
+    // 模拟 ComfyUI /prompt 提交成功（返回确定 prompt_id）
+    vi.stubGlobal('fetch', (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ prompt_id: 'pid-empty' }),
+    })) as unknown as typeof fetch);
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-override-empty/execute')
+      .send({ providerId: '' });
+    expect(res.status).toBe(200);
+    const task = await supertest(app)
+      .get(`/api/tasks/${res.body.task_id}`)
+      .set('Authorization', `Bearer ${token}`);
+    // 空字符串视为未指定 → 使用工作流配置的提供商 B
+    expect(task.body.providerId).toBe(providerB.id);
+  });
+
   it('GET /api/workflows/:id includes resolvedProvider from default provider', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;

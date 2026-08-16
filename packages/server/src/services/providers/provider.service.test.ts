@@ -48,6 +48,17 @@ describe('ProviderService', () => {
     expect(provider?.trackingMode).toBe('websocket');
   });
 
+  it('getEnabledProviderById only returns enabled providers', () => {
+    const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' }, concurrency: 1 });
+    // 启用中的实例可正常获取
+    expect(service.getEnabledProviderById(rec.id)?.id).toBe(rec.id);
+    // 禁用后不可获取
+    service.update(rec.id, { enabled: false });
+    expect(service.getEnabledProviderById(rec.id)).toBeNull();
+    // 不存在的实例不可获取
+    expect(service.getEnabledProviderById('no-such-id')).toBeNull();
+  });
+
   it('resolves default provider from settings', () => {
     const rec = service.create({ name: 'Local', type: 'comfyui', config: { baseUrl: 'http://localhost:8188' }, concurrency: 1 });
     service.setDefault(rec.id);

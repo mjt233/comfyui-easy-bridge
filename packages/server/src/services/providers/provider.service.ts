@@ -237,6 +237,20 @@ export class ProviderService {
   }
 
   /**
+   * 按 ID 获取已启用的实例化 provider。
+   * 实例不存在、已禁用或 config 非法时返回 null。
+   * 供「本次执行显式指定提供商」场景使用：显式指定必须为启用中的可用实例。
+   * @param id 实例 ID
+   * @returns 实例化 provider；不可用时返回 null
+   */
+  getEnabledProviderById(id: string): ExecutionProvider | null {
+    const row = this.getById(id);
+    // 实例缺失或已禁用时视为不可用
+    if (!row || row.enabled !== 1) return null;
+    return this.instantiate(row);
+  }
+
+  /**
    * 获取全局默认的实例化 provider。
    * 默认实例被禁用时视为未配置。
    * @returns 实例化 provider；默认缺失或已禁用时返回 null

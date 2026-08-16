@@ -22,6 +22,15 @@
         >
           含类型覆盖
         </v-chip>
+        <v-chip
+          v-if="hasProviderId"
+          size="small"
+          color="success"
+          variant="tonal"
+          class="mr-2"
+        >
+          指定提供商
+        </v-chip>
       </v-card-title>
       <v-card-text>
         <v-tabs v-model="codeTab" color="primary">
@@ -106,6 +115,8 @@ const props = defineProps<{
   files: Record<string, string[]>;
   /** 本次执行类型覆盖（别名 → 类型），可空 */
   paramTypeOverrides: Record<string, string>;
+  /** 本次执行显式指定的提供商实例 ID；null 表示缺省（由后端按工作流配置解析） */
+  providerId: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -125,6 +136,8 @@ const codeCopying = ref(false);
 const hasMedia = computed(() => Object.keys(props.files).length > 0);
 /** 是否存在类型覆盖（示例中需携带 paramTypeOverrides 字段） */
 const hasOverrides = computed(() => Object.keys(props.paramTypeOverrides).length > 0);
+/** 是否显式指定了执行提供商（示例中需携带 providerId 字段） */
+const hasProviderId = computed(() => typeof props.providerId === 'string' && props.providerId !== '');
 
 /** JSON 字符串字面量（带双引号） */
 function q(s: string): string {
@@ -169,13 +182,19 @@ function buildCode(): Record<string, Record<'json' | 'multipart', string>> {
   const entries = Object.entries(props.aliasValues);
   const overrides = Object.entries(props.paramTypeOverrides);
   const mediaEntries = Object.entries(props.files);
+  // 本次执行显式指定的提供商（非空时示例中携带 providerId 保留键）
+  const providerId = props.providerId;
+  const hasProviderId = typeof providerId === 'string' && providerId !== '';
 
-  // ---- 多行 JSON body（含可选 paramTypeOverrides） ----
+  // ---- 多行 JSON body（含可选 paramTypeOverrides / providerId） ----
   const jsonLines: string[] = entries.map(([alias, value]) => `    ${q(alias)}: ${JSON.stringify(value)}`);
   if (overrides.length > 0) {
     jsonLines.push(`    ${q('paramTypeOverrides')}: {`);
     for (const [alias, type] of overrides) jsonLines.push(`      ${q(alias)}: ${q(type)}`);
     jsonLines.push('    }');
+  }
+  if (hasProviderId) {
+    jsonLines.push(`    ${q('providerId')}: ${q(providerId)}`);
   }
   const jsonBody = `{\n${jsonLines.join(',\n')}\n}`;
 
@@ -195,6 +214,7 @@ function buildCode(): Record<string, Record<'json' | 'multipart', string>> {
     `  -F 'params=${paramsInline}' \\`,
   ];
   if (overrides.length > 0) curlLines.push(`  -F 'paramTypeOverrides=${overridesInline}' \\`);
+  if (hasProviderId) curlLines.push(`  -F 'providerId=${providerId}' \\`);
   for (const [alias, names] of mediaEntries) {
     for (const name of names) curlLines.push(`  -F "${alias}=@/path/to/${name}"`);
   }
@@ -209,6 +229,7 @@ function buildCode(): Record<string, Record<'json' | 'multipart', string>> {
     for (const [alias, type] of overrides) psBodyLines.push(`    ${alias} = "${type}"`);
     psBodyLines.push('  }');
   }
+  if (hasProviderId) psBodyLines.push(`  providerId = "${providerId}"`);
   const psJson = `$body = @{
 ${psBodyLines.join('\n')}
 } | ConvertTo-Json
@@ -224,6 +245,7 @@ Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" -Met
     '  params = $params',
   ];
   if (overrides.length > 0) psFormLines.push(`  paramTypeOverrides = '${overridesJson}'`);
+  if (hasProviderId) psFormLines.push(`  providerId = '${providerId}'`);
   for (const [alias, names] of mediaEntries) {
     for (const name of names) psFormLines.push(`  ${alias} = Get-Item -Path "C:\\path\\to\\${name}"`);
   }
@@ -237,6 +259,7 @@ Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" -Met
     for (const [alias, type] of overrides) pyPayloadLines.push(`        ${q(alias)}: ${q(type)},`);
     pyPayloadLines.push('    },');
   }
+  if (hasProviderId) pyPayloadLines.push(`    ${q('providerId')}: ${q(providerId)},`);
   const pyJson = `import requests
 
 url = "http://localhost:10721/api/workflows/${id}/execute"
@@ -248,6 +271,7 @@ print(resp.json())`;
 
   const pyDataArgs: string[] = ['"params": json.dumps(payload)'];
   if (overrides.length > 0) pyDataArgs.push(`"paramTypeOverrides": json.dumps(${overridesJson})`);
+  if (hasProviderId) pyDataArgs.push(`"providerId": ${q(providerId)}`);
   const pyFileLines: string[] = [];
   for (const [alias, names] of mediaEntries) {
     for (const name of names) {
@@ -271,6 +295,7 @@ print(resp.json())`;
     for (const [alias, type] of overrides) jsPayloadLines.push(`    ${q(alias)}: ${q(type)},`);
     jsPayloadLines.push('  },');
   }
+  if (hasProviderId) jsPayloadLines.push(`  ${q('providerId')}: ${q(providerId)},`);
   const nodeJson = `const url = "http://localhost:10721/api/workflows/${id}/execute";
 const payload = {
 ${jsPayloadLines.join('\n')}
@@ -294,6 +319,9 @@ console.log(data);`;
   ];
   if (overrides.length > 0) {
     jsFormLines.push(`formData.append("paramTypeOverrides", JSON.stringify(${overridesJson}));`);
+  }
+  if (hasProviderId) {
+    jsFormLines.push(`formData.append("providerId", ${q(providerId)});`);
   }
   for (const [alias, names] of mediaEntries) {
     for (const name of names) {
@@ -365,6 +393,15 @@ System.out.println(res.body());`;
       'bos.write(("--" + boundary + "\\r\\n").getBytes());',
       'bos.write("Content-Disposition: form-data; name=\\"paramTypeOverrides\\"\\r\\n\\r\\n".getBytes());',
       'bos.write(overridesJson.getBytes());',
+      'bos.write("\\r\\n".getBytes());',
+    );
+  }
+  if (hasProviderId) {
+    jmLines.push(
+      '// providerId field',
+      'bos.write(("--" + boundary + "\\r\\n").getBytes());',
+      'bos.write("Content-Disposition: form-data; name=\\"providerId\\"\\r\\n\\r\\n".getBytes());',
+      `bos.write(${q(providerId)}.getBytes());`,
       'bos.write("\\r\\n".getBytes());',
     );
   }

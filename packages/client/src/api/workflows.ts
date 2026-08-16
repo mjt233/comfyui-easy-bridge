@@ -100,12 +100,15 @@ export async function executeWorkflow(
   files?: Record<string, File[]>,
   /** 本次执行类型覆盖（别名 → text/boolean/number/image/video/audio），仅本次请求有效 */
   paramTypeOverrides?: Record<string, string>,
+  /** 本次执行显式指定的提供商实例 ID；缺省由后端按 工作流配置 → 全局默认 解析 */
+  providerId?: string | null,
 ): Promise<ExecuteResult> {
   const hasOverrides = paramTypeOverrides && Object.keys(paramTypeOverrides).length > 0;
-  // 无媒体文件时走普通 JSON 请求（有覆盖时携带保留键 paramTypeOverrides）
+  const hasProviderId = typeof providerId === 'string' && providerId !== '';
+  // 无媒体文件时走普通 JSON 请求（携带保留键 paramTypeOverrides / providerId）
   if (!files || Object.keys(files).length === 0) {
-    const body = hasOverrides
-      ? { ...aliasValues, paramTypeOverrides }
+    const body = hasOverrides || hasProviderId
+      ? { ...aliasValues, ...(hasOverrides ? { paramTypeOverrides } : {}), ...(hasProviderId ? { providerId } : {}) }
       : aliasValues;
     const res = await client.post<ExecuteResult>(`/workflows/${workflowId}/execute`, body);
     return res.data;
@@ -116,6 +119,10 @@ export async function executeWorkflow(
   // 本次执行类型覆盖以 JSON 字符串表单字段携带（保留键）
   if (hasOverrides) {
     formData.append('paramTypeOverrides', JSON.stringify(paramTypeOverrides));
+  }
+  // 本次执行显式指定的提供商以表单字段携带（保留键）
+  if (hasProviderId) {
+    formData.append('providerId', providerId);
   }
   for (const [alias, fileList] of Object.entries(files)) {
     for (const file of fileList) {
