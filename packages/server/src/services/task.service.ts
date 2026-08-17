@@ -23,6 +23,8 @@ export interface CreateTaskInput {
   promptId: string | null;
   /** 实际使用的提供商实例 ID */
   providerId?: string | null;
+  /** 实际使用的提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源）；为空则存 null */
+  providerName?: string | null;
   /** 本次上传到执行端的资产文件名 JSON 数组字符串；缺省 '[]' */
   uploadedFiles?: string;
 }
@@ -74,6 +76,7 @@ export class TaskService {
       comfyuiResponse: input.comfyuiResponse,
       promptId: input.promptId,
       providerId: input.providerId ?? null,
+      providerName: input.providerName ?? null,
       uploadedFiles: input.uploadedFiles ?? '[]',
       status: input.promptId ? 'pending' : 'failed',
       errorMessage: null,

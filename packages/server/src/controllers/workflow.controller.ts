@@ -632,6 +632,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
               comfyuiResponse: null,
               promptId: null,
               providerId: provider.id,
+              providerName: provider.name,
             });
             taskService.updateStatus(failedTask.id, {
               status: 'failed',
@@ -676,6 +677,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             comfyuiResponse: null,
             promptId: null,
             providerId: provider.id,
+            providerName: provider.name,
             uploadedFiles: uploadedFilesJson,
           });
           // 覆盖为 queued 状态
@@ -700,6 +702,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
           promptId: result.promptId,
           providerId: provider.id,
+          providerName: provider.name,
           uploadedFiles: uploadedFilesJson,
         });
 

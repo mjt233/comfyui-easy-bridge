@@ -39,6 +39,8 @@ export const taskLogs = sqliteTable('task_logs', {
   workflowName: text('workflow_name').notNull(),
   /** 实际使用的提供商实例 ID；历史任务可能为 null */
   providerId: text('provider_id'),
+  /** 实际使用的提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源）；历史任务可能为 null */
+  providerName: text('provider_name'),
   promptId: text('prompt_id'),
   aliasValues: text('alias_values').notNull(),
   /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */

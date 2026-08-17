@@ -41,6 +41,8 @@ Client (GET /api/tasks/:taskId, 每 1s 轮询)
 | id | TEXT PK | UUID |
 | workflow_id | TEXT FK→workflows(id) CASCADE | 关联工作流 |
 | workflow_name | TEXT NOT NULL | 冗余存储工作流名称 |
+| provider_id | TEXT | 实际执行的提供商实例 ID（可空；历史任务为 null） |
+| provider_name | TEXT | 实际执行的提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源；可空，历史任务为 null） |
 | prompt_id | TEXT | ComfyUI 返回的 prompt_id |
 | alias_values | TEXT NOT NULL | 提交的字段参数 (JSON) |
 | comfyui_url | TEXT NOT NULL | 完整请求 URL |

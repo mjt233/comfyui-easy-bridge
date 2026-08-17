@@ -5,7 +5,8 @@ import { v4 } from './v4-execution-providers';
 import { v5 } from './v5-workflow-tags';
 import { v6 } from './v6-task-uploaded-files';
 import { v7 } from './v7-add-tts-voice-clone-tag';
+import { v8 } from './v8-add-task-provider-name';
 import type { Migration } from './runner';
 
 /** 迁移注册表：按 version 升序排列；新增迁移时在此追加 */
-export const migrations: readonly Migration[] = [v1, v2, v3, v4, v5, v6, v7];
+export const migrations: readonly Migration[] = [v1, v2, v3, v4, v5, v6, v7, v8];

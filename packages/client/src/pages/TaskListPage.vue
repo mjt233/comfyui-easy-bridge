@@ -25,6 +25,12 @@
         item-value="id"
         @click:row="handleRowClick"
       >
+        <template #[`item.providerName`]="{ item }">
+          <span v-if="providerLabel(item)" class="text-body-2">
+            {{ providerLabel(item) }}
+          </span>
+          <span v-else class="text-caption text-grey">-</span>
+        </template>
         <template #[`item.createdAt`]="{ value }">
           {{ formatTime(value) }}
         </template>
@@ -106,6 +112,13 @@
             <v-list-item>
               <v-list-item-subtitle>工作流</v-list-item-subtitle>
               <v-list-item-title>{{ selectedTask.workflowName }}</v-list-item-title>
+            </v-list-item>
+            <v-list-item v-if="providerLabel(selectedTask)">
+              <v-list-item-subtitle>执行提供商</v-list-item-subtitle>
+              <v-list-item-title>{{ providerLabel(selectedTask) }}</v-list-item-title>
+              <v-list-item-subtitle v-if="selectedTask.providerId" class="text-caption text-grey">
+                ID: {{ selectedTask.providerId }}
+              </v-list-item-subtitle>
             </v-list-item>
             <v-list-item>
               <v-list-item-subtitle>状态</v-list-item-subtitle>
@@ -456,6 +469,7 @@ import { parseWorkflowGraph, type GraphNode } from '@/components/workflow-canvas
 const headers = [
   { title: '提交时间', key: 'createdAt' },
   { title: '工作流', key: 'workflowName' },
+  { title: '提供商', key: 'providerName' },
   { title: '状态', key: 'status' },
   { title: '输出', key: 'outputFiles', sortable: false },
   { title: '完成时间', key: 'completedAt' },
@@ -489,6 +503,16 @@ const listOutputFiles = ref<OutputFile[]>([]);
 const listOutputLoading = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * 任务关联的执行提供商展示文案：名称优先，缺失（如历史任务）时回退实例 ID。
+ * @param task 任务日志
+ * @returns 展示文案；提供商信息完全缺失时为 null
+ */
+function providerLabel(task: TaskLog): string | null {
+  if (task.providerName) return task.providerName;
+  return task.providerId ?? null;
+}
 
 function formatTime(iso: string): string {
   const d = new Date(iso);

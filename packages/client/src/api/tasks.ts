@@ -5,6 +5,10 @@ export interface TaskLog {
   id: string;
   workflowId: string;
   workflowName: string;
+  /** 实际执行的提供商实例 ID；历史任务可能为 null */
+  providerId: string | null;
+  /** 实际执行的提供商实例名称；历史任务可能为 null */
+  providerName: string | null;
   promptId: string | null;
   aliasValues: string;
   /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */
