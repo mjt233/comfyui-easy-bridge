@@ -61,10 +61,16 @@ export interface UpdateTaskResult {
 export class TaskService {
   constructor(private db: BetterSQLite3Database<typeof schema>) {}
 
-  /** 创建任务日志记录。若 promptId 有值则状态为 pending，否则标记为 failed */
+  /**
+   * 创建任务日志记录。
+   * - 有 promptId：状态 pending，写入 startedAt（实际开始执行）
+   * - 无 promptId：状态 failed，无 startedAt，completedAt 为当前时间
+   */
   create(input: CreateTaskInput) {
     const now = new Date().toISOString();
     const id = randomUUID();
+    // 有 promptId 表示已提交到执行端，立即记为开始执行
+    const started = Boolean(input.promptId);
     this.db.insert(schema.taskLogs).values({
       id,
       workflowId: input.workflowId,
@@ -78,10 +84,12 @@ export class TaskService {
       providerId: input.providerId ?? null,
       providerName: input.providerName ?? null,
       uploadedFiles: input.uploadedFiles ?? '[]',
-      status: input.promptId ? 'pending' : 'failed',
+      status: started ? 'pending' : 'failed',
       errorMessage: null,
       createdAt: now,
-      completedAt: input.promptId ? null : now,
+      // 仅真正进入执行时记录开始时间；提交即失败则无执行耗时
+      startedAt: started ? now : null,
+      completedAt: started ? null : now,
     }).run();
     return this.getById(id)!;
   }
@@ -97,16 +105,41 @@ export class TaskService {
       .orderBy(desc(schema.taskLogs.createdAt)).all();
   }
 
-  /** 更新任务状态和结果 */
+  /**
+   * 更新任务状态和结果。
+   * 时间字段语义：
+   * - pending：首次进入时写入 startedAt（已有则不覆盖），清空 completedAt
+   * - queued：不写 startedAt，清空 completedAt（排队等待不算执行）
+   * - completed/failed：写入 completedAt，保留已有 startedAt
+   */
   updateStatus(id: string, input: UpdateTaskResult) {
     const now = new Date().toISOString();
+    const existing = this.getById(id);
+    // 组装本次要写入的时间字段（按目标状态区分）
+    const timeFields: { startedAt?: string | null; completedAt?: string | null } = {};
+
+    if (input.status === 'pending') {
+      // 首次进入 pending 才落开始时间，避免重复提交覆盖
+      if (existing && !existing.startedAt) {
+        timeFields.startedAt = now;
+      }
+      // 中间态不应保留完成时间
+      timeFields.completedAt = null;
+    } else if (input.status === 'queued') {
+      // 排队中：尚未开始执行
+      timeFields.completedAt = null;
+    } else {
+      // 终态：记录完成时间
+      timeFields.completedAt = input.completedAt ?? now;
+    }
+
     this.db.update(schema.taskLogs)
       .set({
         status: input.status,
         promptId: input.promptId,
         comfyuiResponse: input.comfyuiResponse,
         errorMessage: input.errorMessage ?? null,
-        completedAt: input.completedAt ?? now,
+        ...timeFields,
       })
       .where(eq(schema.taskLogs.id, id))
       .run();

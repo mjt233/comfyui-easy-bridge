@@ -21,6 +21,8 @@ export interface TaskLog {
   errorMessage: string | null;
   progress: number | null;
   createdAt: string;
+  /** 实际开始执行时间（进入 pending 时）；排队中或历史任务可能为 null */
+  startedAt: string | null;
   completedAt: string | null;
 }
 

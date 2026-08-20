@@ -64,6 +64,9 @@
           </div>
           <span v-else class="text-caption text-grey">-</span>
         </template>
+        <template #[`item.duration`]="{ item }">
+          {{ executionDuration(item) }}
+        </template>
         <template #[`item.completedAt`]="{ value }">
           {{ value ? formatTime(value) : '-' }}
         </template>
@@ -131,6 +134,16 @@
             <v-list-item>
               <v-list-item-subtitle>提交时间</v-list-item-subtitle>
               <v-list-item-title>{{ formatTime(selectedTask.createdAt) }}</v-list-item-title>
+            </v-list-item>
+            <v-list-item>
+              <v-list-item-subtitle>开始执行</v-list-item-subtitle>
+              <v-list-item-title>
+                {{ selectedTask.startedAt ? formatTime(selectedTask.startedAt) : '-' }}
+              </v-list-item-title>
+            </v-list-item>
+            <v-list-item>
+              <v-list-item-subtitle>执行耗时</v-list-item-subtitle>
+              <v-list-item-title>{{ executionDuration(selectedTask) }}</v-list-item-title>
             </v-list-item>
             <v-list-item v-if="selectedTask.completedAt">
               <v-list-item-subtitle>完成时间</v-list-item-subtitle>
@@ -472,6 +485,7 @@ const headers = [
   { title: '提供商', key: 'providerName' },
   { title: '状态', key: 'status' },
   { title: '输出', key: 'outputFiles', sortable: false },
+  { title: '执行耗时', key: 'duration', sortable: false },
   { title: '完成时间', key: 'completedAt' },
   { title: '操作', key: 'actions', sortable: false },
 ];
@@ -517,6 +531,52 @@ function providerLabel(task: TaskLog): string | null {
 function formatTime(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleString();
+}
+
+/**
+ * 将总秒数格式化为执行耗时文案（段之间单空格）。
+ * 省略前导为 0 的高位：`33s` / `1m 33s` / `1h 21m 33s`；有小时时保留 m/s。
+ * @param totalSeconds 总秒数（向下取整；负值按 0）
+ * @returns 如 `1h 21m 33s`
+ */
+function formatDuration(totalSeconds: number): string {
+  // 保护：非法或负值按 0 秒展示
+  const sec = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  // 按有无小时/分钟拼接，保证段间单空格
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+/**
+ * 计算任务执行耗时展示文案（不含 Bridge 排队等待）。
+ * - queued / 无 startedAt → `-`
+ * - pending → 当前时间 − startedAt
+ * - completed/failed → completedAt − startedAt
+ * @param task 任务日志
+ * @returns 耗时字符串或 `-`
+ */
+function executionDuration(task: TaskLog): string {
+  // 未真正开始执行（排队或历史无开始时间）
+  if (!task.startedAt || task.status === 'queued') return '-';
+  const startMs = new Date(task.startedAt).getTime();
+  if (!Number.isFinite(startMs)) return '-';
+
+  // 进行中：用当前时间；终态：用完成时间
+  let endMs: number;
+  if (task.status === 'pending') {
+    endMs = Date.now();
+  } else if (task.completedAt) {
+    endMs = new Date(task.completedAt).getTime();
+    if (!Number.isFinite(endMs)) return '-';
+  } else {
+    return '-';
+  }
+
+  return formatDuration((endMs - startMs) / 1000);
 }
 
 function formatJson(str: string): string {
@@ -700,6 +760,11 @@ async function fetchTasks() {
   try {
     tasks.value = await listTasks();
     hasCompleted.value = tasks.value.some(t => t.status === 'completed' || t.status === 'failed');
+    // 详情弹窗打开时，用最新列表数据回写 selectedTask，保证进行中耗时与状态同步
+    if (detailDialog.value && selectedTask.value) {
+      const latest = tasks.value.find(t => t.id === selectedTask.value!.id);
+      if (latest) selectedTask.value = latest;
+    }
   } catch {
     // ignore
   } finally {

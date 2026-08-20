@@ -55,6 +55,8 @@ export const taskLogs = sqliteTable('task_logs', {
   errorMessage: text('error_message'),
   progress: integer('progress'),
   createdAt: text('created_at').notNull(),
+  /** 实际开始执行时间（进入 pending / 提交到提供商成功时）；排队中或历史任务可能为 null */
+  startedAt: text('started_at'),
   completedAt: text('completed_at'),
 });
 
