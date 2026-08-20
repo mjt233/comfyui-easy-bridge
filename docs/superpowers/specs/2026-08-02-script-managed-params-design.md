@@ -66,6 +66,8 @@ interface BuildContext {
   params: Record<string, unknown>;      // 输入别名值（只读）
   files: Record<string, FileMeta[]>;    // 上传文件元数据（按别名）
   baseParams: RuntimeParam[];           // DB 静态配置副本（起点）
+  request: BuildRequestInfo;            // 本次 HTTP 请求快照（敏感头已剥离）
+  provider: BuildProviderInfo;          // 本次执行解析到的提供商快照
 }
 
 export default function build(ctx: BuildContext): BuildResult | Promise<BuildResult>;
@@ -161,12 +163,12 @@ const modifiedJson = applyAliases(buildSource, effectiveParams, uploadedAliasVal
 - `DEFAULT_BUILD_SCRIPT_TEMPLATE` 更新为新契约：
   ```ts
   export default async function build(ctx: BuildContext): Promise<BuildResult> {
-    const { workflow, params, files, baseParams } = ctx;
+    const { workflow, params, files, baseParams, request, provider } = ctx;
     // ...
     return { workflow, params: baseParams };
   }
   ```
-- `build-script-api.ts` 更新 `BuildContext`（增加 files/baseParams）与 `BuildResult`/`RuntimeParam` 声明；动态版（node-info）同步
+- `build-script-api.ts` 更新 `BuildContext`（增加 files/baseParams/request/provider）与 `BuildResult`/`RuntimeParam` 声明；动态版（node-info）同步
 - `types/index.ts` 增加前端侧 `RuntimeParam` 对应类型，`SimulateResult` 扩展 `params` 字段
 
 ## 错误处理

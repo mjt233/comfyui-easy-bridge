@@ -43,6 +43,11 @@ export class ComfyUIProvider implements ExecutionProvider {
     return this.config.baseUrl;
   }
 
+  /** 返回 comfyui 类型化配置副本 */
+  getConfig(): Extract<ProviderConfig, { baseUrl: string }> {
+    return { ...this.config };
+  }
+
   /** 提交 prompt 到 /prompt */
   submitPrompt(body: string): Promise<ExecutionResult> {
     return submitPromptRequest(this.getBaseUrl(), body);

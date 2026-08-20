@@ -27,15 +27,19 @@ function cloneWorkflow(workflow) {
  * @param {object} params 用户提交参数
  * @param {object} files 上传文件元数据（按别名分组）
  * @param {Array} baseParams DB 静态参数配置副本（可作为声明返回的起点）
+ * @param {object} request HTTP 请求快照
+ * @param {object} provider 执行提供商快照
  * @returns {object} BuildContext
  */
-function createContext(workflow, params, files, baseParams) {
+function createContext(workflow, params, files, baseParams, request, provider) {
   const wf = cloneWorkflow(workflow);
   return {
     workflow: wf,
     params,
     files,
     baseParams,
+    request,
+    provider,
     addNode(nodeId, classType, inputs, title) {
       if (Object.prototype.hasOwnProperty.call(wf, nodeId)) {
         throw new Error('addNode: node "' + nodeId + '" already exists');
@@ -96,7 +100,7 @@ function createContext(workflow, params, files, baseParams) {
 /** 运行用户脚本并回传结果 */
 async function run() {
   try {
-    const { jsCode, params, workflow, baseParams, filesMeta } = workerData;
+    const { jsCode, params, workflow, baseParams, filesMeta, request, provider } = workerData;
     const tmpFile = path.join(
       os.tmpdir(),
       'comfy-build-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.cjs',
@@ -113,7 +117,7 @@ async function run() {
       parentPort.postMessage({ ok: false, error: '脚本必须通过 export default 导出一个构建函数' });
       return;
     }
-    const ctx = createContext(workflow, params, filesMeta, baseParams);
+    const ctx = createContext(workflow, params, filesMeta, baseParams, request, provider);
     const result = await buildFn(ctx);
     // 声明式返回：{ workflow, params }；workflow 必须对象，params 缺省时保持 undefined（由主线程回退 DB 参数）
     const workflowResult = result && typeof result === 'object' && !Array.isArray(result) ? result.workflow : null;

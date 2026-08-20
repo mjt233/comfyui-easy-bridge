@@ -16,7 +16,7 @@ import {
 import { cleanupTaskUploads } from '../services/cleanup.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
-import { runBuildScript } from '../services/build.service';
+import { runBuildScript, toBuildProviderInfo, toBuildRequestInfo } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import type { DeclaredParam } from '../services/param.types';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
@@ -312,6 +312,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           JSON.parse(wf.rawJson) as ComfyWorkflow,
           baseParams,
           filesMeta,
+          toBuildRequestInfo(req),
+          toBuildProviderInfo(provider),
         );
         if (!buildResult.ok) {
           res.status(400).json({ error: buildResult.error, code: buildResult.code });
@@ -619,6 +621,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             JSON.parse(wf.rawJson) as ComfyWorkflow,
             baseParams,
             uploadedFiles,
+            toBuildRequestInfo(req),
+            toBuildProviderInfo(provider),
           );
           if (!buildResult.ok) {
             // 构建失败：记录 failed 任务，不提交 ComfyUI

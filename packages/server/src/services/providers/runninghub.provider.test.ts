@@ -38,6 +38,14 @@ describe('RunningHubProvider', () => {
     expect(makeProvider().trackingMode).toBe('polling');
   });
 
+  it('returns a config copy via getConfig including plaintext apiKey', () => {
+    const provider = makeProvider('sk-secret', '48G');
+    expect(provider.getConfig()).toEqual({ apiKey: 'sk-secret', gpuSize: '48G' });
+    // 返回副本：修改结果不得回写内部配置
+    provider.getConfig().apiKey = 'mutated';
+    expect(provider.getBaseUrl()).toContain('sk-secret');
+  });
+
   it('uploads via /openapi/v2/media/upload/binary with bearer auth and returns fileName', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
       JSON.stringify({ code: 0, message: 'success', data: { fileName: 'openapi/xyz.png', type: 'image', download_url: 'https://cdn/x', size: '1' } }),

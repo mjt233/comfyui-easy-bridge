@@ -65,6 +65,11 @@ export interface ExecutionProvider {
   getBaseUrl(): string;
   /** 对外展示的基础地址（apiKey 等敏感信息已打码，可安全返回给客户端） */
   getDisplayBaseUrl(): string;
+  /**
+   * 返回类型化配置副本（脚本/序列化用）。
+   * 含 runninghub 的明文 apiKey，仅服务端可见，不得回传客户端。
+   */
+  getConfig(): ProviderConfig;
   /** 提交 prompt，不抛网络/HTTP 异常 */
   submitPrompt(body: string): Promise<ExecutionResult>;
   /** 上传媒体文件，返回注入工作流节点的文件名 */

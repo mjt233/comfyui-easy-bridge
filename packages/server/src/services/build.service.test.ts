@@ -1,13 +1,70 @@
 import { describe, it, expect } from 'vitest';
-import { runBuildScript } from './build.service';
-import type { ComfyWorkflow } from './build-script-api';
+import { runBuildScript, toBuildProviderInfo, toBuildRequestInfo } from './build.service';
+import type { BuildProviderInfo, BuildRequestInfo, ComfyWorkflow } from './build-script-api';
 import type { RuntimeParam, FileMeta } from './param.types';
+import type { ExecutionProvider } from './providers/types';
+import { ComfyUIProvider } from './providers/comfyui.provider';
+import { RunningHubProvider } from './providers/runninghub.provider';
 
 /** 基础工作流：KSampler(4) 的 model 输入连到 CheckpointLoader(1) */
 const baseWorkflow: ComfyWorkflow = {
   '1': { inputs: { ckpt_name: 'model.safetensors' }, class_type: 'CheckpointLoaderSimple', _meta: { title: '模型' } },
   '4': { inputs: { seed: 0, model: ['1', 0] }, class_type: 'KSampler', _meta: { title: '采样器' } },
 };
+
+/** 测试用 HTTP 请求快照 */
+const defaultRequest: BuildRequestInfo = {
+  method: 'POST',
+  path: '/api/workflows/wf-1/execute',
+  originalUrl: '/api/workflows/wf-1/execute?debug=1',
+  query: { debug: '1' },
+  headers: { 'content-type': 'application/json', 'x-client': 'test' },
+  ip: '127.0.0.1',
+  protocol: 'http',
+  hostname: 'localhost',
+  contentType: 'application/json',
+};
+
+/** 测试用 comfyui 提供商快照 */
+const defaultProvider: BuildProviderInfo = {
+  id: 'p-comfy',
+  name: 'Local Comfy',
+  type: 'comfyui',
+  concurrency: 1,
+  trackingMode: 'websocket',
+  config: { baseUrl: 'http://comfy:8188' },
+  baseUrl: 'http://comfy:8188',
+  displayBaseUrl: 'http://comfy:8188',
+};
+
+/**
+ * 调用 runBuildScript 的测试包装：默认注入 request / provider 快照。
+ * @param script 脚本源码
+ * @param params 用户参数
+ * @param workflow 工作流
+ * @param baseParams 静态参数
+ * @param filesMeta 文件元数据
+ * @param extras 覆盖 request / provider / timeout
+ */
+function run(
+  script: string,
+  params: Record<string, unknown> = {},
+  workflow: ComfyWorkflow = baseWorkflow,
+  baseParams: RuntimeParam[] = [],
+  filesMeta: Record<string, FileMeta[]> = {},
+  extras: { request?: BuildRequestInfo; provider?: BuildProviderInfo; timeoutMs?: number } = {},
+) {
+  return runBuildScript(
+    script,
+    params,
+    workflow,
+    baseParams,
+    filesMeta,
+    extras.request ?? defaultRequest,
+    extras.provider ?? defaultProvider,
+    extras.timeoutMs ?? 5000,
+  );
+}
 
 describe('runBuildScript', () => {
   it('builds a workflow with addNode/connect/setInput', async () => {
@@ -19,7 +76,7 @@ describe('runBuildScript', () => {
         return { workflow: ctx.workflow, params: ctx.baseParams };
       }
     `;
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(true);
     expect(result.workflow?.['4'].inputs.seed).toBe(123);
     expect(result.workflow?.['4'].inputs.model).toEqual(['9', 0]);
@@ -35,7 +92,7 @@ describe('runBuildScript', () => {
         return { workflow: ctx.workflow, params: [] };
       }
     `;
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(true);
     expect(result.workflow?.['9']._meta?.title).toBe('超分模型');
     expect(result.workflow?.['9'].inputs.model_name).toBe('4x-UltraSharp.pth');
@@ -52,7 +109,7 @@ describe('runBuildScript', () => {
         return { workflow: ctx.workflow, params: ctx.baseParams };
       }
     `;
-    const result = await runBuildScript(script, { mode: 'short' }, baseWorkflow, [], {});
+    const result = await run(script, { mode: 'short' });
     expect(result.ok).toBe(true);
     expect(result.workflow?.['1']).toBeUndefined();
     expect(result.workflow?.['4'].inputs.steps).toBe(10);
@@ -62,7 +119,7 @@ describe('runBuildScript', () => {
 
   it('does not mutate the input workflow (deep copy)', async () => {
     const script = 'export default function build(ctx: any) { ctx.setInput(\'4\', \'seed\', 999); return { workflow: ctx.workflow, params: [] }; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(true);
     expect(baseWorkflow['4'].inputs.seed).toBe(0);
   });
@@ -78,7 +135,7 @@ describe('runBuildScript', () => {
         return { workflow: { ...ctx.workflow, _info: { nodes, input, nodeClass: node.class_type } }, params: [] };
       }
     `;
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(true);
     expect(result.workflow?.['4']._meta?.title).toBe('自定义采样器');
     expect(result.workflow?.['4'].inputs.model).toBe('fallback');
@@ -96,14 +153,14 @@ describe('runBuildScript', () => {
         return { workflow: ctx.workflow, params: [] };
       }
     `;
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
     expect(result.error).toContain('too large');
   });
 
   it('reports syntax errors with real diagnostic', async () => {
-    const result = await runBuildScript('export default function build( {', {}, baseWorkflow, [], {});
+    const result = await run('export default function build( {');
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
     expect(result.error).toContain('Transpile error');
@@ -111,7 +168,7 @@ describe('runBuildScript', () => {
 
   it('reports runtime errors with message', async () => {
     const script = 'export default function build(ctx: any) { ctx.addNode(\'4\', \'X\'); return ctx.workflow; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
     expect(result.error).toContain('already exists');
@@ -119,7 +176,7 @@ describe('runBuildScript', () => {
 
   it('kills infinite loops via timeout', async () => {
     const script = 'export default function build() { while (true) {} }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {}, 1000);
+    const result = await run(script, {}, baseWorkflow, [], {}, { timeoutMs: 1000 });
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_timeout');
   });
@@ -133,7 +190,7 @@ describe('runBuildScript', () => {
       }
     `;
     // 文件不存在会抛错 → 说明 require('fs') 可用（错误来自文件不存在而非 require 失败）
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('ENOENT');
   });
@@ -141,7 +198,7 @@ describe('runBuildScript', () => {
   it('rejects non-object returns', async () => {
     for (const bad of ['null', '{ workflow: \'str\' }', '{ workflow: [], params: \'x\' }']) {
       const script = `export default function build() { return ${bad}; }`;
-      const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+      const result = await run(script);
       expect(result.ok).toBe(false);
       expect(result.code).toBe('build_script_error');
     }
@@ -149,14 +206,14 @@ describe('runBuildScript', () => {
 
   it('connect to missing node throws', async () => {
     const script = 'export default function build(ctx: any) { ctx.connect(\'nope\', 0, \'4\', \'model\'); return ctx.workflow; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('not found');
   });
 
   it('connect with non-number slot throws', async () => {
     const script = 'export default function build(ctx: any) { ctx.connect(\'1\', \'x\', \'4\', \'model\'); return ctx.workflow; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.error).toContain('source slot must be a number');
   });
@@ -183,7 +240,7 @@ describe('runBuildScript', () => {
         return { workflow: ctx.workflow, params };
       }
     `;
-    const result = await runBuildScript(script, {}, baseWorkflow, baseParams, filesMeta);
+    const result = await run(script, {}, baseWorkflow, baseParams, filesMeta);
     expect(result.ok).toBe(true);
     expect(result.workflow?.['load_0']).toBeTruthy();
     expect(result.workflow?.['load_1']).toBeTruthy();
@@ -194,7 +251,7 @@ describe('runBuildScript', () => {
 
   it('keeps params undefined when script returns { workflow } only (caller falls back to baseParams)', async () => {
     const script = 'export default function build(ctx: any) { return { workflow: ctx.workflow }; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(true);
     // 脚本省略 params → undefined（不得被归一化为 []，否则 effectiveParams ?? baseParams 永不触发）
     expect(result.params).toBeUndefined();
@@ -202,9 +259,150 @@ describe('runBuildScript', () => {
 
   it('rejects legacy return ctx.workflow (declarative required)', async () => {
     const script = 'export default function build(ctx: any) { return ctx.workflow; }';
-    const result = await runBuildScript(script, {}, baseWorkflow, [], {});
+    const result = await run(script);
     expect(result.ok).toBe(false);
     expect(result.code).toBe('build_script_error');
     expect(result.error).toContain('{ workflow, params }');
+  });
+
+  it('exposes request and provider snapshots on ctx', async () => {
+    const script = `
+      export default function build(ctx: any) {
+        return {
+          workflow: {
+            ...ctx.workflow,
+            _info: {
+              method: ctx.request.method,
+              path: ctx.request.path,
+              queryDebug: ctx.request.query.debug,
+              headerClient: ctx.request.headers['x-client'],
+              providerType: ctx.provider.type,
+              providerBaseUrl: ctx.provider.baseUrl,
+              configBaseUrl: ctx.provider.config.baseUrl,
+            },
+          },
+          params: [],
+        };
+      }
+    `;
+    const result = await run(script);
+    expect(result.ok).toBe(true);
+    expect(result.workflow?._info).toEqual({
+      method: 'POST',
+      path: '/api/workflows/wf-1/execute',
+      queryDebug: '1',
+      headerClient: 'test',
+      providerType: 'comfyui',
+      providerBaseUrl: 'http://comfy:8188',
+      configBaseUrl: 'http://comfy:8188',
+    });
+  });
+
+  it('lets scripts branch on runninghub provider config', async () => {
+    const rhProvider: BuildProviderInfo = {
+      id: 'p-rh',
+      name: 'RH',
+      type: 'runninghub',
+      concurrency: 2,
+      trackingMode: 'polling',
+      config: { apiKey: 'sk-secret', gpuSize: '48G' },
+      baseUrl: 'https://www.runninghub.cn/proxy-plus/sk-secret',
+      displayBaseUrl: 'https://www.runninghub.cn/proxy-plus/sk-s****',
+    };
+    const script = `
+      export default function build(ctx: any) {
+        if (ctx.provider.type === 'runninghub' && ctx.provider.config.gpuSize === '48G') {
+          ctx.setInput('4', 'seed', 48);
+        }
+        return { workflow: ctx.workflow, params: [] };
+      }
+    `;
+    const result = await run(script, {}, baseWorkflow, [], {}, { provider: rhProvider });
+    expect(result.ok).toBe(true);
+    expect(result.workflow?.['4'].inputs.seed).toBe(48);
+  });
+});
+
+describe('toBuildRequestInfo', () => {
+  it('strips sensitive headers and keeps string query/header values', () => {
+    const info = toBuildRequestInfo({
+      method: 'POST',
+      path: '/api/workflows/wf-1/execute',
+      originalUrl: '/api/workflows/wf-1/execute?mode=fast&tag=a&tag=b',
+      query: { mode: 'fast', tag: ['a', 'b'], nested: { x: 1 } },
+      headers: {
+        Authorization: 'Bearer secret-token',
+        Cookie: 'sid=abc',
+        'X-Api-Key': 'k',
+        'Content-Type': 'application/json',
+        'X-Client': 'cli',
+      },
+      ip: '10.0.0.2',
+      protocol: 'https',
+      hostname: 'bridge.local',
+    });
+    expect(info.method).toBe('POST');
+    expect(info.path).toBe('/api/workflows/wf-1/execute');
+    expect(info.query).toEqual({ mode: 'fast', tag: ['a', 'b'] });
+    expect(info.headers).toEqual({
+      'content-type': 'application/json',
+      'x-client': 'cli',
+    });
+    expect(info.headers.authorization).toBeUndefined();
+    expect(info.headers.cookie).toBeUndefined();
+    expect(info.headers['x-api-key']).toBeUndefined();
+    expect(info.contentType).toBe('application/json');
+    expect(info.ip).toBe('10.0.0.2');
+    expect(info.protocol).toBe('https');
+  });
+});
+
+describe('toBuildProviderInfo', () => {
+  it('snapshots comfyui provider including config and baseUrl', () => {
+    const provider = new ComfyUIProvider(
+      'c1',
+      'Local',
+      { baseUrl: 'http://127.0.0.1:8188', autoCleanup: true, inputDir: 'C:\\\\in' },
+      3,
+    );
+    expect(toBuildProviderInfo(provider)).toEqual({
+      id: 'c1',
+      name: 'Local',
+      type: 'comfyui',
+      concurrency: 3,
+      trackingMode: 'websocket',
+      config: { baseUrl: 'http://127.0.0.1:8188', autoCleanup: true, inputDir: 'C:\\\\in' },
+      baseUrl: 'http://127.0.0.1:8188',
+      displayBaseUrl: 'http://127.0.0.1:8188',
+    });
+  });
+
+  it('snapshots runninghub provider with plaintext apiKey for scripts', () => {
+    const provider = new RunningHubProvider('r1', 'RH', { apiKey: 'sk-secret', gpuSize: '24G' }, 2);
+    const info = toBuildProviderInfo(provider);
+    expect(info.type).toBe('runninghub');
+    expect(info.config).toEqual({ apiKey: 'sk-secret', gpuSize: '24G' });
+    expect(info.baseUrl).toContain('sk-secret');
+    expect(info.displayBaseUrl).not.toContain('sk-secret');
+  });
+
+  it('accepts ExecutionProvider interface via getConfig()', () => {
+    const stub: ExecutionProvider = {
+      id: 's1',
+      name: 'stub',
+      type: 'comfyui',
+      concurrency: 1,
+      trackingMode: 'polling',
+      getBaseUrl: () => 'http://x',
+      getDisplayBaseUrl: () => 'http://x',
+      getConfig: () => ({ baseUrl: 'http://x' }),
+      submitPrompt: async () => ({ success: true, comfyuiResponse: null, promptId: 'p', errorMessage: null }),
+      uploadMedia: async () => 'a.png',
+      fetchHistory: async () => ({}),
+      interrupt: async () => true,
+      isPromptRunning: async () => false,
+      buildOutputViewUrl: () => 'http://x/view',
+    };
+    expect(toBuildProviderInfo(stub).config).toEqual({ baseUrl: 'http://x' });
   });
 });

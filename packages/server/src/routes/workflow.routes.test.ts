@@ -808,6 +808,69 @@ describe('Workflow API', () => {
     expect(Array.isArray(res.body.params)).toBe(true);
   });
 
+  it('POST simulate exposes request and provider snapshots to the script', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'sim-ctx', name: 'SimCtx', rawJson: JSON.stringify({ '1': { inputs: { seed: 0 }, class_type: 'KSampler' } }) });
+    const provider = setupDefaultProvider('http://comfy-ctx:8188', 'Ctx Comfy');
+
+    const res = await supertest(app)
+      .post('/api/workflows/sim-ctx/build/simulate?from=test')
+      .set('Authorization', `Bearer ${token}`)
+      .set('X-Client', 'bridge-test')
+      .send({
+        script: `
+          export default function build(ctx) {
+            ctx.setInput('1', 'seed', ctx.provider.type === 'comfyui' ? 88 : 0);
+            return {
+              workflow: {
+                ...ctx.workflow,
+                _info: {
+                  method: ctx.request.method,
+                  path: ctx.request.path,
+                  from: ctx.request.query.from,
+                  client: ctx.request.headers['x-client'],
+                  hasAuth: Boolean(ctx.request.headers.authorization),
+                  providerId: ctx.provider.id,
+                  providerType: ctx.provider.type,
+                  baseUrl: ctx.provider.baseUrl,
+                },
+              },
+              params: [],
+            };
+          }
+        `,
+        params: {},
+      });
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body.json as string) as {
+      '1': { inputs: { seed: number } };
+      _info: {
+        method: string;
+        path: string;
+        from: string;
+        client: string;
+        hasAuth: boolean;
+        providerId: string;
+        providerType: string;
+        baseUrl: string;
+      };
+    };
+    expect(parsed['1'].inputs.seed).toBe(88);
+    expect(parsed._info.method).toBe('POST');
+    expect(parsed._info.path).toBe('/api/workflows/sim-ctx/build/simulate');
+    expect(parsed._info.from).toBe('test');
+    expect(parsed._info.client).toBe('bridge-test');
+    // Authorization 不得进入脚本 ctx
+    expect(parsed._info.hasAuth).toBe(false);
+    expect(parsed._info.providerId).toBe(provider.id);
+    expect(parsed._info.providerType).toBe('comfyui');
+    expect(parsed._info.baseUrl).toBe('http://comfy-ctx:8188');
+  });
+
   it('POST simulate returns error for failing script', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;

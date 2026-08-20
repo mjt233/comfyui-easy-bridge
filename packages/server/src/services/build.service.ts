@@ -1,8 +1,105 @@
 import { Worker } from 'worker_threads';
 import ts from 'typescript';
 import { BUILD_WORKER_SOURCE } from './build.worker';
-import type { ComfyWorkflow } from './build-script-api';
+import type { BuildProviderInfo, BuildRequestInfo, ComfyWorkflow } from './build-script-api';
 import type { RuntimeParam, FileMeta } from './param.types';
+import type { ExecutionProvider } from './providers/types';
+
+/** 不得进入脚本 ctx 的请求头（大小写不敏感） */
+const SENSITIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'set-cookie',
+  'proxy-authorization',
+  'x-api-key',
+  'x-auth-token',
+  'x-access-token',
+]);
+
+/**
+ * 将 query / headers 中可结构化克隆的字符串值抽出。
+ * 嵌套对象、数字、undefined 一律丢弃，避免 workerData 克隆失败或泄露非预期结构。
+ * @param source Express query 或 headers 的原始映射
+ * @param omitKeys 需要剔除的键（已小写）
+ * @returns 仅含 string / string[] 的映射
+ */
+function pickStringMap(
+  source: Record<string, unknown>,
+  omitKeys?: Set<string>,
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const [rawKey, value] of Object.entries(source)) {
+    const key = rawKey.toLowerCase();
+    if (omitKeys?.has(key)) continue;
+    if (typeof value === 'string') {
+      out[key] = value;
+      continue;
+    }
+    // 仅保留全是字符串的数组（如重复 query / 多值头）
+    if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * 从 Express 风格请求对象提取可进 worker 的 HTTP 快照。
+ * Authorization / Cookie 等敏感头会被剥离。
+ * @param req Express Request（按字段鸭子类型，避免服务层硬依赖 express 类型）
+ * @returns 请求快照
+ */
+export function toBuildRequestInfo(req: {
+  method: string;
+  path: string;
+  originalUrl: string;
+  query: object;
+  headers: object;
+  ip?: string;
+  protocol: string;
+  hostname: string;
+}): BuildRequestInfo {
+  // Express IncomingHttpHeaders / ParsedQs 不是 Record<string, unknown>，此处收窄后再过滤
+  const headers = pickStringMap(req.headers as Record<string, unknown>, SENSITIVE_HEADER_NAMES);
+  const contentTypeRaw = headers['content-type'];
+  const contentType = typeof contentTypeRaw === 'string'
+    ? contentTypeRaw
+    : Array.isArray(contentTypeRaw) ? (contentTypeRaw[0] ?? null) : null;
+  // req.path 在挂载子路由上是相对路径；脚本需要完整请求路径，从 originalUrl 去掉 query
+  const qIndex = req.originalUrl.indexOf('?');
+  const fullPath = qIndex === -1 ? req.originalUrl : req.originalUrl.slice(0, qIndex);
+  return {
+    method: req.method,
+    path: fullPath || req.path,
+    originalUrl: req.originalUrl,
+    // query 键同样小写，脚本按稳定约定读取
+    query: pickStringMap(req.query as Record<string, unknown>),
+    headers,
+    ip: typeof req.ip === 'string' && req.ip !== '' ? req.ip : null,
+    protocol: req.protocol,
+    hostname: req.hostname,
+    contentType,
+  };
+}
+
+/**
+ * 将执行提供商实例转为可进 worker 的快照。
+ * config / baseUrl 含明文凭据，仅脚本可见。
+ * @param provider 已解析的执行提供商
+ * @returns 提供商快照
+ */
+export function toBuildProviderInfo(provider: ExecutionProvider): BuildProviderInfo {
+  return {
+    id: provider.id,
+    name: provider.name,
+    type: provider.type,
+    concurrency: provider.concurrency,
+    trackingMode: provider.trackingMode,
+    config: provider.getConfig(),
+    baseUrl: provider.getBaseUrl(),
+    displayBaseUrl: provider.getDisplayBaseUrl(),
+  };
+}
 
 /** 构建脚本最大结果体积（字节） */
 const MAX_RESULT_BYTES = 2 * 1024 * 1024;
@@ -30,6 +127,8 @@ export interface BuildScriptResult {
  * @param workflow 原始工作流对象（将被深拷贝）
  * @param baseParams DB 静态参数配置副本（脚本可据此声明返回）
  * @param filesMeta 上传文件元数据（按别名分组，脚本据此判断文件数量）
+ * @param request HTTP 请求快照（敏感头已剥离）
+ * @param provider 本次执行解析到的提供商快照
  * @param timeoutMs 超时毫秒数，默认 5000
  * @returns 构建结果
  */
@@ -39,6 +138,8 @@ export function runBuildScript(
   workflow: ComfyWorkflow,
   baseParams: RuntimeParam[],
   filesMeta: Record<string, FileMeta[]>,
+  request: BuildRequestInfo,
+  provider: BuildProviderInfo,
   timeoutMs = 5000,
 ): Promise<BuildScriptResult> {
   return new Promise<BuildScriptResult>((resolve) => {
@@ -82,7 +183,7 @@ export function runBuildScript(
     try {
       worker = new Worker(BUILD_WORKER_SOURCE, {
         eval: true,
-        workerData: { jsCode, params, workflow, baseParams, filesMeta },
+        workerData: { jsCode, params, workflow, baseParams, filesMeta, request, provider },
       });
     } catch (err) {
       resolve({

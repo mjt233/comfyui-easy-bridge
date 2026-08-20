@@ -36,6 +36,14 @@ describe('ComfyUIProvider', () => {
     expect(makeProvider().trackingMode).toBe('websocket');
   });
 
+  it('returns a config copy via getConfig', () => {
+    const provider = makeProvider('http://127.0.0.1:8188');
+    expect(provider.getConfig()).toEqual({ baseUrl: 'http://127.0.0.1:8188' });
+    // 返回副本：修改结果不得回写内部配置
+    provider.getConfig().baseUrl = 'http://mutated';
+    expect(provider.getBaseUrl()).toBe('http://127.0.0.1:8188');
+  });
+
   it('uploads to /upload/image and returns stored name', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(
       JSON.stringify({ name: 'unique_123456.png', subfolder: '', type: 'input' }),

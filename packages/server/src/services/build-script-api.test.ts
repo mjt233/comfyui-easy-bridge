@@ -3,6 +3,7 @@ import {
   BUILD_SCRIPT_API_DTS,
   BUILD_SCRIPT_DTS_HEADER,
   BUILD_RESULT_DTS,
+  BUILD_CONTEXT_EXTRA_DTS,
   RUNTIME_PARAM_DTS,
   buildBuildContextDts,
   DEFAULT_BUILD_SCRIPT_TEMPLATE,
@@ -44,7 +45,7 @@ describe('build-script-api', () => {
     expect(BUILD_SCRIPT_API_DTS).toContain(BUILD_SCRIPT_DTS_HEADER.trim());
     // 精确锁定拼装结构（唯一允许的差异是头部前导换行被去除）
     expect(BUILD_SCRIPT_API_DTS).toBe(
-      `${BUILD_SCRIPT_DTS_HEADER}\n${RUNTIME_PARAM_DTS}\n${BUILD_RESULT_DTS}\n${buildBuildContextDts(
+      `${BUILD_SCRIPT_DTS_HEADER}\n${RUNTIME_PARAM_DTS}\n${BUILD_RESULT_DTS}\n${BUILD_CONTEXT_EXTRA_DTS}\n${buildBuildContextDts(
         'addNode(nodeId: string, classType: string, inputs?: Record<string, unknown>, title?: string): ComfyNode;',
         'findNodesByClass(classType: string): string[];',
       )}`,
@@ -57,6 +58,10 @@ describe('build-script-api', () => {
     expect(BUILD_SCRIPT_API_DTS).toContain('declare interface BuildResult');
     expect(BUILD_SCRIPT_API_DTS).toContain('files: Record<string, FileMeta[]>;');
     expect(BUILD_SCRIPT_API_DTS).toContain('baseParams: RuntimeParam[];');
+    expect(BUILD_SCRIPT_API_DTS).toContain('declare interface BuildRequestInfo');
+    expect(BUILD_SCRIPT_API_DTS).toContain('declare interface BuildProviderInfo');
+    expect(BUILD_SCRIPT_API_DTS).toContain('request: BuildRequestInfo;');
+    expect(BUILD_SCRIPT_API_DTS).toContain('provider: BuildProviderInfo;');
   });
 
   it('buildBuildContextDts injects custom signatures', () => {

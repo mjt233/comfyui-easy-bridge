@@ -123,6 +123,10 @@ describe('generateNodeClassDts / generateBuildDts', () => {
     expect(full).toContain('declare interface BuildResult');
     expect(full).toContain('files: Record<string, FileMeta[]>;');
     expect(full).toContain('baseParams: RuntimeParam[];');
+    expect(full).toContain('declare interface BuildRequestInfo');
+    expect(full).toContain('declare interface BuildProviderInfo');
+    expect(full).toContain('request: BuildRequestInfo;');
+    expect(full).toContain('provider: BuildProviderInfo;');
   });
 
   it('produces stable output across calls', () => {
