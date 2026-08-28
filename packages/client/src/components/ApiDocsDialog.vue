@@ -47,6 +47,43 @@
             Java
           </v-tab>
         </v-tabs>
+
+        <!-- 字段候选项说明：列出可下拉选择的字段、候选项（label 展示 / value 提交）与多选拼接规则 -->
+        <div v-if="candidateParams.length > 0" class="mt-4">
+          <p class="text-subtitle-2 mb-1">
+            字段候选项
+          </p>
+          <div
+            v-for="p in candidateParams"
+            :key="p.alias"
+            class="d-flex align-center flex-wrap ga-1 mb-1"
+          >
+            <code class="candidate-alias">{{ p.alias }}</code>
+            <v-chip
+              v-for="c in p.candidates"
+              :key="c.value"
+              size="x-small"
+              variant="tonal"
+              color="primary"
+            >
+              {{ c.label !== c.value ? `${c.label}（${c.value}）` : c.label }}
+            </v-chip>
+            <span class="text-caption text-grey">
+              {{ p.multiple ? '多选：提交时将多个提交值（value）用英文逗号 "," 拼接为一个字符串' : '单选：提交其中一个提交值（value）' }}
+            </span>
+          </div>
+          <p class="text-caption text-grey mt-2 mb-0">
+            获取候选项数据：携带登录 Token 调用
+            <code>GET /api/workflows/{{ workflowId }}</code>，
+            响应中 <code>params[]</code>（静态参数）与 <code>declaredParams[]</code>（动态声明字段）的
+            <code>candidates</code> 为候选项数组（元素为 <code>{"label": 展示名, "value": 提交值}</code>）、
+            <code>multiple</code> 为是否多选。
+          </p>
+          <div class="api-code-block mt-2">
+            <pre><code>{{ candidatesFetchSnippet }}</code></pre>
+          </div>
+        </div>
+
         <div class="api-code-block mt-4">
           <div class="code-header d-flex align-center">
             <v-spacer />
@@ -128,6 +165,42 @@ function isMediaParam(paramType: string): boolean {
 
 const apiHasMedia = computed(() => apiParams.value.some(p => isMediaParam(p.paramType)));
 
+/**
+ * 配置了候选项的参数列表（仅 text 类型；供「字段候选项」说明区展示）
+ */
+const candidateParams = computed(() =>
+  apiParams.value.filter((p) => isCandidateParam(p)),
+);
+
+/**
+ * 判断参数是否配置了候选项（仅 text 类型生效）
+ * @param p 参数
+ */
+function isCandidateParam(p: WorkflowParam): boolean {
+  return p.paramType === 'text' && (p.candidates ?? []).length > 0;
+}
+
+/**
+ * 获取候选项数据的示例请求（带 Token 调用工作流详情接口）
+ */
+const candidatesFetchSnippet = computed(() =>
+  `# 获取字段候选项（需登录 Token）：响应 params[]/declaredParams[] 含 candidates 与 multiple\n`
+  + `curl -H "Authorization: Bearer <token>" http://localhost:10721/api/workflows/${props.workflowId}`);
+
+/**
+ * 生成文本参数示例值：有候选项时使用候选提交值 value（多选拼接），否则使用通用占位
+ * @param p 参数
+ */
+function sampleTextValue(p: WorkflowParam): string {
+  const candidates = p.candidates ?? [];
+  if (candidates.length === 0) return 'a string value';
+  // 多选：取前两个候选项的提交值（value）拼接演示英文逗号拼接规则（仅一个候选时取该值）
+  if (p.multiple === true) {
+    return candidates.slice(0, 2).map((c) => c.value).join(',');
+  }
+  return candidates[0].value;
+}
+
 function q(s: string): string {
   return JSON.stringify(s);
 }
@@ -143,8 +216,10 @@ function hasAlias(p: WorkflowParam): p is WorkflowParam & { alias: string } {
 /**
  * 生成 JSON/JS 格式的示例值
  * @param paramType 参数类型
+ * @param p 参数（可选；带候选项时示例值取自候选项）
  */
-function sampleJsonValue(paramType: string): string {
+function sampleJsonValue(paramType: string, p?: WorkflowParam): string {
+  if (p && isCandidateParam(p)) return q(sampleTextValue(p));
   switch (paramType) {
     case 'number': return '1';
     case 'boolean': return 'true';
@@ -155,8 +230,10 @@ function sampleJsonValue(paramType: string): string {
 /**
  * 生成 Python 格式的示例值
  * @param paramType 参数类型
+ * @param p 参数（可选；带候选项时示例值取自候选项）
  */
-function samplePyValue(paramType: string): string {
+function samplePyValue(paramType: string, p?: WorkflowParam): string {
+  if (p && isCandidateParam(p)) return q(sampleTextValue(p));
   switch (paramType) {
     case 'number': return '1';
     case 'boolean': return 'True';
@@ -167,8 +244,10 @@ function samplePyValue(paramType: string): string {
 /**
  * 生成 PowerShell 格式的示例值
  * @param paramType 参数类型
+ * @param p 参数（可选；带候选项时示例值取自候选项）
  */
-function samplePSValue(paramType: string): string {
+function samplePSValue(paramType: string, p?: WorkflowParam): string {
+  if (p && isCandidateParam(p)) return q(sampleTextValue(p));
   switch (paramType) {
     case 'number': return '1';
     case 'boolean': return '$true';
@@ -182,7 +261,7 @@ function samplePSValue(paramType: string): string {
  * @param params 已配置别名的参数列表
  */
 function genJsonSnippet(id: string, params: Array<WorkflowParam & { alias: string }>) {
-  const pairs = params.map(p => `    ${q(p.alias)}: ${sampleJsonValue(p.paramType)}`).join(',\n');
+  const pairs = params.map(p => `    ${q(p.alias)}: ${sampleJsonValue(p.paramType, p)}`).join(',\n');
   // 末尾附可选保留键 providerId（本次执行显式指定提供商；调用方可不传或替换为实际实例 ID）
   const jsonBody = `{\n${pairs}${pairs !== '' ? ',\n' : ''}    ${q('providerId')}: "REPLACE_WITH_PROVIDER_ID"\n}`;
   return { jsonBody };
@@ -209,9 +288,9 @@ function buildApiCode(id: string, params: Array<WorkflowParam & { alias: string 
   const { jsonBody } = genJsonSnippet(id, params);
   const { textParams, mediaParams } = genMultipartSnippet(id, params);
 
-  const textPairs = textParams.map(p => `${q(p.alias)}: ${sampleJsonValue(p.paramType)}`).join(', ');
+  const textPairs = textParams.map(p => `${q(p.alias)}: ${sampleJsonValue(p.paramType, p)}`).join(', ');
   const textJsonObj = `{ ${textPairs} }`;
-  const textPyPairs = textParams.map(p => `${q(p.alias)}: ${samplePyValue(p.paramType)}`).join(', ');
+  const textPyPairs = textParams.map(p => `${q(p.alias)}: ${samplePyValue(p.paramType, p)}`).join(', ');
   const textPyObj = `{ ${textPyPairs} }`;
 
   // providerId 示例占位值（调用方替换为实际实例 ID；可在「设置 → 执行提供商」中查看）
@@ -237,7 +316,7 @@ ${mediaParams.map(p => `  -F "${p.alias}=@/path/to/${p.alias}.png"`).join(' \\\n
     powershell: {
       json: `${providerCommentHash}
 $body = @{
-${params.map(p => `  ${p.alias} = ${samplePSValue(p.paramType)}`).join('\n')}
+${params.map(p => `  ${p.alias} = ${samplePSValue(p.paramType, p)}`).join('\n')}
   providerId = "${providerIdValue}"
 } | ConvertTo-Json
 
@@ -246,7 +325,7 @@ Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
       multipart: mediaParams.length > 0
         ? `${providerCommentHash}
 $params = @{
-${textParams.map(p => `  ${p.alias} = ${samplePSValue(p.paramType)}`).join('\n')}
+${textParams.map(p => `  ${p.alias} = ${samplePSValue(p.paramType, p)}`).join('\n')}
 } | ConvertTo-Json
 
 $form = @{
@@ -265,7 +344,7 @@ Invoke-RestMethod -Uri "http://localhost:10721/api/workflows/${id}/execute" `
 ${providerCommentHash}
 url = "http://localhost:10721/api/workflows/${id}/execute"
 payload = {
-${params.map(p => `    ${q(p.alias)}: ${samplePyValue(p.paramType)},`).join('\n')}
+${params.map(p => `    ${q(p.alias)}: ${samplePyValue(p.paramType, p)},`).join('\n')}
     ${q('providerId')}: ${q(providerIdValue)},
 }
 resp = requests.post(url, json=payload)
@@ -287,7 +366,7 @@ print(resp.json())`
       json: `${providerCommentSlash}
 const url = "http://localhost:10721/api/workflows/${id}/execute";
 const payload = {
-${params.map(p => `  ${q(p.alias)}: ${sampleJsonValue(p.paramType)},`).join('\n')}
+${params.map(p => `  ${q(p.alias)}: ${sampleJsonValue(p.paramType, p)},`).join('\n')}
   ${q('providerId')}: ${q(providerIdValue)},
 };
 
@@ -448,6 +527,9 @@ async function loadApiDocs() {
         defaultValue: dp.defaultValue,
         // 动态声明字段不对应真实节点，无 rawJson 原值
         nodeRawValue: null,
+        // 候选项/多选随声明透传（仅 text 类型有效），供示例值与说明区使用
+        candidates: (dp.paramType || 'text') === 'text' ? (dp.candidates ?? []) : [],
+        multiple: dp.multiple === true,
       });
     }
     apiParams.value = callableParams;
@@ -493,5 +575,11 @@ watch(() => props.modelValue, (val) => {
   background: transparent !important;
   color: #d4d4d4;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+.candidate-alias {
+  background: rgba(128, 128, 128, 0.15);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 </style>

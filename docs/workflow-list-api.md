@@ -85,7 +85,7 @@ GET /api/workflows?tags=image-to-video
 | `rawJson` | string | 工作流原始 JSON（ComfyUI 格式） |
 | `buildScript` | string | 动态构建脚本源码；空串表示未配置 |
 | `buildScriptEnabled` | integer | 是否启用动态构建：`0` 关闭 / `1` 启用（列表接口返回整数；详情接口返回 boolean） |
-| `declaredParams` | string | 动态字段静态声明，**JSON 数组字符串**（如 `"[]"`）；详情接口返回解析后的数组 |
+| `declaredParams` | string | 动态字段静态声明，**JSON 数组字符串**（如 `"[]"`）；详情接口返回解析后的数组。元素可含 `candidates`（候选项 `{label, value}` 数组，仅 `text` 类型生效）与 `multiple`（是否多选），语义详见 [workflow-detail-api.md](./workflow-detail-api.md) 第 2.3 与第 3 节 |
 | `description` | string | 备注说明（Markdown 格式）；空串表示未填写 |
 | `providerId` | string \| null | 指定的执行提供商实例 ID；`null` 表示使用全局默认实例 |
 | `createdAt` | string | 创建时间（ISO 8601） |

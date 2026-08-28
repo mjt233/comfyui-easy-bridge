@@ -2,6 +2,8 @@ import { eq, and } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import type { DeclaredParam } from './param.types';
+import type { CandidateOption } from './param-candidates';
+import { normalizeCandidates, parseCandidatesJson, resolveEffectiveCandidates } from './param-candidates';
 
 /**
  * 创建工作流的输入
@@ -53,6 +55,10 @@ interface AddParamInput {
   paramType?: string;
   /** 默认值覆盖 */
   defaultValue?: string | null;
+  /** 候选项（{label,value} 结构，仅 text 类型生效；服务层按最终 paramType 规范化） */
+  candidates?: CandidateOption[];
+  /** 是否多选（仅配置候选项且 text 类型时生效） */
+  multiple?: boolean;
 }
 
 /**
@@ -67,6 +73,10 @@ interface UpdateParamInput {
   paramType?: string;
   /** 默认值覆盖；可清空为 null */
   defaultValue?: string | null;
+  /** 候选项（仅 text 类型生效）；未传保持原值 */
+  candidates?: CandidateOption[];
+  /** 是否多选；未传保持原值 */
+  multiple?: boolean;
 }
 
 /**
@@ -241,6 +251,12 @@ export class WorkflowService {
     // 无 alias 时强制 text，避免媒体类型无入口
     const paramType = resolveParamType(alias, input.paramType);
 
+    // 计算候选项/多选最终值（仅 text 生效；无候选强制单选）
+    const effective = resolveEffectiveCandidates(paramType, {
+      candidates: input.candidates,
+      multiple: input.multiple,
+    });
+
     this.db.insert(schema.workflowParams).values({
       workflowId: input.workflowId,
       nodeId: input.nodeId,
@@ -249,6 +265,9 @@ export class WorkflowService {
       label: input.label ?? null,
       paramType,
       defaultValue,
+      // 候选项以 JSON 字符串数组落库；multiple 落 0/1
+      candidates: JSON.stringify(effective.candidates),
+      multiple: effective.multiple ? 1 : 0,
     }).run();
 
     // 按主键回查：alias 可能为 null，不能仅靠 alias 查询
@@ -337,12 +356,24 @@ export class WorkflowService {
       input.paramType !== undefined ? input.paramType : existing.paramType,
     );
 
+    // 合并候选项/多选：未传保持原值；再按最终类型规范化（非 text 清空、无候选强制单选）
+    const rawCandidates = input.candidates !== undefined
+      ? input.candidates
+      : parseCandidatesJson(existing.candidates);
+    const rawMultiple = input.multiple !== undefined ? input.multiple : existing.multiple === 1;
+    const effective = resolveEffectiveCandidates(nextType, {
+      candidates: rawCandidates,
+      multiple: rawMultiple,
+    });
+
     this.db.update(schema.workflowParams)
       .set({
         alias: nextAlias,
         label: input.label !== undefined ? input.label : existing.label,
         paramType: nextType,
         defaultValue: nextDefault,
+        candidates: JSON.stringify(effective.candidates),
+        multiple: effective.multiple ? 1 : 0,
       })
       .where(eq(schema.workflowParams.id, id))
       .run();
@@ -390,13 +421,23 @@ export class WorkflowService {
       const parsed = JSON.parse(wf.declaredParams) as unknown;
       if (!Array.isArray(parsed)) return [];
       // 仅保留合法条目（alias 为非空字符串），容忍个别脏数据
-      return parsed.filter(
-        (item): item is DeclaredParam =>
-          typeof item === 'object' &&
-          item !== null &&
-          typeof (item as { alias?: unknown }).alias === 'string' &&
-          (item as { alias: string }).alias.trim() !== '',
-      );
+      return parsed
+        .filter(
+          (item): item is DeclaredParam =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as { alias?: unknown }).alias === 'string' &&
+            (item as { alias: string }).alias.trim() !== '',
+        )
+        .map((item) => {
+          // 防御式规范化候选项：兼容旧版纯字符串项、跳过非法项并按 value 去重；非 text 类型清空
+          const candidates = item.paramType === 'text'
+            ? (normalizeCandidates(item.candidates) ?? [])
+            : [];
+          // 多选仅在 text 且有候选时生效
+          const multiple = item.paramType === 'text' && candidates.length > 0 && item.multiple === true;
+          return { ...item, candidates, multiple };
+        });
     } catch {
       return [];
     }

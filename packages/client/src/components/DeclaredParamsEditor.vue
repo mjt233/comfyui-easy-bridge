@@ -51,14 +51,20 @@
     <v-table>
       <thead>
         <tr>
-          <th style="min-width: 160px">
+          <th style="min-width: 140px">
             别名（必填）
           </th>
-          <th style="min-width: 160px">
+          <th style="min-width: 130px">
             标签
           </th>
-          <th style="width: 120px">
+          <th style="width: 110px">
             类型
+          </th>
+          <th style="min-width: 170px">
+            候选项（仅 text）
+          </th>
+          <th style="width: 90px">
+            多选
           </th>
           <th>默认值</th>
           <th style="width: 80px">
@@ -96,6 +102,61 @@
             />
           </td>
           <td>
+            <!-- 候选项表格：仅 text 类型生效；每项配置展示名(label)与提交值(value) -->
+            <div v-if="row.paramType === 'text'">
+              <div
+                v-for="(c, ci) in row.candidates"
+                :key="ci"
+                class="d-flex align-center ga-1 mb-1"
+              >
+                <v-text-field
+                  v-model="c.label"
+                  placeholder="展示名"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="min-width: 90px"
+                />
+                <v-text-field
+                  v-model="c.value"
+                  placeholder="提交值"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="min-width: 90px"
+                />
+                <v-btn
+                  icon="mdi-close"
+                  size="x-small"
+                  variant="text"
+                  :disabled="saving"
+                  @click="row.candidates.splice(ci, 1)"
+                />
+              </div>
+              <v-btn
+                size="x-small"
+                variant="text"
+                prepend-icon="mdi-plus"
+                :disabled="saving"
+                @click="addCandidateRow(row)"
+              >
+                添加候选项
+              </v-btn>
+            </div>
+            <span v-else class="text-caption text-grey">仅 text</span>
+          </td>
+          <td>
+            <!-- 多选开关：仅有有效候选项且 text 类型时可开启；提交时各提交值以英文逗号拼接 -->
+            <v-switch
+              v-model="row.multiple"
+              :disabled="row.paramType !== 'text' || effectiveCandidatesOf(row).length === 0"
+              density="compact"
+              color="primary"
+              hide-details
+              class="ml-2"
+            />
+          </td>
+          <td>
             <!-- 布尔：开关；媒体：无默认值；其余：文本输入 -->
             <v-switch
               v-if="row.paramType === 'boolean'"
@@ -125,7 +186,7 @@
           </td>
         </tr>
         <tr v-if="rows.length === 0">
-          <td colspan="5" class="text-center text-grey py-4">
+          <td colspan="7" class="text-center text-grey py-4">
             暂无动态字段声明，点击右上角「添加字段」开始配置
           </td>
         </tr>
@@ -140,7 +201,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { WorkflowDetail, DeclaredParam } from '@/types';
+import type { WorkflowDetail, DeclaredParam, CandidateOption } from '@/types';
 import { saveDeclaredParams } from '@/api/workflows';
 
 /** 组件 props：完整工作流详情（含 declaredParams） */
@@ -170,6 +231,34 @@ interface DeclaredRow {
   defaultValue: string;
   /** 布尔默认值（仅 boolean 类型生效） */
   booleanValue: boolean;
+  /** 候选项编辑行（label 展示名 / value 提交值；仅 text 类型生效） */
+  candidates: Array<{ label: string; value: string }>;
+  /** 是否多选（仅 text 且有候选项时生效） */
+  multiple: boolean;
+}
+
+/**
+ * 规范化某行的有效候选项：过滤空 value 行，label 留空回退为 value，并按 value 去重
+ * @param row 声明编辑行
+ * @returns 规范化后的候选项数组
+ */
+function effectiveCandidatesOf(row: DeclaredRow): CandidateOption[] {
+  const out: CandidateOption[] = [];
+  for (const c of row.candidates) {
+    const value = c.value.trim();
+    if (value === '' || out.some((x) => x.value === value)) continue;
+    const label = c.label.trim() === '' ? value : c.label.trim();
+    out.push({ label, value });
+  }
+  return out;
+}
+
+/**
+ * 为某行添加一行空候选项
+ * @param row 声明编辑行
+ */
+function addCandidateRow(row: DeclaredRow): void {
+  row.candidates.push({ label: '', value: '' });
 }
 
 /** 可选参数类型列表 */
@@ -195,6 +284,10 @@ function toRows(list: DeclaredParam[]): DeclaredRow[] {
     paramType: p.paramType || 'text',
     defaultValue: p.defaultValue ?? '',
     booleanValue: parseBooleanDefault(p.defaultValue),
+    // 候选项深拷贝为可编辑行（仅 text 保留）；多选仅在 text 且有候选时有效
+    candidates: (p.paramType === 'text' ? (p.candidates ?? []) : [])
+      .map((c) => ({ label: c.label, value: c.value })),
+    multiple: p.multiple === true,
   }));
 }
 
@@ -219,14 +312,21 @@ function isMediaType(paramType: string): boolean {
  * 添加一行空声明
  */
 function addRow(): void {
-  rows.value.push({ alias: '', label: '', paramType: 'text', defaultValue: '', booleanValue: false });
+  rows.value.push({
+    alias: '', label: '', paramType: 'text', defaultValue: '', booleanValue: false,
+    candidates: [], multiple: false,
+  });
 }
 
 /**
  * 重置为已保存内容
  */
 function resetToSaved(): void {
-  rows.value = savedRows.value.map((r) => ({ ...r }));
+  // 候选项数组需深拷贝，避免重置后编辑串改已保存快照
+  rows.value = savedRows.value.map((r) => ({
+    ...r,
+    candidates: r.candidates.map((c) => ({ ...c })),
+  }));
 }
 
 /**
@@ -249,7 +349,8 @@ async function save(): Promise<void> {
   }
   saving.value = true;
   try {
-    // 序列化为声明列表：布尔存 'true'/'false'，媒体无默认值，其余空串视为未配置
+    // 序列化为声明列表：布尔存 'true'/'false'，媒体无默认值，其余空串视为未配置；
+    // 候选项仅 text 类型保留，无候选时强制单选
     const list: DeclaredParam[] = rows.value.map((row) => {
       const alias = row.alias.trim();
       const label = row.label.trim() === '' ? null : row.label.trim();
@@ -261,7 +362,15 @@ async function save(): Promise<void> {
       } else {
         defaultValue = row.defaultValue.trim() === '' ? null : row.defaultValue;
       }
-      return { alias, label, paramType: row.paramType || 'text', defaultValue };
+      const candidates = row.paramType === 'text' ? effectiveCandidatesOf(row) : [];
+      return {
+        alias,
+        label,
+        paramType: row.paramType || 'text',
+        defaultValue,
+        candidates,
+        multiple: candidates.length > 0 && row.multiple,
+      };
     });
     const updated = await saveDeclaredParams(props.workflow.id, list);
     // 保存成功后以规范化结果刷新本地编辑态

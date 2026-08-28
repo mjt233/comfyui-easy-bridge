@@ -19,6 +19,8 @@ import type { ExecutionProvider } from '../services/providers/types';
 import { runBuildScript, toBuildProviderInfo, toBuildRequestInfo } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import type { DeclaredParam } from '../services/param.types';
+import type { CandidateOption } from '../services/param-candidates';
+import { normalizeCandidates, parseCandidatesJson, resolveEffectiveCandidates } from '../services/param-candidates';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
 import { TaskService } from '../services/task.service';
 import { TagError } from '../services/tag.service';
@@ -54,6 +56,20 @@ function buildOriginalForm(
     }
   }
   return JSON.stringify({ params: aliasValues, files });
+}
+
+/**
+ * 将参数数据库行转换为对外响应形态：
+ * candidates 由 JSON 字符串解析为数组，multiple 由 0/1 转为布尔。
+ * @param row 参数数据库行
+ * @returns 响应形态的参数对象
+ */
+function toParamResponse(row: typeof schema.workflowParams.$inferSelect) {
+  return {
+    ...row,
+    candidates: parseCandidatesJson(row.candidates),
+    multiple: row.multiple === 1,
+  };
 }
 
 export function createWorkflowController(db: BetterSQLite3Database<typeof schema>) {
@@ -147,7 +163,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       // 明细响应附带 nodeRawValue（rawJson 中该字段的原值），供前端展示/比对
-      const params = workflowService.getParamsWithRawValue(id);
+      const params = workflowService.getParamsWithRawValue(id).map(toParamResponse);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,
@@ -181,7 +197,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       // 与 getById 返回结构保持一致：补充 params（含 nodeRawValue），供前端直接作为 WorkflowDetail 使用
-      const params = workflowService.getParamsWithRawValue(id);
+      const params = workflowService.getParamsWithRawValue(id).map(toParamResponse);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,
@@ -230,11 +246,24 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const paramType = typeof raw.paramType === 'string' && ALLOWED_TYPES.has(raw.paramType)
           ? raw.paramType
           : 'text';
+        // 候选项规范化：非法结构（非数组/含非字符串项）报参数错误
+        const candidates = normalizeCandidates(raw.candidates);
+        if (candidates === null) {
+          res.status(400).json({ error: 'candidates must be an array of strings', code: 'missing_parameter' });
+          return;
+        }
+        // 计算最终值：仅 text 生效；无候选强制单选
+        const effective = resolveEffectiveCandidates(paramType, {
+          candidates,
+          multiple: raw.multiple === true,
+        });
         normalized.push({
           alias,
           label: typeof raw.label === 'string' && raw.label.trim() !== '' ? raw.label.trim() : null,
           paramType,
           defaultValue: typeof raw.defaultValue === 'string' ? raw.defaultValue : null,
+          candidates: effective.candidates,
+          multiple: effective.multiple,
         });
       }
       const wf = workflowService.updateDeclaredParams(id, normalized);
@@ -243,7 +272,7 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         return;
       }
       // 与 getById 返回结构保持一致（params 含 nodeRawValue）
-      const params = workflowService.getParamsWithRawValue(id);
+      const params = workflowService.getParamsWithRawValue(id).map(toParamResponse);
       res.json({
         ...wf,
         buildScriptEnabled: wf.buildScriptEnabled === 1,
@@ -467,6 +496,12 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         res.status(400).json({ error: 'alias or defaultValue is required', code: 'missing_parameter' });
         return;
       }
+      // 候选项规范化：非法结构（非数组/含非字符串项）报参数错误
+      const candidates = normalizeCandidates(req.body.candidates);
+      if (candidates === null) {
+        res.status(400).json({ error: 'candidates must be an array of strings', code: 'missing_parameter' });
+        return;
+      }
       try {
         const param = workflowService.addParam({
           workflowId: id,
@@ -476,8 +511,10 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           label,
           paramType,
           defaultValue: defaultValue === undefined ? null : defaultValue,
+          candidates,
+          multiple: req.body.multiple === true,
         });
-        res.status(201).json(param);
+        res.status(201).json(toParamResponse(param));
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
           res.status(409).json({ error: 'Alias already exists', code: 'alias_conflict' });
@@ -498,13 +535,24 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           label?: string | null;
           paramType?: string;
           defaultValue?: string | null;
+          candidates?: CandidateOption[];
+          multiple?: boolean;
         };
         // 空字符串 alias 视为清除别名
         if (typeof body.alias === 'string' && body.alias.trim() === '') {
           body.alias = null;
         }
+        // 候选项规范化（仅在请求显式携带时校验；未传 = 保持原值）
+        if (req.body.candidates !== undefined) {
+          const candidates = normalizeCandidates(req.body.candidates);
+          if (candidates === null) {
+            res.status(400).json({ error: 'candidates must be an array of strings', code: 'missing_parameter' });
+            return;
+          }
+          body.candidates = candidates;
+        }
         const param = workflowService.updateParam(Number(req.params.paramId), body);
-        res.json(param);
+        res.json(toParamResponse(param));
       } catch (err: unknown) {
         if (err instanceof Error && err.message?.includes('UNIQUE constraint failed')) {
           res.status(409).json({ error: 'Alias already exists', code: 'alias_conflict' });

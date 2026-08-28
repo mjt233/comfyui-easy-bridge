@@ -321,6 +321,43 @@
                     }
                   }"
                 />
+                <!-- 单选候选：combobox 供候选项建议（展示 label 提交 value），仍可自由输入；
+                     return-object 显式关闭（VCombobox 默认 true 会返回整个对象），并在回调中兜底规范化 -->
+                <v-combobox
+                  v-else-if="usesSingleCandidateSelect(field)"
+                  :model-value="String(executeForm[field.alias] ?? '')"
+                  :items="candidateItems(field)"
+                  item-title="title"
+                  item-value="value"
+                  :return-object="false"
+                  :label="field.label || field.alias"
+                  :hint="candidateHint(field)"
+                  persistent-hint
+                  variant="outlined"
+                  density="compact"
+                  class="flex-grow-1"
+                  clearable
+                  @update:model-value="(v: unknown) => { executeForm[field.alias] = toCandidateString(v); }"
+                />
+                <!-- 多选候选：chips 勾选多项（含自由输入），提交时各 value 以英文逗号拼接 -->
+                <v-combobox
+                  v-else-if="usesMultiCandidateSelect(field)"
+                  :model-value="executeMultiForm[field.alias] ?? []"
+                  :items="candidateItems(field)"
+                  item-title="title"
+                  item-value="value"
+                  :return-object="false"
+                  :label="field.label || field.alias"
+                  :hint="candidateHint(field)"
+                  persistent-hint
+                  variant="outlined"
+                  density="compact"
+                  class="flex-grow-1"
+                  multiple
+                  chips
+                  closable-chips
+                  @update:model-value="(v: unknown) => { executeMultiForm[field.alias] = toCandidateStringArray(v); }"
+                />
                 <v-textarea
                   v-else
                   v-model="executeForm[field.alias]"
@@ -512,12 +549,13 @@ import {
 } from '@/api/workflows';
 import { listTags, setWorkflowTags } from '@/api/tags';
 import { listProviders } from '@/api/providers';
-import type { TagTreeNode, Workflow, WorkflowParam, WorkflowTagInput, ProviderSummary } from '@/types';
+import type { TagTreeNode, Workflow, WorkflowParam, WorkflowTagInput, ProviderSummary, CandidateOption } from '@/types';
 import { authEnabled } from '@/api/auth-status';
 import ApiDocsDialog from '@/components/ApiDocsDialog.vue';
 import MarkdownView from '@/components/MarkdownView.vue';
 import WorkflowTagEditorDialog from '@/components/WorkflowTagEditorDialog.vue';
 import ExecuteCodeExamplesDialog from '@/components/ExecuteCodeExamplesDialog.vue';
+import { toCandidateString, toCandidateStringArray } from '@/utils/candidates';
 
 interface ExecuteField {
   alias: string;
@@ -531,6 +569,10 @@ interface ExecuteField {
   overrideType: string;
   /** 是否为动态字段静态声明（无对应节点） */
   dynamic?: boolean;
+  /** 候选项（{label,value} 结构，仅 text 类型生效，供执行表单下拉建议；label 展示 / value 提交） */
+  candidates: CandidateOption[];
+  /** 是否多选（仅 text 且有候选项时生效；提交时 value 以英文逗号拼接） */
+  multiple: boolean;
 }
 
 /** 代码案例请求快照（按当前执行表单生成，与实际提交一致） */
@@ -683,6 +725,8 @@ const executeDescription = ref('');
 const showExecuteDescription = ref(false);
 /** 执行表单值：boolean 为布尔，其余为字符串 */
 const executeForm = reactive<Record<string, string | boolean>>({});
+/** 多选候选项表单值：别名 → 已选值数组（提交时以英文逗号拼接） */
+const executeMultiForm = reactive<Record<string, string[]>>({});
 /** 已配置媒体参数的文件（key 为别名，支持多文件） */
 const executeFiles = reactive<Record<string, File[]>>({});
 /** 执行提供商实例列表（下拉选项数据源，仅启用实例） */
@@ -730,6 +774,50 @@ function fieldHint(field: ExecuteField): string {
 }
 
 /**
+ * 是否使用单选候选项下拉（text 类型且配置了候选项且非多选）
+ * @param field 执行字段
+ */
+function usesSingleCandidateSelect(field: ExecuteField): boolean {
+  return field.overrideType === 'text' && field.candidates.length > 0 && !field.multiple;
+}
+
+/**
+ * 是否使用多选候选项下拉（text 类型且配置了候选项且允许多选）
+ * @param field 执行字段
+ */
+function usesMultiCandidateSelect(field: ExecuteField): boolean {
+  return field.overrideType === 'text' && field.candidates.length > 0 && field.multiple;
+}
+
+/**
+ * 候选项字段提示文本：说明候选项来源与多选拼接规则
+ * @param field 执行字段
+ */
+function candidateHint(field: ExecuteField): string {
+  const base = field.dynamic ? '动态字段' : `节点: ${field.nodeTitle} · ${field.fieldName}`;
+  const mode = field.multiple ? '可多选，提交时以英文逗号拼接' : '可从候选项选择或自由输入';
+  return `${base} · ${mode}`;
+}
+
+/**
+ * 读取多选候选项提交值：已选 value 数组以英文逗号拼接为单个字符串
+ * @param alias 字段别名
+ * @returns 拼接后的提交值
+ */
+function multiCandidateJoin(alias: string): string {
+  return (executeMultiForm[alias] ?? []).join(',');
+}
+
+/**
+ * 候选项下拉数据源：{label, value} 转为 Vuetify 的 {title, value} 形态
+ * （选中后模型拿到 value 字符串，下拉中展示 label）
+ * @param field 执行字段
+ */
+function candidateItems(field: ExecuteField): Array<{ title: string; value: string }> {
+  return field.candidates.map((c) => ({ title: c.label, value: c.value }));
+}
+
+/**
  * 手动添加的自定义字段行
  */
 interface ManualField {
@@ -770,6 +858,8 @@ function isMediaType(paramType: string): boolean {
 function onOverrideTypeChange(field: ExecuteField): void {
   // 清空已选文件，避免旧媒体文件残留
   delete executeFiles[field.alias];
+  // 清空多选候选值，避免旧选择残留
+  delete executeMultiForm[field.alias];
   // 按新类型重置表单值：布尔用 false，其余清空
   if (field.overrideType === 'boolean') {
     executeForm[field.alias] = false;
@@ -951,6 +1041,8 @@ async function handleExecute(id: string) {
   // 清空旧表单数据
   Object.keys(executeForm).forEach(k => delete executeForm[k]);
   Object.keys(executeFiles).forEach(k => delete executeFiles[k]);
+  // 清空多选候选项表单值
+  Object.keys(executeMultiForm).forEach(k => delete executeMultiForm[k]);
   // 清空手动添加的自定义字段
   manualFields.value = [];
   manualFiles.value = {};
@@ -991,6 +1083,9 @@ async function handleExecute(id: string) {
         paramType: param.paramType || 'text',
         // 本次执行类型覆盖初始为持久化/声明类型（仅本次有效）
         overrideType: param.paramType || 'text',
+        // 候选项/多选来自静态参数配置（仅 text 类型有效）
+        candidates: param.paramType === 'text' ? (param.candidates ?? []) : [],
+        multiple: param.multiple === true,
       });
       // 设置默认值：覆盖优先，否则 rawJson 原值；boolean 用开关布尔值
       const effectiveDefault = param.defaultValue != null
@@ -1000,6 +1095,10 @@ async function handleExecute(id: string) {
         executeForm[param.alias] = parseBooleanDefault(effectiveDefault);
       } else {
         executeForm[param.alias] = String(effectiveDefault ?? '');
+      }
+      // 多选候选项：默认值按英文逗号拆分为已选数组
+      if (param.paramType === 'text' && param.multiple === true && (param.candidates ?? []).length > 0) {
+        executeMultiForm[param.alias] = String(effectiveDefault ?? '').split(',').map(s => s.trim()).filter(s => s !== '');
       }
     }
 
@@ -1017,12 +1116,19 @@ async function handleExecute(id: string) {
         // 动态声明字段同样支持本次执行类型覆盖
         overrideType: dp.paramType || 'text',
         dynamic: true,
+        // 候选项/多选来自动态字段声明（仅 text 类型有效）
+        candidates: (dp.paramType || 'text') === 'text' ? (dp.candidates ?? []) : [],
+        multiple: dp.multiple === true,
       });
       // 按声明的默认值预填表单（boolean 用开关布尔值）
       if ((dp.paramType || 'text') === 'boolean') {
         executeForm[dp.alias] = parseBooleanDefault(dp.defaultValue);
       } else {
         executeForm[dp.alias] = String(dp.defaultValue ?? '');
+      }
+      // 多选候选项：声明默认值按英文逗号拆分为已选数组
+      if ((dp.paramType || 'text') === 'text' && dp.multiple === true && (dp.candidates ?? []).length > 0) {
+        executeMultiForm[dp.alias] = String(dp.defaultValue ?? '').split(',').map(s => s.trim()).filter(s => s !== '');
       }
     }
 
@@ -1057,6 +1163,9 @@ async function confirmExecute() {
         if (fileList && fileList.length > 0) {
           files[field.alias] = fileList;
         }
+      } else if (usesMultiCandidateSelect(field)) {
+        // 多选候选项：已选数组以英文逗号拼接为单个字符串提交
+        aliasValues[field.alias] = multiCandidateJoin(field.alias);
       } else {
         // text / number：字符串提交，类型转换由后端按（覆盖后的）paramType 完成
         const val = executeForm[field.alias];
@@ -1121,6 +1230,9 @@ function openCodeExamples(): void {
       if (fileList && fileList.length > 0) {
         files[field.alias] = fileList.map((f) => f.name);
       }
+    } else if (usesMultiCandidateSelect(field)) {
+      // 多选候选项：与实际提交一致，以英文逗号拼接
+      aliasValues[field.alias] = multiCandidateJoin(field.alias);
     } else {
       aliasValues[field.alias] = String(executeForm[field.alias] ?? '');
     }

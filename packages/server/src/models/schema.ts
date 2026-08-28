@@ -29,6 +29,10 @@ export const workflowParams = sqliteTable('workflow_params', {
   paramType: text('param_type').notNull().default('text'),
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: text('default_value'),
+  /** 候选项 JSON 字符串数组（仅 text 类型生效，供表单下拉选择）；'[]' 表示未配置 */
+  candidates: text('candidates').notNull().default('[]'),
+  /** 是否多选（0/1）；多选时表单值以英文逗号拼接 */
+  multiple: integer('multiple').notNull().default(0),
 }, (table) => ({
   uniqueAliasPerWorkflow: uniqueIndex('idx_unique_alias_per_workflow').on(table.workflowId, table.alias),
 }));

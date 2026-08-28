@@ -39,6 +39,8 @@ describe('Workflow API', () => {
         label TEXT,
         param_type TEXT NOT NULL DEFAULT 'text',
         default_value TEXT,
+        candidates TEXT NOT NULL DEFAULT '[]',
+        multiple INTEGER NOT NULL DEFAULT 0,
         UNIQUE(workflow_id, alias)
       );
       CREATE TABLE workflow_attachments (
@@ -722,9 +724,10 @@ describe('Workflow API', () => {
         ],
       });
     expect(res.status).toBe(200);
+    // 响应中的声明会规范化补齐 candidates/multiple（无候选 → 空数组 + 单选）
     expect(res.body.declaredParams).toEqual([
-      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
-      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null, candidates: [], multiple: false },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20', candidates: [], multiple: false },
     ]);
     expect(Array.isArray(res.body.params)).toBe(true);
 
@@ -766,6 +769,121 @@ describe('Workflow API', () => {
       .send({ params: [{ alias: 'a' }, { alias: 'a' }] });
     expect(dup.status).toBe(409);
     expect(dup.body.code).toBe('alias_conflict');
+  });
+
+  it('PUT declared-params normalizes candidates and multiple', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'dp-candidates', name: 'DP', rawJson: '{}' });
+
+    const res = await supertest(app)
+      .put('/api/workflows/dp-candidates/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        params: [
+          // text：候选按 value 去重、跳过空 value 项，保留多选
+          {
+            alias: 'style',
+            paramType: 'text',
+            candidates: [
+              { label: '写实', value: 'realism' },
+              { label: '写实2', value: 'realism' },
+              { label: '跳过', value: '  ' },
+              { label: '动漫', value: 'anime' },
+            ],
+            multiple: true,
+          },
+          // number：候选项被清空、强制单选
+          { alias: 'count', paramType: 'number', candidates: [{ label: '1', value: '1' }], multiple: true },
+          // 未传候选：默认空数组 + 单选
+          { alias: 'note', paramType: 'text' },
+        ],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.declaredParams).toEqual([
+      {
+        alias: 'style', label: null, paramType: 'text', defaultValue: null,
+        candidates: [{ label: '写实', value: 'realism' }, { label: '动漫', value: 'anime' }],
+        multiple: true,
+      },
+      { alias: 'count', label: null, paramType: 'number', defaultValue: null, candidates: [], multiple: false },
+      { alias: 'note', label: null, paramType: 'text', defaultValue: null, candidates: [], multiple: false },
+    ]);
+
+    // 缺 label 的候选：label 回退为 value
+    const labelFallback = await supertest(app)
+      .put('/api/workflows/dp-candidates/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: [{ alias: 'plain', paramType: 'text', candidates: [{ value: 'only-value' }] }] });
+    expect(labelFallback.status).toBe(200);
+    expect(labelFallback.body.declaredParams[0].candidates).toEqual([{ label: 'only-value', value: 'only-value' }]);
+
+    // 非数组候选 → 400
+    const nonArray = await supertest(app)
+      .put('/api/workflows/dp-candidates/declared-params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ params: [{ alias: 'bad', paramType: 'text', candidates: 'a,b' }] });
+    expect(nonArray.status).toBe(400);
+    expect(nonArray.body.code).toBe('missing_parameter');
+  });
+
+  it('POST/PUT params accept candidates and detail returns parsed values', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+    await supertest(app)
+      .post('/api/workflows')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ id: 'param-candidates', name: 'PC', rawJson: '{}' });
+
+    // 新增参数：携带候选项与多选
+    const created = await supertest(app)
+      .post('/api/workflows/param-candidates/params')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        nodeId: '1',
+        fieldName: 'style',
+        alias: 'style',
+        candidates: [{ label: '写实', value: 'realism' }, { label: '动漫', value: 'anime' }],
+        multiple: true,
+      });
+    expect(created.status).toBe(201);
+    // 响应中 candidates 解析为结构化数组、multiple 转布尔
+    expect(created.body.candidates).toEqual([
+      { label: '写实', value: 'realism' },
+      { label: '动漫', value: 'anime' },
+    ]);
+    expect(created.body.multiple).toBe(true);
+
+    // 详情接口同样返回解析后的形态
+    const detail = await supertest(app)
+      .get('/api/workflows/param-candidates')
+      .set('Authorization', `Bearer ${token}`);
+    const param = detail.body.params.find((p: { alias: string | null }) => p.alias === 'style');
+    expect(param.candidates).toEqual([
+      { label: '写实', value: 'realism' },
+      { label: '动漫', value: 'anime' },
+    ]);
+    expect(param.multiple).toBe(true);
+
+    // 更新参数：改候选并回退单选
+    const updated = await supertest(app)
+      .put(`/api/workflows/param-candidates/params/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ candidates: [{ label: 'A', value: 'a' }], multiple: false });
+    expect(updated.status).toBe(200);
+    expect(updated.body.candidates).toEqual([{ label: 'A', value: 'a' }]);
+    expect(updated.body.multiple).toBe(false);
+
+    // 非法候选结构（非数组）→ 400
+    const invalid = await supertest(app)
+      .put(`/api/workflows/param-candidates/params/${created.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ candidates: 'a,b' });
+    expect(invalid.status).toBe(400);
+    expect(invalid.body.code).toBe('missing_parameter');
   });
 
   it('PUT declared-params returns 404 for missing workflow and 401 without auth', async () => {

@@ -50,7 +50,12 @@ Authorization: Bearer <token>
       "alias": "prompt",
       "label": "提示词",
       "paramType": "text",
-      "defaultValue": null
+      "defaultValue": null,
+      "candidates": [
+        { "label": "写实风格", "value": "realism" },
+        { "label": "动漫风格", "value": "anime" }
+      ],
+      "multiple": false
     }
   ],
   "description": "示例工作流",
@@ -73,6 +78,8 @@ Authorization: Bearer <token>
       "label": "随机种子",
       "paramType": "number",
       "defaultValue": null,
+      "candidates": [],
+      "multiple": false,
       "nodeRawValue": "1"
     }
   ],
@@ -116,6 +123,8 @@ Authorization: Bearer <token>
 | `label` | string \| null | 展示标签；`null` 表示未设置 |
 | `paramType` | string | 参数类型：`text` \| `number` \| `boolean` \| `image` \| `video` \| `audio` |
 | `defaultValue` | string \| null | 默认值；`null` 表示未设置 |
+| `candidates` | object[] | 候选项数组（元素为 `{ "label": 展示名, "value": 提交值 }`）；**仅 `text` 类型生效**，空数组表示未配置 |
+| `multiple` | boolean | 是否多选（仅 `text` 且配置了候选项时为 `true`）；多选时各候选项 `value` 以英文逗号 `","` 拼接提交 |
 
 ### 2.4 `resolvedProvider` 字段说明
 
@@ -142,6 +151,8 @@ Authorization: Bearer <token>
 | `label` | string \| null | 展示标签 |
 | `paramType` | string | 参数类型：`text` \| `number` \| `boolean` \| `image` \| `video` \| `audio` |
 | `defaultValue` | string \| null | 默认值覆盖；`null` 表示使用 `rawJson` 原值 |
+| `candidates` | object[] | 候选项数组（元素为 `{ "label": 展示名, "value": 提交值 }`）；**仅 `text` 类型生效**，空数组表示未配置 |
+| `multiple` | boolean | 是否多选（仅 `text` 且配置了候选项时为 `true`）；多选时各候选项 `value` 以英文逗号 `","` 拼接提交 |
 | `nodeRawValue` | string \| null | `rawJson` 中该字段的原始值（字符串化）；`rawJson` 中无对应字段或解析失败时为 `null` |
 
 ### 2.6 `tags` 字段结构（嵌套分组）
@@ -193,16 +204,72 @@ Authorization: Bearer <token>
 
 ---
 
-## 3. 示例
+## 3. 字段候选项与多选（构建下拉表单）
 
-### 3.1 cURL
+工作流的参数（`params[]`）与动态声明字段（`declaredParams[]`）均可配置**候选项**，用于在前端/客户端渲染下拉选择框。
+
+### 3.1 候选项语义
+
+- 每个候选项为 `{ "label": 展示名, "value": 提交值 }`：`label` 用于界面展示，`value` 为实际提交到执行接口的值（两者相同时提交值即展示名）
+- **仅 `paramType = "text"` 的字段支持候选项**；`number` / `boolean` / 媒体类型字段 `candidates` 恒为空数组
+- `multiple = true` 表示多选；`false` 表示单选
+- 候选项仅用于**表单交互引导**：执行接口不对传值做候选项校验，自由输入的值原样提交
+
+### 3.2 客户端构建下拉表单的步骤
+
+1. 调用 `GET /api/workflows/:id`（本接口），遍历 `params[]` 与 `declaredParams[]` 中 `alias` 非空的字段
+2. `candidates` 非空的 `text` 字段：用候选项渲染下拉框——选项显示 `label`，选中后取 `value` 作为提交值；`multiple = true` 时允许勾选多项（可同时支持自由输入）
+3. `candidates` 为空的字段按普通文本/数字/布尔/文件输入渲染
+
+### 3.3 多选拼接提交规则
+
+多选字段把选中的各候选项 `value` 用英文逗号 `","` 拼接为**一个字符串**提交（与单选字段结构一致，无需数组）：
+
+```json
+{
+  "style": "realism,anime"
+}
+```
+
+### 3.4 示例
+
+详情响应片段（`style` 字段配置了候选项与多选）：
+
+```json
+{
+  "alias": "style",
+  "label": "画风",
+  "paramType": "text",
+  "defaultValue": null,
+  "candidates": [
+    { "label": "写实风格", "value": "realism" },
+    { "label": "动漫风格", "value": "anime" },
+    { "label": "水墨", "value": "ink" }
+  ],
+  "multiple": true
+}
+```
+
+对应的多选执行请求（单选则只提交其中一个 `value`）：
+
+```bash
+curl -X POST http://localhost:10721/api/workflows/text_to_image/execute \
+  -H "Content-Type: application/json" \
+  -d '{"style": "realism,anime"}'
+```
+
+---
+
+## 4. 示例
+
+### 4.1 cURL
 
 ```bash
 curl -H "Authorization: Bearer <token>" \
   http://localhost:10721/api/workflows/text_to_image
 ```
 
-### 3.2 相关接口速查
+### 4.2 相关接口速查
 
 | 接口 | 说明 |
 |------|------|

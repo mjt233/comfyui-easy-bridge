@@ -65,6 +65,23 @@ providerId: uuid-string
 input_image: <file>
 ```
 
+### 字段候选项与多选提交
+
+工作流的参数与动态声明字段可配置**候选项**（下拉选项），供客户端构建下拉表单：
+
+- 通过 `GET /api/workflows/:id`（需认证）获取字段定义：`params[]` 与 `declaredParams[]` 中的 `candidates` 为候选项数组（元素为 `{ "label": 展示名, "value": 提交值 }`），`multiple` 为是否多选
+- **仅 `text` 类型字段支持候选项**；`candidates` 为空数组表示未配置（按普通文本输入渲染）
+- 下拉展示 `label`，**提交 `value`**；候选项仅作表单引导，执行接口不校验传值是否在候选内
+- **多选提交**：`multiple: true` 的字段把选中的各 `value` 用英文逗号 `","` 拼接为一个字符串提交，例如候选 `[{"label":"写实","value":"realism"},{"label":"动漫","value":"anime"}]` 多选前两项时提交 `"style": "realism,anime"`
+
+```json
+{
+  "style": "realism,anime"
+}
+```
+
+> 完整语义与构建下拉表单的步骤见 [workflow-detail-api.md](./workflow-detail-api.md) 第 3 节。
+
 ### 响应
 
 **直接执行（未达并发限制）** `200`:

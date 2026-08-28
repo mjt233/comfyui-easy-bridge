@@ -22,6 +22,8 @@ describe('WorkflowService', () => {
         label TEXT,
         param_type TEXT NOT NULL DEFAULT 'text',
         default_value TEXT,
+        candidates TEXT NOT NULL DEFAULT '[]',
+        multiple INTEGER NOT NULL DEFAULT 0,
         UNIQUE(workflow_id, alias)
       );
       CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, provider_name TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT);
@@ -323,7 +325,10 @@ describe('WorkflowService', () => {
     const updated = service.updateDeclaredParams('wf', list);
 
     expect(updated?.declaredParams).toBe(JSON.stringify(list));
-    expect(service.getDeclaredParams('wf')).toEqual(list);
+    // 读取时规范化补齐 candidates/multiple（无候选 → 空数组 + 单选）
+    expect(service.getDeclaredParams('wf')).toEqual(
+      list.map((item) => ({ ...item, candidates: [], multiple: false })),
+    );
   });
 
   it('getDeclaredParams tolerates corrupt or non-array JSON', () => {
@@ -335,10 +340,10 @@ describe('WorkflowService', () => {
     sqlite.exec("UPDATE workflows SET declared_params = '{\"a\":1}' WHERE id = 'wf'");
     expect(service.getDeclaredParams('wf')).toEqual([]);
 
-    // 混入非法条目时仅保留合法条目
+    // 混入非法条目时仅保留合法条目（并规范化补齐 candidates/multiple）
     sqlite.exec("UPDATE workflows SET declared_params = '[{\"alias\":\"ok\",\"paramType\":\"text\"},{\"alias\":\"\"}]' WHERE id = 'wf'");
     expect(service.getDeclaredParams('wf')).toEqual([
-      { alias: 'ok', paramType: 'text' },
+      { alias: 'ok', paramType: 'text', candidates: [], multiple: false },
     ]);
   });
 
@@ -350,7 +355,7 @@ describe('WorkflowService', () => {
 
     expect(renamed?.id).toBe('wf-new');
     expect(service.getDeclaredParams('wf-new')).toEqual([
-      { alias: 'a', label: null, paramType: 'text', defaultValue: null },
+      { alias: 'a', label: null, paramType: 'text', defaultValue: null, candidates: [], multiple: false },
     ]);
   });
 
@@ -377,5 +382,129 @@ describe('WorkflowService', () => {
     const params = service.getParamsWithRawValue('raw-flow2');
     // 损坏 rawJson 解析失败 → nodeRawValue 为 null
     expect(params[0].nodeRawValue).toBeNull();
+  });
+
+  it('addParam stores candidates and multiple for text type', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'style',
+      candidates: [
+        { label: '写实', value: 'realism' },
+        { label: '动漫', value: 'anime' },
+        { label: '水墨', value: 'ink' },
+      ],
+      multiple: true,
+    });
+    // 候选项以 {label,value} 结构化 JSON 数组落库；多选落 1
+    expect(param.candidates).toBe(JSON.stringify([
+      { label: '写实', value: 'realism' },
+      { label: '动漫', value: 'anime' },
+      { label: '水墨', value: 'ink' },
+    ]));
+    expect(param.multiple).toBe(1);
+  });
+
+  it('addParam clears candidates for non-text type', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'count',
+      paramType: 'number',
+      candidates: [{ label: '1', value: '1' }, { label: '2', value: '2' }],
+      multiple: true,
+    });
+    // 仅 text 类型支持候选项，number 强制清空并回退单选
+    expect(param.candidates).toBe('[]');
+    expect(param.multiple).toBe(0);
+  });
+
+  it('addParam forces single select when candidates empty', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const param = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'style',
+      candidates: [],
+      multiple: true,
+    });
+    // 无候选项时多选无意义，强制单选
+    expect(param.multiple).toBe(0);
+  });
+
+  it('updateParam merges candidates and clears them on type switch', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    const p = service.addParam({
+      workflowId: 'wf',
+      nodeId: '1',
+      fieldName: 'v',
+      alias: 'style',
+      candidates: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }],
+      multiple: false,
+    });
+    // 更新候选项并开启多选
+    const updated = service.updateParam(p.id, {
+      candidates: [
+        { label: 'A', value: 'a' },
+        { label: 'B', value: 'b' },
+        { label: 'C', value: 'c' },
+      ],
+      multiple: true,
+    });
+    expect(updated.candidates).toBe(JSON.stringify([
+      { label: 'A', value: 'a' },
+      { label: 'B', value: 'b' },
+      { label: 'C', value: 'c' },
+    ]));
+    expect(updated.multiple).toBe(1);
+
+    // 未传 candidates 时保持原值
+    const kept = service.updateParam(p.id, { label: '风格' });
+    expect(kept.candidates).toBe(JSON.stringify([
+      { label: 'A', value: 'a' },
+      { label: 'B', value: 'b' },
+      { label: 'C', value: 'c' },
+    ]));
+    expect(kept.multiple).toBe(1);
+
+    // 切换为非 text 类型后候选项清空、回退单选
+    const switched = service.updateParam(p.id, { paramType: 'image' });
+    expect(switched.candidates).toBe('[]');
+    expect(switched.multiple).toBe(0);
+  });
+
+  it('getDeclaredParams normalizes candidates on read', () => {
+    service.create({ id: 'wf', name: 'WF', rawJson: '{}' });
+    // 直接写入带候选项的声明 JSON：含重复 value、无候选多选、旧版字符串项、非法项等脏数据
+    sqlite.exec(
+      "UPDATE workflows SET declared_params = '["
+      + '{"alias":"style","label":null,"paramType":"text","defaultValue":null,'
+      + '"candidates":[{"label":"A","value":"a"},{"label":"A2","value":"a"},{"label":"B","value":"b"}],"multiple":true},'
+      + '{"alias":"count","label":null,"paramType":"number","defaultValue":null,'
+      + '"candidates":[{"label":"1","value":"1"}],"multiple":true},'
+      + '{"alias":"dirty","label":null,"paramType":"text","defaultValue":null,'
+      + '"candidates":["ok",1,{"label":"写意","value":"xieyi"},{"label":"跳过","value":""}]}'
+      + "]' WHERE id = 'wf'",
+    );
+    const list = service.getDeclaredParams('wf');
+    // text 候选按 value 去重保留；number 候选清空；旧版字符串项按 label=value 兼容、非法/空 value 项跳过；
+    // multiple 仅 text 且有候选时为 true
+    expect(list[0]).toEqual({
+      alias: 'style', label: null, paramType: 'text', defaultValue: null,
+      candidates: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }], multiple: true,
+    });
+    expect(list[1]).toEqual({
+      alias: 'count', label: null, paramType: 'number', defaultValue: null,
+      candidates: [], multiple: false,
+    });
+    expect(list[2]).toEqual({
+      alias: 'dirty', label: null, paramType: 'text', defaultValue: null,
+      candidates: [{ label: 'ok', value: 'ok' }, { label: '写意', value: 'xieyi' }], multiple: false,
+    });
   });
 });

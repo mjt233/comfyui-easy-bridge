@@ -408,6 +408,75 @@
             variant="outlined"
             hide-details
           />
+          <!-- 候选项表格：仅 text 类型支持；每项配置展示名(label)与提交值(value) -->
+          <div class="mt-3">
+            <div class="d-flex align-center mb-1">
+              <span class="text-subtitle-2">候选项</span>
+              <v-spacer />
+              <v-btn
+                size="x-small"
+                variant="tonal"
+                prepend-icon="mdi-plus"
+                :disabled="!candidatesEnabled || dialog.saving"
+                @click="addCandidateRow"
+              >
+                添加候选项
+              </v-btn>
+            </div>
+            <v-table v-if="candidatesEnabled && dialog.candidates.length > 0" density="compact" class="mb-1">
+              <thead>
+                <tr>
+                  <th>展示名（下拉显示）</th>
+                  <th>提交值（多选拼接用）</th>
+                  <th style="width: 48px" />
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(c, i) in dialog.candidates" :key="i">
+                  <td>
+                    <v-text-field
+                      v-model="c.label"
+                      placeholder="留空时使用提交值"
+                      density="compact"
+                      variant="outlined"
+                      hide-details
+                    />
+                  </td>
+                  <td>
+                    <v-text-field
+                      v-model="c.value"
+                      placeholder="必填"
+                      density="compact"
+                      variant="outlined"
+                      hide-details
+                    />
+                  </td>
+                  <td>
+                    <v-btn
+                      icon="mdi-close"
+                      size="small"
+                      variant="text"
+                      :disabled="dialog.saving"
+                      @click="dialog.candidates.splice(i, 1)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+            <!-- 多选开关：仅在有有效候选项时可开启；提交时各提交值以英文逗号拼接 -->
+            <v-switch
+              v-model="dialog.multiple"
+              label="允许多选"
+              :disabled="!candidatesEnabled || effectiveCandidates.length === 0"
+              density="compact"
+              color="primary"
+              hide-details
+              class="mt-1"
+            />
+            <p class="text-caption text-grey mb-0">
+              {{ candidatesHint }}
+            </p>
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-btn color="error" variant="text" @click="deleteFromDialog">
@@ -453,7 +522,7 @@ import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { getWorkflow, addParam, updateParam, deleteParam } from '@/api/workflows';
 import { listTags, setWorkflowTags } from '@/api/tags';
-import type { WorkflowDetail, WorkflowParam, TagTreeNode, WorkflowTagInput } from '@/types';
+import type { WorkflowDetail, WorkflowParam, TagTreeNode, WorkflowTagInput, CandidateOption } from '@/types';
 import WorkflowTagEditorDialog from '@/components/WorkflowTagEditorDialog.vue';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import BuildScriptEditor from '@/components/build-script/BuildScriptEditor.vue';
@@ -482,6 +551,10 @@ interface FieldInfo {
   paramType: string;
   /** 已保存的默认值覆盖 */
   defaultValue: string | null;
+  /** 候选项列表（{label,value} 结构，仅 text 类型生效） */
+  candidates: CandidateOption[];
+  /** 是否多选 */
+  multiple: boolean;
 }
 
 /**
@@ -577,8 +650,53 @@ const dialog = ref({
   label: '',
   paramId: null as number | null,
   paramType: 'text',
+  /** 候选项编辑行（label 展示名 / value 提交值；仅 text 类型生效） */
+  candidates: [] as Array<{ label: string; value: string }>,
+  /** 是否多选（仅 text 且有候选项时生效） */
+  multiple: false,
   saving: false,
 });
+
+/** 候选项配置是否可用（仅 text 类型支持） */
+const candidatesEnabled = computed(() => dialog.value.paramType === 'text');
+
+/**
+ * 规范化后的有效候选项：过滤空 value 行，label 留空回退为 value
+ */
+const effectiveCandidates = computed(() => {
+  const out: Array<{ label: string; value: string }> = [];
+  for (const row of dialog.value.candidates) {
+    const value = row.value.trim();
+    if (value === '') continue;
+    const label = row.label.trim() === '' ? value : row.label.trim();
+    // 按 value 去重（保留首次出现）
+    if (out.some((c) => c.value === value)) continue;
+    out.push({ label, value });
+  }
+  return out;
+});
+
+/**
+ * 候选项区提示文本：随类型与候选项状态变化
+ */
+const candidatesHint = computed(() => {
+  if (!candidatesEnabled.value) {
+    return '仅 text 类型支持候选项';
+  }
+  if (effectiveCandidates.value.length === 0) {
+    return '暂无有效候选项（提交值不能为空）；未配置时执行表单使用普通文本输入';
+  }
+  return dialog.value.multiple
+    ? '多选：执行表单可勾选多项，提交时以英文逗号 "," 拼接各提交值'
+    : '单选：执行表单可从候选项下拉选择（展示名），提交对应提交值';
+});
+
+/**
+ * 添加一行空候选项
+ */
+function addCandidateRow(): void {
+  dialog.value.candidates.push({ label: '', value: '' });
+}
 
 /** 媒体类型（无别名时不可选） */
 const MEDIA_PARAM_TYPES = ['image', 'video', 'audio'] as const;
@@ -642,6 +760,8 @@ function parseNodes(wf: WorkflowDetail) {
           paramId: existing?.id ?? null,
           paramType: existing?.paramType ?? 'text',
           defaultValue: override,
+          candidates: existing?.candidates ?? [],
+          multiple: existing?.multiple ?? false,
         });
       }
 
@@ -742,6 +862,9 @@ function openDialog(node: NodeField, info: FieldInfo) {
     label: info.label,
     paramId: info.paramId,
     paramType: info.paramType || 'text',
+    // 候选项深拷贝为可编辑行；多选仅在已有候选项时有意义
+    candidates: (info.candidates ?? []).map((c) => ({ label: c.label, value: c.value })),
+    multiple: info.multiple ?? false,
     saving: false,
   };
 }
@@ -777,6 +900,10 @@ async function saveDialog() {
     paramType = 'text';
   }
 
+  // 候选项：仅 text 类型生效（规范化见 effectiveCandidates）；无候选时多选强制单选
+  const candidates = paramType === 'text' ? effectiveCandidates.value : [];
+  const multiple = candidates.length > 0 && dialog.value.multiple;
+
   // 无有效配置：已有行则删除，新建则忽略
   if (alias == null && defaultValue == null) {
     if (dialog.value.paramId) {
@@ -797,6 +924,8 @@ async function saveDialog() {
         label: dialog.value.label,
         paramType,
         defaultValue,
+        candidates,
+        multiple,
       });
     } else {
       await addParam(workflow.value.id, {
@@ -806,6 +935,8 @@ async function saveDialog() {
         label: dialog.value.label,
         paramType,
         defaultValue,
+        candidates,
+        multiple,
       });
     }
     snackbar.value = { show: true, text: '保存成功', color: 'success' };

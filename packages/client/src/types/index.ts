@@ -63,6 +63,16 @@ export interface Workflow {
 }
 
 /**
+ * 候选项结构（label 展示用；value 提交用）
+ */
+export interface CandidateOption {
+  /** 展示名（空时回退为 value） */
+  label: string;
+  /** 提交值（非空；多选拼接时使用） */
+  value: string;
+}
+
+/**
  * 工作流参数配置
  */
 export interface WorkflowParam {
@@ -82,6 +92,10 @@ export interface WorkflowParam {
   paramType: string;
   /** 默认值覆盖；null 表示使用 rawJson 原值 */
   defaultValue: string | null;
+  /** 候选项列表（仅 text 类型生效，供执行表单下拉选择；label 展示 / value 提交）；空数组表示未配置 */
+  candidates: CandidateOption[];
+  /** 是否多选（仅 text 且配置了候选项时生效）；多选时值（value）以英文逗号拼接 */
+  multiple: boolean;
   /** rawJson 中该字段的原始值（字符串化）；无对应字段时为 null */
   nodeRawValue: string | null;
 }
@@ -111,6 +125,10 @@ export interface DeclaredParam {
   paramType: string;
   /** 表单默认值（文本/数字/布尔）；媒体字段无默认值 */
   defaultValue: string | null;
+  /** 候选项列表（仅 text 类型生效；label 展示 / value 提交）；空数组/缺省表示未配置 */
+  candidates?: CandidateOption[];
+  /** 是否多选（仅 text 且有候选项时生效）；多选时值（value）以英文逗号拼接 */
+  multiple?: boolean;
 }
 
 /**

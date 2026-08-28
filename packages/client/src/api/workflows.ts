@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference, DeclaredParam } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference, DeclaredParam, CandidateOption } from '@/types';
 
 /**
  * 列出工作流；支持按标签筛选（多标签 AND）
@@ -56,6 +56,10 @@ export async function addParam(
     label?: string;
     paramType?: string;
     defaultValue?: string | null;
+    /** 候选项（{label,value} 结构，仅 text 类型生效） */
+    candidates?: CandidateOption[];
+    /** 是否多选（仅 text 且有候选项时生效） */
+    multiple?: boolean;
   },
 ) {
   const res = await client.post(`/workflows/${workflowId}/params`, data);
@@ -76,6 +80,10 @@ export async function updateParam(
     label: string;
     paramType: string;
     defaultValue: string | null;
+    /** 候选项（{label,value} 结构，仅 text 类型生效） */
+    candidates: CandidateOption[];
+    /** 是否多选 */
+    multiple: boolean;
   }>,
 ) {
   const res = await client.put(`/workflows/${workflowId}/params/${paramId}`, data);

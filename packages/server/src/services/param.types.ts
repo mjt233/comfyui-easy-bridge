@@ -3,6 +3,8 @@
  * 由 DB 静态配置转换而来，或由动态构建脚本声明返回。
  */
 
+import type { CandidateOption } from './param-candidates';
+
 /** 运行时参数声明 */
 export interface RuntimeParam {
   /** 节点 ID */
@@ -44,4 +46,8 @@ export interface DeclaredParam {
   paramType: string;
   /** 表单默认值（文本/数字/布尔）；媒体字段无默认值 */
   defaultValue: string | null;
+  /** 候选项列表（仅 text 类型生效，供执行表单下拉选择；label 展示 / value 提交）；缺省/空数组表示未配置 */
+  candidates?: CandidateOption[];
+  /** 是否多选（仅 text 且配置了候选项时生效）；多选时表单值以英文逗号拼接 */
+  multiple?: boolean;
 }

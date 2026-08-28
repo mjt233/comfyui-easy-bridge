@@ -7,6 +7,8 @@ import { WorkflowService } from './workflow.service';
 import { AttachmentService } from './attachment.service';
 import { WorkflowTagService } from './workflow-tag.service';
 import type { DeclaredParam } from './param.types';
+import type { CandidateOption } from './param-candidates';
+import { normalizeCandidates, parseCandidatesJson, resolveEffectiveCandidates } from './param-candidates';
 
 /**
  * 导出清单中的附件元信息
@@ -74,6 +76,10 @@ interface ExportWorkflow {
     label: string | null;
     paramType: string;
     defaultValue: string | null;
+    /** 候选项数组（{label,value} 结构，仅 text 类型生效） */
+    candidates: CandidateOption[];
+    /** 是否多选 */
+    multiple: boolean;
   }>;
   /** 动态字段静态声明 */
   declaredParams: DeclaredParam[];
@@ -190,6 +196,9 @@ export class WorkflowIOService {
           label: p.label,
           paramType: p.paramType,
           defaultValue: p.defaultValue,
+          // 候选项以数组形态导出，multiple 转布尔
+          candidates: parseCandidatesJson(p.candidates),
+          multiple: p.multiple === 1,
         })),
         declaredParams: this.workflowService.getDeclaredParams(id),
         attachments: attachments.map((a) => ({
@@ -286,6 +295,13 @@ export class WorkflowIOService {
 
         // 创建参数配置
         for (const p of entry.params ?? []) {
+          // 候选项防御式解析：旧版导出无该字段时回退空数组；非法结构忽略
+          const candidates = normalizeCandidates(p.candidates) ?? [];
+          // 按参数类型规范化（仅 text 生效、无候选强制单选）
+          const effective = resolveEffectiveCandidates(p.paramType ?? 'text', {
+            candidates,
+            multiple: p.multiple === true,
+          });
           this.db.insert(schema.workflowParams).values({
             workflowId: newId,
             nodeId: p.nodeId,
@@ -294,6 +310,8 @@ export class WorkflowIOService {
             label: p.label ?? null,
             paramType: p.paramType ?? 'text',
             defaultValue: p.defaultValue ?? null,
+            candidates: JSON.stringify(effective.candidates),
+            multiple: effective.multiple ? 1 : 0,
           }).run();
         }
 
@@ -390,7 +408,7 @@ export class WorkflowIOService {
       updatedAt: now,
     }).run();
 
-    // ② 复制参数配置（含别名、标签、类型与默认值覆盖）
+    // ② 复制参数配置（含别名、标签、类型、默认值覆盖与候选项/多选）
     for (const p of this.workflowService.getParams(id)) {
       this.db.insert(schema.workflowParams).values({
         workflowId: newId,
@@ -400,6 +418,9 @@ export class WorkflowIOService {
         label: p.label,
         paramType: p.paramType,
         defaultValue: p.defaultValue,
+        // 候选项/多选按存储原样复制（JSON 字符串与 0/1）
+        candidates: p.candidates,
+        multiple: p.multiple,
       }).run();
     }
 

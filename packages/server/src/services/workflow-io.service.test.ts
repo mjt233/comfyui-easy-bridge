@@ -127,8 +127,8 @@ describe('WorkflowIOService', () => {
     const result = await envB.ioService.importWorkflows(zipBuffer);
     expect(result.imported).toBe(1);
     expect(envB.workflowService.getDeclaredParams(id)).toEqual([
-      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
-      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20' },
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null, candidates: [], multiple: false },
+      { alias: 'steps', label: '步数', paramType: 'number', defaultValue: '20', candidates: [], multiple: false },
     ]);
   });
 
@@ -238,9 +238,9 @@ describe('WorkflowIOService', () => {
     expect(copy!.buildScript).toBe('export default {}');
     expect(copy!.buildScriptEnabled).toBe(1);
 
-    // 动态字段声明已复制
+    // 动态字段声明已复制（读取时规范化补齐 candidates/multiple）
     expect(env.workflowService.getDeclaredParams(newId)).toEqual([
-      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null },
+      { alias: 'input_image', label: '输入图片', paramType: 'image', defaultValue: null, candidates: [], multiple: false },
     ]);
 
     // 参数已复制

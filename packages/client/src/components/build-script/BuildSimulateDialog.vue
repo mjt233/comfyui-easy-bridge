@@ -18,6 +18,41 @@
               hide-details
               color="primary"
             />
+            <!-- 单选候选：combobox 供候选项建议（展示 label 提交 value），仍可自由输入；
+                 return-object 显式关闭（VCombobox 默认 true 会返回整个对象），并在回调中兜底规范化 -->
+            <v-combobox
+              v-else-if="usesSingleCandidateSelect(p)"
+              :model-value="stringValues[p.alias!] ?? ''"
+              :items="candidateItems(p)"
+              item-title="title"
+              item-value="value"
+              :return-object="false"
+              :label="paramLabel(p)"
+              :hint="candidateHint(p)"
+              persistent-hint
+              density="compact"
+              variant="outlined"
+              clearable
+              @update:model-value="(v: unknown) => { stringValues[p.alias!] = toCandidateString(v); }"
+            />
+            <!-- 多选候选：chips 勾选多项（含自由输入），提交时各 value 以英文逗号拼接 -->
+            <v-combobox
+              v-else-if="usesMultiCandidateSelect(p)"
+              :model-value="multiValues[p.alias!] ?? []"
+              :items="candidateItems(p)"
+              item-title="title"
+              item-value="value"
+              :return-object="false"
+              :label="paramLabel(p)"
+              :hint="candidateHint(p)"
+              persistent-hint
+              density="compact"
+              variant="outlined"
+              multiple
+              chips
+              closable-chips
+              @update:model-value="(v: unknown) => { multiValues[p.alias!] = toCandidateStringArray(v); }"
+            />
             <v-text-field
               v-else
               v-model="stringValues[p.alias!]"
@@ -228,6 +263,7 @@ import { computed, ref, watch } from 'vue';
 import type { WorkflowDetail, WorkflowParam } from '@/types';
 import axios from 'axios';
 import { simulateBuild } from '@/api/workflows';
+import { toCandidateString, toCandidateStringArray } from '@/utils/candidates';
 import { parseWorkflowGraph, type GraphNode } from '../workflow-canvas/workflowGraph';
 import WorkflowCanvas from '../workflow-canvas/WorkflowCanvas.vue';
 import MonacoEditor from '../MonacoEditor.vue';
@@ -282,8 +318,46 @@ const stringValues = ref<Record<string, string>>({});
 /** 布尔参数值（key 为别名） */
 const booleanValues = ref<Record<string, boolean>>({});
 
+/** 多选候选项参数值（key 为别名，值为已选项数组；提交时以英文逗号拼接） */
+const multiValues = ref<Record<string, string[]>>({});
+
 /** 媒体参数文件（key 为别名，支持多文件） */
 const mediaFiles = ref<Record<string, File[]>>({});
+
+/**
+ * 是否使用单选候选项下拉（text 类型且配置了候选项且非多选）
+ * @param p 工作流参数
+ */
+function usesSingleCandidateSelect(p: WorkflowParam): boolean {
+  return p.paramType === 'text' && (p.candidates ?? []).length > 0 && p.multiple !== true;
+}
+
+/**
+ * 是否使用多选候选项下拉（text 类型且配置了候选项且允许多选）
+ * @param p 工作流参数
+ */
+function usesMultiCandidateSelect(p: WorkflowParam): boolean {
+  return p.paramType === 'text' && (p.candidates ?? []).length > 0 && p.multiple === true;
+}
+
+/**
+ * 候选项下拉数据源：{label, value} 转为 Vuetify 的 {title, value} 形态
+ * （选中后模型拿到 value 字符串，下拉中展示 label）
+ * @param p 工作流参数
+ */
+function candidateItems(p: WorkflowParam): Array<{ title: string; value: string }> {
+  return (p.candidates ?? []).map((c) => ({ title: c.label, value: c.value }));
+}
+
+/**
+ * 候选项字段提示文本：说明 label/value 语义与多选拼接规则
+ * @param p 工作流参数
+ */
+function candidateHint(p: WorkflowParam): string {
+  return p.multiple === true
+    ? '可多选（展示名为 label），提交时以英文逗号拼接各提交值（value）'
+    : '可从候选项选择（提交对应 value）或自由输入';
+}
 
 /**
  * 用户自定义的自由字段行
@@ -365,6 +439,9 @@ function buildParams(): Record<string, unknown> {
     } else if (p.paramType === 'number') {
       const v = stringValues.value[p.alias] ?? '';
       result[p.alias] = v === '' ? '' : Number(v);
+    } else if (usesMultiCandidateSelect(p)) {
+      // 多选候选项：已选数组以英文逗号拼接为单个字符串
+      result[p.alias] = (multiValues.value[p.alias] ?? []).join(',');
     } else {
       result[p.alias] = stringValues.value[p.alias] ?? '';
     }
@@ -510,6 +587,7 @@ watch(show, (val) => {
   if (val) {
     stringValues.value = {};
     booleanValues.value = {};
+    multiValues.value = {};
     for (const p of aliasParams.value) {
       if (!p.alias) continue;
       if (p.paramType === 'boolean') {
@@ -519,6 +597,10 @@ watch(show, (val) => {
         // 默认值覆盖优先，否则取 rawJson 原值；null/undefined 回退为空字符串
         const d = p.defaultValue ?? rawFieldValue(p.nodeId, p.fieldName);
         stringValues.value[p.alias] = d == null ? '' : String(d);
+        // 多选候选项：默认值按英文逗号拆分为已选数组
+        if (usesMultiCandidateSelect(p)) {
+          multiValues.value[p.alias] = String(d ?? '').split(',').map(s => s.trim()).filter(s => s !== '');
+        }
       }
     }
     freeFields.value = [];

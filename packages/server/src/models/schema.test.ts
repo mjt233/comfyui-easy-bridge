@@ -20,6 +20,8 @@ describe('schema', () => {
         label TEXT,
         param_type TEXT NOT NULL DEFAULT 'text',
         default_value TEXT,
+        candidates TEXT NOT NULL DEFAULT '[]',
+        multiple INTEGER NOT NULL DEFAULT 0,
         UNIQUE(workflow_id, alias)
       );
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
