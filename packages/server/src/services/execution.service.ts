@@ -7,9 +7,18 @@ import { cleanupTaskUploads } from './cleanup.service';
 import { COMFYUI_CLIENT_ID } from './providers/types';
 import type { ExecutionProvider } from './providers/types';
 
-const FALLBACK_INTERVAL = 10000;
-const COMPLETION_POLL_INTERVAL = 1000;
-const RECONNECT_DELAY = 5000;
+/**
+ * 执行服务可调参数。
+ * 抽为对象供测试覆盖（缩短间隔），避免用例真实等待。
+ */
+export const executionServiceConfig = {
+  /** 后备轮询 /history 的间隔（毫秒），同时驱动队列兜底扫描 */
+  fallbackIntervalMs: 10000,
+  /** 进度 100% 但尚未完成任务的快速轮询间隔（毫秒） */
+  completionPollIntervalMs: 1000,
+  /** WebSocket 断线后的重连延迟（毫秒） */
+  reconnectDelayMs: 5000,
+};
 
 /**
  * ComfyUI /history 条目解析结果。
@@ -233,35 +242,40 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
   /** 连续失败阈值：达到后不再重试，将任务标记为失败 */
   const MAX_CONSECUTIVE_HISTORY_ERRORS = 5;
 
-  /** 调度队列：当 running < concurrency 时取出最旧 queued 任务提交 */
+  /** 调度队列：当 running < concurrency 时取出最旧 queued 任务提交，循环填满并发槽位 */
   async function drainQueue(): Promise<void> {
     // 重入保护：并发触发时直接返回，避免同一任务被重复提交
     if (draining) return;
     draining = true;
     try {
-      const running = taskService.countByStatus('pending', providerId);
-      if (running >= provider.concurrency) return;
+      // 循环提交：一次触发尽可能填满空闲槽位（每轮至少消费一个 queued 任务，必然收敛）
+      for (;;) {
+        const running = taskService.countByStatus('pending', providerId);
+        if (running >= provider.concurrency) return;
 
-      const queued = taskService.listQueued(providerId);
-      if (queued.length === 0) return;
+        const queued = taskService.listQueued(providerId);
+        if (queued.length === 0) return;
 
-      const nextTask = queued[0];
-      if (!nextTask.comfyuiRequestBody) {
-        taskService.updateStatus(nextTask.id, {
-          status: 'failed',
-          errorMessage: 'Missing request body',
-        });
-        return;
-      }
+        const nextTask = queued[0];
+        if (!nextTask.comfyuiRequestBody) {
+          // 请求体缺失属于数据问题：置失败后继续处理后续排队任务
+          taskService.updateStatus(nextTask.id, {
+            status: 'failed',
+            errorMessage: 'Missing request body',
+          });
+          continue;
+        }
 
-      const result = await provider.submitPrompt(nextTask.comfyuiRequestBody);
-      if (result.success) {
-        taskService.updateStatus(nextTask.id, {
-          status: 'pending',
-          promptId: result.promptId ?? undefined,
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        });
-      } else {
+        const result = await provider.submitPrompt(nextTask.comfyuiRequestBody);
+        if (result.success) {
+          taskService.updateStatus(nextTask.id, {
+            status: 'pending',
+            promptId: result.promptId ?? undefined,
+            comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
+          });
+          // 继续尝试填满下一个槽位
+          continue;
+        }
         taskService.updateStatus(nextTask.id, {
           status: 'failed',
           errorMessage: result.errorMessage ?? 'Submit failed',
@@ -269,6 +283,8 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
         });
         // 提交失败同样产生孤儿上传文件，触发自动清理
         cleanupTaskUploads(provider, nextTask.uploadedFiles);
+        // 提交失败通常意味着提供商不可达等实例级故障：停止本轮，避免连续失败风暴
+        return;
       }
     } catch (err) {
       console.error(`[ExecutionService:${providerId}] drainQueue error`, err);
@@ -399,14 +415,14 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       });
       ws.on('close', () => {
         if (!stopped) {
-          reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
+          reconnectTimer = setTimeout(connect, executionServiceConfig.reconnectDelayMs);
         }
       });
       ws.on('error', () => {
         // close event will fire and trigger reconnect
       });
     } catch {
-      reconnectTimer = setTimeout(connect, RECONNECT_DELAY);
+      reconnectTimer = setTimeout(connect, executionServiceConfig.reconnectDelayMs);
     }
   }
 
@@ -429,13 +445,28 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       } catch {
         // ignore
       }
-    }, COMPLETION_POLL_INTERVAL);
+    }, executionServiceConfig.completionPollIntervalMs);
   }
 
-  /** 后备轮询 /history 补偿丢失消息 */
+  /**
+   * 槽位空闲且存在排队任务时触发一次调度。
+   * 兜底任何绕过跟踪器终态路径的槽位释放（例如手动中断任务后 controller 直接置终态），
+   * 使队列在 ≤ 一个轮询周期内自愈。
+   */
+  async function drainIfSlotsAvailable(): Promise<void> {
+    // 槽位已满或队列为空时无需调度
+    if (taskService.countByStatus('pending', providerId) >= provider.concurrency) return;
+    if (taskService.listQueued(providerId).length === 0) return;
+    await drainQueue();
+  }
+
+  /** 后备轮询 /history 补偿丢失消息（同时驱动队列兜底调度） */
   function startFallback(): void {
     fallbackTimer = setInterval(async () => {
       try {
+        // 队列兜底：无论 pending 是否为空都要检查，否则槽位空闲时队列会永久停住
+        await drainIfSlotsAvailable();
+
         const pending = taskService.listPending(providerId);
         if (pending.length === 0) return;
         for (const task of pending) {
@@ -464,7 +495,7 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       } catch {
         // ignore
       }
-    }, FALLBACK_INTERVAL);
+    }, executionServiceConfig.fallbackIntervalMs);
   }
 
   connect();

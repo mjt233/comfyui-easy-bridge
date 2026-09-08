@@ -2,7 +2,13 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
-import { parseHistoryOutputs, resolveHistoryOutcome, startExecutionService } from './execution.service';
+import {
+  parseHistoryOutputs,
+  resolveHistoryOutcome,
+  startExecutionService,
+  drainProviderQueue,
+  executionServiceConfig,
+} from './execution.service';
 import { TaskService } from './task.service';
 import { ProviderService } from './providers/provider.service';
 
@@ -347,6 +353,135 @@ describe('createProviderTracker behavior', () => {
       });
       const t = taskService.getById('t2');
       expect(t?.promptId).toBe('pid-new');
+    } finally {
+      svc.stop();
+    }
+  });
+});
+
+/**
+ * 队列调度触发点测试：
+ * 覆盖外部显式触发（drainProviderQueue）、一次触发填满并发槽位、以及周期性兜底扫描的自愈能力。
+ */
+describe('queue drain triggers', () => {
+  /** 用例前的兜底轮询间隔，用例结束后恢复 */
+  const defaultFallbackIntervalMs = executionServiceConfig.fallbackIntervalMs;
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    executionServiceConfig.fallbackIntervalMs = defaultFallbackIntervalMs;
+  });
+
+  it('drainProviderQueue submits queued tasks of the given provider only', async () => {
+    const db = createInMemoryDb();
+    insertProvider(db, 'p1', 'http://a');
+    insertProvider(db, 'p2', 'http://b');
+    const taskService = new TaskService(db);
+
+    // 打桩 fetch：/prompt 返回固定 prompt_id，其余端点返回空对象
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/prompt')) {
+        return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    const svc = startExecutionService(db);
+    try {
+      // 服务启动后再插入排队任务：init drain 已执行完毕，不会被自动提交
+      insertQueuedTask(db, 't1', 'p1');
+      insertQueuedTask(db, 't2', 'p2');
+
+      // 显式触发 p1 的调度
+      await drainProviderQueue('p1');
+      const submitted = taskService.getById('t1');
+      expect(submitted?.status).toBe('pending');
+      expect(submitted?.promptId).toBe('pid-1');
+      // 其他实例的排队任务不受影响
+      expect(taskService.getById('t2')?.status).toBe('queued');
+      // 未注册的实例静默返回，不抛异常
+      await expect(drainProviderQueue('missing')).resolves.toBeUndefined();
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('drainQueue fills all free concurrency slots in one trigger', async () => {
+    const db = createInMemoryDb();
+    // 并发上限 2，队列中有 3 条任务
+    insertProvider(db, 'p1', 'http://a', 2);
+    insertQueuedTask(db, 't1', 'p1');
+    insertQueuedTask(db, 't2', 'p1');
+    insertQueuedTask(db, 't3', 'p1');
+    const taskService = new TaskService(db);
+
+    // 每次提交返回递增的 prompt_id，便于区分提交顺序
+    let submittedCount = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/prompt')) {
+        submittedCount += 1;
+        return new Response(JSON.stringify({ prompt_id: `pid-${submittedCount}` }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    const svc = startExecutionService(db);
+    try {
+      // init drain 应一次填满 2 个槽位
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('pending');
+        expect(taskService.getById('t2')?.status).toBe('pending');
+      });
+      // 槽位已满，第三条继续排队
+      expect(taskService.getById('t3')?.status).toBe('queued');
+      expect(submittedCount).toBe(2);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('periodic sweep submits queued tasks after the slot is freed externally', async () => {
+    const db = createInMemoryDb();
+    insertProvider(db, 'p1', 'http://a');
+    const taskService = new TaskService(db);
+
+    // 占用唯一槽位的 pending 任务（模拟正在执行）
+    const running = taskService.create({
+      workflowId: 'wf-1',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://a',
+      comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null,
+      promptId: 'pid-running',
+      providerId: 'p1',
+      providerName: 'p1',
+    });
+    insertQueuedTask(db, 't-queued', 'p1');
+
+    // 缩短兜底轮询间隔，避免用例真实等待 10s
+    executionServiceConfig.fallbackIntervalMs = 20;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/prompt')) {
+        return new Response(JSON.stringify({ prompt_id: 'pid-queued' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    const svc = startExecutionService(db);
+    try {
+      // 槽位已被 running 占满：init drain 不应提交排队任务
+      expect(taskService.getById('t-queued')?.status).toBe('queued');
+
+      // 模拟外部置终态（例如手动中断）：直接把执行中任务改为 failed，不经过跟踪器
+      taskService.updateStatus(running.id, { status: 'failed', errorMessage: 'Cancelled by user' });
+
+      // 周期性兜底扫描应发现空闲槽位并提交排队任务
+      await vi.waitFor(() => {
+        const queued = taskService.getById('t-queued');
+        expect(queued?.status).toBe('pending');
+        expect(queued?.promptId).toBe('pid-queued');
+      });
     } finally {
       svc.stop();
     }
