@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   submitPromptRequest,
   isPromptRunningRequest,
+  queryPromptQueueState,
   interruptRequest,
   fetchHistoryRequest,
   buildViewUrl,
@@ -133,6 +134,34 @@ describe('shared provider http', () => {
     // 初始 1 次 + 轮询期间重发 ≥ 2 次，共至少 3 次 /interrupt
     const interruptCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/interrupt'));
     expect(interruptCalls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('interruptRequest gives up quickly when the queue endpoint is unavailable', async () => {
+    // /interrupt 成功但 /queue 返回非 2xx：无法判断是否停止，应在少量尝试后放弃（不再空转约 60s）
+    const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.endsWith('/interrupt')) {
+        return new Response(null, { status: 200 });
+      }
+      if (url.endsWith('/queue')) {
+        return new Response('not found', { status: 404 });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const stopped = await interruptRequest('http://comfy:8188', 'p1', { pollIntervalMs: 1, maxAttempts: 50 });
+    expect(stopped).toBe(false);
+    // 队列状态连续 3 次无法判断即放弃，且期间不重发中断请求
+    const queueCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/queue'));
+    const interruptCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/interrupt'));
+    expect(queueCalls).toHaveLength(3);
+    expect(interruptCalls).toHaveLength(1);
+  });
+
+  it('queryPromptQueueState reports unknown on non-2xx', async () => {
+    // 非 2xx 时无法判断队列状态，应返回 unknown 而非「仍在运行」
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    expect(await queryPromptQueueState('http://comfy:8188', 'p1')).toBe('unknown');
   });
 
   it('fetchHistoryRequest returns parsed history on 2xx', async () => {

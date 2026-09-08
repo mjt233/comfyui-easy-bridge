@@ -71,37 +71,61 @@ export async function submitPromptRequest(baseUrl: string, body: string): Promis
 const INTERRUPT_POLL_INTERVAL = 500;
 /** 中断后确认停止的最大轮询次数（超过后放弃等待，返回失败）；500ms × 120 ≈ 60s */
 const INTERRUPT_MAX_ATTEMPTS = 120;
+/** 连续无法判断队列状态的最大次数（达到即放弃等待，避免队列接口不可用时空转约 60s） */
+const INTERRUPT_MAX_UNKNOWN_ATTEMPTS = 3;
+
+/**
+ * 执行端队列状态查询结果。
+ * - running: 目标 prompt 仍在执行队列中
+ * - stopped: 目标 prompt 已离开执行队列
+ * - unknown: 无法判断（请求失败或响应结构异常）
+ */
+export type PromptQueueState = 'running' | 'stopped' | 'unknown';
+
+/**
+ * 查询指定 prompt 在执行端队列中的状态。
+ * 请求失败或响应结构异常时返回 unknown（与「确认仍在运行」区分），
+ * 便于调用方在队列接口不可用时快速放弃，而不是长时间空转。
+ * @param baseUrl 执行端基础 URL
+ * @param promptId 要检查的 prompt_id
+ * @returns 队列状态
+ */
+export async function queryPromptQueueState(baseUrl: string, promptId: string): Promise<PromptQueueState> {
+  try {
+    const response = await fetch(`${baseUrl}/queue`);
+    // 非 2xx 无法判断队列状态
+    if (!response.ok) return 'unknown';
+    const data: unknown = await response.json();
+    const queueRunning = (data as { queue_running?: unknown }).queue_running;
+    // 响应结构异常时无法判断
+    if (!Array.isArray(queueRunning)) return 'unknown';
+    const running = queueRunning.some((entry: unknown) => {
+      // queue_running 每个条目形如 [prompt_id, workflow, extra]
+      if (!Array.isArray(entry) || entry.length < 1) return false;
+      return entry[0] === promptId;
+    });
+    return running ? 'running' : 'stopped';
+  } catch {
+    // 网络异常时无法判断
+    return 'unknown';
+  }
+}
 
 /**
  * 查询指定 prompt 是否仍在执行队列。
- * 通过 GET /queue 检查 queue_running 中是否包含该 prompt_id；
- * 请求失败或响应结构异常时保守返回 true（无法确认已停止）。
+ * 无法判断时保守返回 true（视为仍在运行），供只关心布尔结果的调用方使用。
  * @param baseUrl 执行端基础 URL
  * @param promptId 要检查的 prompt_id
  * @returns 仍在执行返回 true；已离开执行队列返回 false
  */
 export async function isPromptRunningRequest(baseUrl: string, promptId: string): Promise<boolean> {
-  try {
-    const response = await fetch(`${baseUrl}/queue`);
-    if (!response.ok) return true;
-    const data: unknown = await response.json();
-    const queueRunning = (data as { queue_running?: unknown }).queue_running;
-    // 响应结构异常时无法判断，保守视为仍在运行
-    if (!Array.isArray(queueRunning)) return true;
-    return queueRunning.some((entry: unknown) => {
-      // queue_running 每个条目形如 [prompt_id, workflow, extra]
-      if (!Array.isArray(entry) || entry.length < 1) return false;
-      return entry[0] === promptId;
-    });
-  } catch {
-    // 网络异常时无法确认，保守视为仍在运行
-    return true;
-  }
+  return (await queryPromptQueueState(baseUrl, promptId)) !== 'stopped';
 }
 
 /**
  * 中断执行端当前正在执行的 prompt，并在中断后轮询确认其已停止。
- * 轮询发现目标 prompt 仍在执行队列中时，会重新调用 /interrupt 接口，直至确认停止或超时。
+ * 轮询发现目标 prompt 仍在执行队列中时，会重新调用 /interrupt 接口，直至确认停止或超时；
+ * 队列状态连续无法判断（端点不可用/网络异常）时提前放弃，避免空转等待。
  * 仅在首次中断请求成功且提供了 promptId 时才进行轮询。
  * @param baseUrl 执行端基础 URL
  * @param promptId 目标 prompt_id；为空时只发送一次中断请求、不轮询
@@ -111,10 +135,11 @@ export async function isPromptRunningRequest(baseUrl: string, promptId: string):
 export async function interruptRequest(
   baseUrl: string,
   promptId?: string,
-  options?: { pollIntervalMs?: number; maxAttempts?: number },
+  options?: { pollIntervalMs?: number; maxAttempts?: number; maxUnknownAttempts?: number },
 ): Promise<boolean> {
   const pollIntervalMs = options?.pollIntervalMs ?? INTERRUPT_POLL_INTERVAL;
   const maxAttempts = options?.maxAttempts ?? INTERRUPT_MAX_ATTEMPTS;
+  const maxUnknownAttempts = options?.maxUnknownAttempts ?? INTERRUPT_MAX_UNKNOWN_ATTEMPTS;
   try {
     // 1) 首次发送中断请求；失败则直接返回（无法连上执行端时无需轮询）
     const first = await fetch(`${baseUrl}/interrupt`, { method: 'POST' });
@@ -122,15 +147,24 @@ export async function interruptRequest(
     // 无 promptId 时无法定向确认是否已停止，仅中断一次
     if (!promptId) return true;
 
+    // 连续无法判断队列状态的次数
+    let unknownCount = 0;
     // 2) 轮询确认目标 prompt 已离开执行队列；仍在执行则重新调用中断接口
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const stillRunning = await isPromptRunningRequest(baseUrl, promptId);
-      if (!stillRunning) return true; // 已确认停止执行
-      // 仍在执行 → 重新发送中断请求（单次失败不中断轮询，下一轮会再次重试）
-      try {
-        await fetch(`${baseUrl}/interrupt`, { method: 'POST' });
-      } catch {
-        // 忽略单次中断失败，继续轮询
+      const state = await queryPromptQueueState(baseUrl, promptId);
+      if (state === 'stopped') return true; // 已确认停止执行
+      if (state === 'unknown') {
+        // 无法判断队列状态：连续多次后放弃等待（不重发中断，避免无依据的重复请求）
+        unknownCount += 1;
+        if (unknownCount >= maxUnknownAttempts) return false;
+      } else {
+        // 仍在执行 → 重新发送中断请求（单次失败不中断轮询，下一轮会再次重试）
+        unknownCount = 0;
+        try {
+          await fetch(`${baseUrl}/interrupt`, { method: 'POST' });
+        } catch {
+          // 忽略单次中断失败，继续轮询
+        }
       }
       await sleep(pollIntervalMs);
     }

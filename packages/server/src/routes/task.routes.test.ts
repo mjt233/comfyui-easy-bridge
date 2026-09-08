@@ -601,8 +601,12 @@ describe('Task cancel triggers queue drain', () => {
     return { app: routeApp, db, taskService, running, queued };
   }
 
-  /** 打桩全局 fetch：/prompt 返回新 prompt_id，/queue 报告目标已停止，其余返回成功空响应 */
-  function stubFetch(): void {
+  /**
+   * 打桩全局 fetch：/prompt 返回新 prompt_id，/queue 报告目标已停止，其余返回成功空响应。
+   * @param options interruptOk 为 false 时 /interrupt 返回 500（模拟无法确认中断）
+   */
+  function stubFetch(options?: { interruptOk?: boolean }): void {
+    const interruptOk = options?.interruptOk ?? true;
     const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
       const url = String(input);
       // 队列调度提交排队任务 → 返回新的 prompt_id
@@ -613,7 +617,11 @@ describe('Task cancel triggers queue drain', () => {
       if (url.endsWith('/queue')) {
         return new Response(JSON.stringify({ queue_running: [], queue_pending: [] }), { status: 200 });
       }
-      // /interrupt、/history 等 → 成功空响应
+      // 中断请求：可模拟失败（无法确认停止）
+      if (url.endsWith('/interrupt')) {
+        return new Response('{}', { status: interruptOk ? 200 : 500 });
+      }
+      // /history 等 → 成功空响应
       return new Response('{}', { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -635,6 +643,24 @@ describe('Task cancel triggers queue drain', () => {
         expect(queued?.status).toBe('pending');
         expect(queued?.promptId).toBe('pid-queued');
       });
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('keeps the task pending and returns 502 when the interruption cannot be confirmed', async () => {
+    const env = createEnv();
+    // /interrupt 返回非 2xx → 无法确认执行端已停止
+    stubFetch({ interruptOk: false });
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app).post(`/api/tasks/${env.running.id}/cancel`);
+      expect(res.status).toBe(502);
+      expect(res.body.code).toBe('interrupt_unconfirmed');
+
+      // 任务保持 pending，交由跟踪器收敛；槽位未释放，排队任务也不应被提交
+      expect(env.taskService.getById(env.running.id)?.status).toBe('pending');
+      expect(env.taskService.getById(env.queued.id)?.status).toBe('queued');
     } finally {
       svc.stop();
     }

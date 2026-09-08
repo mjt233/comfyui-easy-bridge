@@ -254,11 +254,20 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         });
         return;
       }
-      // pending 任务：向执行端发送中断请求，轮询确认停止后标记为失败
+      // pending 任务：向执行端发送中断请求，确认停止后再置终态
       const provider = resolveProviderForTask(task);
       if (provider) {
         // 传入 promptId：中断后轮询 /queue 确认任务已停止执行，仍在执行则重试中断
-        await provider.interrupt(task.promptId ?? undefined);
+        const stopped = await provider.interrupt(task.promptId ?? undefined);
+        if (!stopped) {
+          // 未能确认执行端已停止：保持 pending，交由跟踪器（WS 事件/兜底轮询）收敛，
+          // 避免 DB 已置终态而执行端仍在运行导致并发判断失真
+          res.status(502).json({
+            error: 'Failed to confirm interruption',
+            code: 'interrupt_unconfirmed',
+          });
+          return;
+        }
       }
       taskService.updateStatus(task.id, {
         status: 'failed',

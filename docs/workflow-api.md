@@ -392,6 +392,8 @@ POST /api/tasks/:taskId/cancel
 中断正在执行（`pending`）或排队中（`queued`）的任务。
 - `queued` 任务：直接标记为失败，无需通知 ComfyUI。
 - `pending` 任务：向 ComfyUI 发送 `/interrupt` 请求，随后轮询 `GET /queue` 确认任务已停止执行；若仍在执行则重新调用 `/interrupt`，确认停止后再标记为失败。
+- **队列自动调度**：`pending` 任务确认中断后，会立即触发该提供商实例的队列调度，同一实例下排队中的任务（`queued`）会被自动提交，无需手动调用 `submit`。
+- **中断未确认**：若执行端不可达或队列状态连续无法判断（`GET /queue` 不可用），中断无法确认，接口返回 `502` 且任务**保持 `pending`**，交由跟踪器（WebSocket 事件 / 兜底轮询）收敛，避免任务状态与执行端实际状态不一致。
 
 **响应** `200`:
 
@@ -408,6 +410,7 @@ POST /api/tasks/:taskId/cancel
 |--------|------|------|
 | `400` | `invalid_status` | 任务状态不是 `queued` 或 `pending`（如已完成或已失败） |
 | `404` | `task_not_found` | 任务不存在 |
+| `502` | `interrupt_unconfirmed` | 中断请求已发出但未能确认执行端已停止（任务保持 `pending`） |
 
 ---
 

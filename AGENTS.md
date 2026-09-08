@@ -100,6 +100,7 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `alias_conflict` | 别名重复 (UNIQUE 约束) |
 | `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
 | `provider_not_configured` | 未配置默认提供商 / 工作流指定的实例不存在或已禁用 |
+| `interrupt_unconfirmed` | 中断请求已发出但未能确认执行端已停止（任务保持 pending） |
 | `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
 | `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |
 | `tag_not_found` | 标签不存在 |
