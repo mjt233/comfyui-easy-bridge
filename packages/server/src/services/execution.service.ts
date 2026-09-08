@@ -189,8 +189,29 @@ function guessFileType(key: string): 'image' | 'video' | 'audio' {
 interface ProviderTracker {
   /** 启动初始队列调度（服务启动/重建后立即处理 queued 任务） */
   init(): void;
+  /** 立即触发一次队列调度（外部释放并发槽位后调用，如手动中断任务） */
+  drain(): Promise<void>;
   /** 停止跟踪器：关闭 WebSocket 并清理定时器 */
   stop(): void;
+}
+
+/**
+ * 活跃跟踪器的队列调度入口注册表（providerId → drain）。
+ * 供跟踪器外部在释放并发槽位后主动触发调度（例如手动中断正在执行的任务）。
+ * 进程内单例：随 startExecutionService 启动注册、停止或重建时清空。
+ */
+const providerDrains = new Map<string, () => Promise<void>>();
+
+/**
+ * 触发指定提供商实例的队列调度。
+ * 实例未启用、不存在或执行服务未启动时静默返回，不抛异常。
+ * @param providerId 提供商实例 ID
+ */
+export async function drainProviderQueue(providerId: string): Promise<void> {
+  // 未注册该实例（未启用/已停止）时无事可做
+  const drain = providerDrains.get(providerId);
+  if (!drain) return;
+  await drain();
 }
 
 /**
@@ -455,6 +476,7 @@ function createProviderTracker(provider: ExecutionProvider, taskService: TaskSer
       // 启动即触发一次队列调度，让 queued 任务尽快进入 pending（fire-and-forget）
       drainQueue().catch(err => console.error(`[ExecutionService:${providerId}] init drain error`, err));
     },
+    drain: () => drainQueue(),
     stop: () => {
       stopped = true;
       if (ws) { ws.close(); ws = null; }
@@ -478,6 +500,8 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
   function stopAll(): void {
     for (const t of trackers) t.stop();
     trackers = [];
+    // 同步注销调度入口，避免外部拿到已停止实例的 drain
+    providerDrains.clear();
   }
 
   function startAll(): void {
@@ -486,7 +510,12 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
     trackers = rows
       .map((row) => providerService.instantiate(row))
       .filter((p): p is ExecutionProvider => p !== null)
-      .map((p) => createProviderTracker(p, taskService));
+      .map((p) => {
+        const tracker = createProviderTracker(p, taskService);
+        // 注册该实例的调度入口，供外部（如手动中断）释放槽位后主动触发
+        providerDrains.set(p.id, tracker.drain);
+        return tracker;
+      });
     // 启动/重建后立即 drain 一次，让队列中已存在的任务尽快开始执行
     for (const tracker of trackers) tracker.init();
   }

@@ -10,6 +10,7 @@ import { outputHistoryBackfillConfig } from '../controllers/task.controller';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService } from '../services/providers/provider.service';
 import { TaskService } from '../services/task.service';
+import { startExecutionService } from '../services/execution.service';
 
 /**
  * 构造带 task_logs / providers / settings 的内存库与 Express 子应用，供输出文件接口测试复用。
@@ -524,5 +525,118 @@ describe('Task output files provider resolution', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
     expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
+  });
+});
+
+/** cancel 触发队列调度的测试环境（独立 :memory: 库 + Express 子应用 + 两条任务） */
+interface CancelDrainEnv {
+  /** Express 子应用 */
+  app: express.Express;
+  /** drizzle 数据库实例（供启动执行服务） */
+  db: BetterSQLite3Database<typeof schema>;
+  /** 任务服务 */
+  taskService: TaskService;
+  /** 正在执行（占用唯一并发槽位）的任务 */
+  running: { id: string };
+  /** 排队中的任务 */
+  queued: { id: string };
+}
+
+/**
+ * 手动中断后队列自动调度测试：
+ * 启动真实执行服务（:memory: 库 + 打桩 fetch），验证 cancel pending 任务后，
+ * 同一提供商实例下排队中的任务会被自动提交（不再依赖 WebSocket 事件的时序竞态）。
+ */
+describe('Task cancel triggers queue drain', () => {
+  /** 原始全局 fetch，用例结束后恢复 */
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 构造独立测试环境：1 个 comfyui 实例（并发 1）+ 1 个 pending 任务（占满槽位）+ 1 个 queued 任务。
+   * @returns 测试环境
+   */
+  function createEnv(): CancelDrainEnv {
+    const sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, provider_id TEXT, provider_name TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
+    const db = drizzle(sqlite, { schema });
+    const taskService = new TaskService(db);
+    const settings = new SettingsService(db);
+    const providerService = new ProviderService(db);
+    const provider = providerService.create({
+      name: 'cancel-drain', type: 'comfyui',
+      config: { baseUrl: 'http://localhost:8188' },
+    });
+    providerService.setDefault(provider.id);
+    settings.set('auth_enabled', '0');
+
+    // 正在执行的任务：占满并发上限（promptId 非空 → create 直接落 pending）
+    const running = taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null, promptId: 'pid-running',
+      providerId: provider.id, providerName: provider.name,
+    });
+    // 排队任务：超出并发上限（create 后手动置为 queued）
+    const queued = taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: 'http://localhost:8188', comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null, promptId: null,
+      providerId: provider.id, providerName: provider.name,
+    });
+    taskService.updateStatus(queued.id, { status: 'queued' });
+
+    const routeApp = express();
+    routeApp.use(express.json());
+    routeApp.use('/api/tasks', createTaskRoutes(db));
+    return { app: routeApp, db, taskService, running, queued };
+  }
+
+  /** 打桩全局 fetch：/prompt 返回新 prompt_id，/queue 报告目标已停止，其余返回成功空响应 */
+  function stubFetch(): void {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      // 队列调度提交排队任务 → 返回新的 prompt_id
+      if (url.endsWith('/prompt')) {
+        return new Response(JSON.stringify({ prompt_id: 'pid-queued' }), { status: 200 });
+      }
+      // 中断确认轮询 → 目标 prompt 已离开执行队列
+      if (url.endsWith('/queue')) {
+        return new Response(JSON.stringify({ queue_running: [], queue_pending: [] }), { status: 200 });
+      }
+      // /interrupt、/history 等 → 成功空响应
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  }
+
+  it('auto-submits the queued task of the same provider after cancelling a pending task', async () => {
+    const env = createEnv();
+    stubFetch();
+    // 启动执行服务：init drain 时槽位已被 running 占满，queued 不会被提交
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app).post(`/api/tasks/${env.running.id}/cancel`);
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('failed');
+
+      // 中断触发的 drain 是 fire-and-forget：等待排队任务被提交
+      await vi.waitFor(() => {
+        const queued = env.taskService.getById(env.queued.id);
+        expect(queued?.status).toBe('pending');
+        expect(queued?.promptId).toBe('pid-queued');
+      });
+    } finally {
+      svc.stop();
+    }
   });
 });

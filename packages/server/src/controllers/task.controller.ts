@@ -6,7 +6,7 @@ import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
-import { parseHistoryOutputs } from '../services/execution.service';
+import { parseHistoryOutputs, drainProviderQueue } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
@@ -264,6 +264,12 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         status: 'failed',
         errorMessage: 'Cancelled by user',
       });
+      // 槽位已释放：主动触发该实例的队列调度，让排队中的任务立即提交（不阻塞响应）
+      if (provider) {
+        void drainProviderQueue(provider.id).catch(err => {
+          console.error('[TaskController] drain after cancel error', err);
+        });
+      }
       res.json({ task_id: task.id, status: 'failed' });
     },
   };
