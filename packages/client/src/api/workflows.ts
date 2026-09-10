@@ -1,5 +1,5 @@
 import client from './client';
-import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, SimulateResult, ComfyNodeReference, DeclaredParam, CandidateOption } from '@/types';
+import type { Workflow, WorkflowDetail, WorkflowAttachment, ImportResult, BatchDeleteResult, SimulateResult, ComfyNodeReference, DeclaredParam, CandidateOption } from '@/types';
 
 /**
  * 列出工作流；支持按标签筛选（多标签 AND）
@@ -30,6 +30,16 @@ export async function updateWorkflow(id: string, data: Partial<{ id: string; nam
 
 export async function deleteWorkflow(id: string): Promise<void> {
   await client.delete(`/workflows/${id}`);
+}
+
+/**
+ * 批量删除工作流（部分成功语义：不存在的 ID 只计入 missing，不影响其余删除）
+ * @param ids 待删除的工作流 ID 列表
+ * @returns 删除结果摘要 { deleted, missing }
+ */
+export async function batchDeleteWorkflows(ids: string[]): Promise<BatchDeleteResult> {
+  const res = await client.post<BatchDeleteResult>('/workflows/batch-delete', { ids });
+  return res.data;
 }
 
 /**

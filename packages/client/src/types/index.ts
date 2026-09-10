@@ -163,6 +163,16 @@ export interface ImportResult {
   failed: Array<{ id: string; reason: string }>;
 }
 
+/**
+ * 批量删除工作流结果摘要（部分成功语义）
+ */
+export interface BatchDeleteResult {
+  /** 实际删除成功的工作流 ID */
+  deleted: string[];
+  /** 请求中不存在（或已被并发删除）的工作流 ID */
+  missing: string[];
+}
+
 export interface Settings {
   [key: string]: string;
 }

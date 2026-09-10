@@ -507,4 +507,52 @@ describe('WorkflowService', () => {
       candidates: [{ label: 'ok', value: 'ok' }, { label: '写意', value: 'xieyi' }], multiple: false,
     });
   });
+
+  it('deleteMany removes existing workflows and reports missing ids', () => {
+    service.create({ id: 'wf1', name: 'WF1', rawJson: '{}' });
+    service.create({ id: 'wf2', name: 'WF2', rawJson: '{}' });
+    service.create({ id: 'wf3', name: 'WF3', rawJson: '{}' });
+
+    // wf2 不存在 + 重复的 wf1：去重后按首次出现顺序划分 deleted / missing
+    const result = service.deleteMany(['wf1', 'gone', 'wf1', 'wf3']);
+
+    expect(result.deleted).toEqual(['wf1', 'wf3']);
+    expect(result.missing).toEqual(['gone']);
+    expect(service.getById('wf1')).toBeNull();
+    expect(service.getById('wf3')).toBeNull();
+    // 未在入参中的工作流不受影响
+    expect(service.getById('wf2')).not.toBeNull();
+  });
+
+  it('deleteMany cascades params and tags rows', () => {
+    service.create({ id: 'wf1', name: 'WF1', rawJson: '{}' });
+    service.create({ id: 'wf2', name: 'WF2', rawJson: '{}' });
+    service.addParam({ workflowId: 'wf1', nodeId: '1', fieldName: 'v', alias: 'a1' });
+    service.addParam({ workflowId: 'wf2', nodeId: '1', fieldName: 'v', alias: 'a2' });
+    // 直接写入关联行，避免依赖标签服务（仅验证 FK 级联清理）
+    sqlite.exec(
+      "INSERT INTO tags (id, name, parent_id, is_preset, metadata_def, created_at, updated_at) VALUES ('t1', '标签', NULL, 0, '[]', '2026', '2026');"
+      + "INSERT INTO workflow_tags (workflow_id, tag_id, metadata_values) VALUES ('wf1', 't1', '{}');",
+    );
+
+    service.deleteMany(['wf1']);
+
+    expect(service.getParams('wf1')).toHaveLength(0);
+    expect(sqlite.prepare('SELECT COUNT(*) AS c FROM workflow_tags WHERE workflow_id = ?').get('wf1')).toEqual({ c: 0 });
+    // 其他工作流的数据保持完整
+    expect(service.getParams('wf2')).toHaveLength(1);
+  });
+
+  it('deleteMany with empty input returns empty result', () => {
+    service.create({ id: 'wf1', name: 'WF1', rawJson: '{}' });
+    expect(service.deleteMany([])).toEqual({ deleted: [], missing: [] });
+    // 空输入不触发删除
+    expect(service.getById('wf1')).not.toBeNull();
+  });
+
+  it('deleteMany reports all ids as missing when none exist', () => {
+    const result = service.deleteMany(['nope1', 'nope2']);
+    expect(result.deleted).toEqual([]);
+    expect(result.missing).toEqual(['nope1', 'nope2']);
+  });
 });

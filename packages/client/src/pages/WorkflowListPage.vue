@@ -76,7 +76,7 @@
       </v-col>
     </v-row>
 
-    <!-- 多选导出 / 批量导入工具栏（列表为空时仍保留导入按钮，便于从空态直接导入 ZIP） -->
+    <!-- 多选导出 / 批量删除 / 批量导入工具栏（列表为空时仍保留导入按钮，便于从空态直接导入 ZIP） -->
     <v-row class="mb-2 align-center">
       <!-- 列表非空时才显示全选与已选计数 -->
       <v-col v-if="workflows.length > 0" cols="auto">
@@ -93,7 +93,7 @@
       </v-col>
       <v-spacer />
       <v-col cols="auto">
-        <!-- 列表非空时才显示导出按钮（无选中项时禁用） -->
+        <!-- 列表非空时才显示导出 / 删除按钮（无选中项时禁用） -->
         <v-btn
           v-if="workflows.length > 0"
           color="primary"
@@ -104,6 +104,19 @@
           @click="handleExport"
         >
           导出选中
+        </v-btn>
+        <!-- 多选删除：删除当前选中的全部工作流（部分成功语义，见 confirmDelete） -->
+        <v-btn
+          v-if="workflows.length > 0"
+          class="ml-2"
+          color="error"
+          variant="tonal"
+          prepend-icon="mdi-delete"
+          :disabled="selectedIds.size === 0"
+          :loading="deleting"
+          @click="openBatchDelete"
+        >
+          删除选中
         </v-btn>
         <v-btn
           class="ml-2"
@@ -498,17 +511,27 @@
       :provider-id="codeExampleRequest?.providerId ?? null"
     />
 
-    <v-dialog v-model="deleteDialog" max-width="400">
+    <!-- 删除确认弹窗：单条与多选共用，标题/正文/确认按钮文案按选中数量切换 -->
+    <v-dialog v-model="deleteDialog" max-width="480">
       <v-card>
-        <v-card-title>确认删除</v-card-title>
-        <v-card-text>确定要删除该工作流吗？此操作不可撤销。</v-card-text>
+        <v-card-title>{{ deleteDialogTitle }}</v-card-title>
+        <v-card-text>
+          {{ deleteDialogMessage }}
+          <!-- 批量删除时列出待删工作流名称，便于确认前核对；超过 10 个折叠为省略提示 -->
+          <div v-if="deleteDialogNames" class="text-caption text-medium-emphasis mt-2">
+            {{ deleteDialogNames }}
+          </div>
+          <v-alert type="warning" variant="tonal" density="compact" class="mt-3">
+            删除后不可撤销，工作流配置与附件将一并清除。
+          </v-alert>
+        </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="deleteDialog = false">
+          <v-btn variant="text" :disabled="deleting" @click="deleteDialog = false">
             取消
           </v-btn>
-          <v-btn color="error" @click="confirmDelete">
-            删除
+          <v-btn color="error" :loading="deleting" @click="confirmDelete">
+            {{ deleteConfirmText }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -541,6 +564,7 @@ import { useRouter } from 'vue-router';
 import {
   listWorkflows,
   deleteWorkflow,
+  batchDeleteWorkflows,
   getWorkflow,
   executeWorkflow,
   exportWorkflows,
@@ -593,11 +617,15 @@ interface ExecuteExampleRequest {
 
 const router = useRouter();
 const workflows = ref<Workflow[]>([]);
+/** 删除确认弹窗可见性（单条删除与多选删除共用） */
 const deleteDialog = ref(false);
-const deleteTarget = ref<string | null>(null);
+/** 待删除的工作流 ID 列表（单条删除为长度 1 的数组） */
+const deleteTarget = ref<string[]>([]);
+/** 删除请求进行中（禁用弹窗按钮并展示 loading） */
+const deleting = ref(false);
 const snackbar = ref({ show: false, text: '', color: 'success' });
 
-// 多选导出 / 批量导入状态
+// 多选导出 / 批量删除 / 批量导入状态
 const selectedIds = ref<Set<string>>(new Set());
 const exporting = ref(false);
 const importing = ref(false);
@@ -607,6 +635,29 @@ const importInput = ref<HTMLInputElement | null>(null);
 const allSelected = computed(
   () => workflows.value.length > 0 && workflows.value.every((w) => selectedIds.value.has(w.id)),
 );
+/** 当前选中的工作流（按列表顺序，供批量删除确认弹窗展示名称） */
+const selectedWorkflows = computed(() => workflows.value.filter((w) => selectedIds.value.has(w.id)));
+
+// 删除确认弹窗文案（单条 / 多选共用弹窗，按选中数量切换）
+/** 确认弹窗标题 */
+const deleteDialogTitle = computed(() => (deleteTarget.value.length > 1 ? '批量删除确认' : '确认删除'));
+/** 确认弹窗正文 */
+const deleteDialogMessage = computed(() =>
+  deleteTarget.value.length > 1
+    ? `确定要删除选中的 ${deleteTarget.value.length} 个工作流吗？`
+    : '确定要删除该工作流吗？',
+);
+/** 确认按钮文案（多选时附带数量） */
+const deleteConfirmText = computed(() =>
+  deleteTarget.value.length > 1 ? `删除 ${deleteTarget.value.length} 项` : '删除',
+);
+/** 待删工作流名称列表文案；超过 10 个时折叠为「等 N 个工作流」，无可展示名称时返回空串 */
+const deleteDialogNames = computed(() => {
+  const names = workflows.value.filter((w) => deleteTarget.value.includes(w.id)).map((w) => w.name);
+  if (names.length === 0) return '';
+  if (names.length <= 10) return `待删除：${names.join('、')}`;
+  return `待删除：${names.slice(0, 10).join('、')} 等 ${names.length} 个工作流`;
+});
 
 // 标签筛选 / 打标签弹窗状态
 /** 标签树（顶部筛选条与打标签弹窗共用） */
@@ -994,8 +1045,21 @@ async function load() {
   }
 }
 
+/**
+ * 打开单条删除确认弹窗（删除目标为单元素数组，与多选删除共用弹窗）
+ * @param id 工作流 ID
+ */
 function handleDelete(id: string) {
-  deleteTarget.value = id;
+  deleteTarget.value = [id];
+  deleteDialog.value = true;
+}
+
+/**
+ * 打开批量删除确认弹窗：以待删选中项（按列表顺序，便于核对）作为删除目标
+ */
+function openBatchDelete() {
+  if (selectedIds.value.size === 0) return;
+  deleteTarget.value = selectedWorkflows.value.map((w) => w.id);
   deleteDialog.value = true;
 }
 
@@ -1013,17 +1077,42 @@ async function handleDuplicate(id: string) {
   }
 }
 
+/**
+ * 确认删除：单条走单删接口，多选走批量接口（部分成功语义：
+ * 已被并发删除的 ID 由后端计入 missing，不影响其余删除）
+ */
 async function confirmDelete() {
-  if (!deleteTarget.value) return;
+  const ids = [...deleteTarget.value];
+  if (ids.length === 0) return;
+  deleting.value = true;
   try {
-    await deleteWorkflow(deleteTarget.value);
-    snackbar.value = { show: true, text: '已删除', color: 'success' };
+    let deletedCount = ids.length;
+    let missingCount = 0;
+    if (ids.length === 1) {
+      await deleteWorkflow(ids[0]);
+    } else {
+      const result = await batchDeleteWorkflows(ids);
+      deletedCount = result.deleted.length;
+      missingCount = result.missing.length;
+    }
+    // 删除成功后清空选中项并刷新列表，避免残留失效 ID 参与后续导出/删除
+    selectedIds.value = new Set();
     await load();
+    if (missingCount > 0) {
+      snackbar.value = {
+        show: true,
+        text: `已删除 ${deletedCount} 个工作流，${missingCount} 个已不存在（列表已刷新）`,
+        color: 'warning',
+      };
+    } else {
+      snackbar.value = { show: true, text: `已删除 ${deletedCount} 个工作流`, color: 'success' };
+    }
   } catch {
     snackbar.value = { show: true, text: '删除失败', color: 'error' };
   } finally {
+    deleting.value = false;
     deleteDialog.value = false;
-    deleteTarget.value = null;
+    deleteTarget.value = [];
   }
 }
 

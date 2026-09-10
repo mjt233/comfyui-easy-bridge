@@ -460,6 +460,34 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
       res.status(204).send();
     },
 
+    /**
+     * 批量删除工作流（部分成功语义）。
+     * 不存在（或已被并发删除）的 ID 只记入 missing，其余照常删除。
+     * @param req 请求体 { ids: string[] }
+     * @param res 删除结果摘要 { deleted, missing }
+     */
+    batchDelete(req: Request, res: Response): void {
+      const rawIds = (req.body as { ids?: unknown } | undefined)?.ids;
+      // ids 必须为非空数组，否则视为参数错误
+      if (!Array.isArray(rawIds) || rawIds.length === 0) {
+        res.status(400).json({ error: 'ids array is required', code: 'missing_parameter' });
+        return;
+      }
+      // 仅保留字符串项：ID 均为字符串主键，非字符串项不可匹配任何记录
+      const ids = rawIds.filter((id): id is string => typeof id === 'string');
+      if (ids.length === 0) {
+        res.status(400).json({ error: 'ids must be an array of strings', code: 'missing_parameter' });
+        return;
+      }
+      // 先清理每个工作流的附件磁盘文件（文件缺失由服务内部忽略），再统一删除数据库行
+      for (const id of new Set(ids)) {
+        attachmentService.deleteByWorkflow(id);
+      }
+      // 批量删除本体行；子表 params / tags / task_logs 由 FK 级联清理
+      const result = workflowService.deleteMany(ids);
+      res.json(result);
+    },
+
     /** 复制工作流：克隆本体、参数、动态构建脚本与附件，名称追加 " (copy)" */
     duplicate(req: Request, res: Response): void {
       const id = req.params.id as string;

@@ -287,6 +287,79 @@ describe('Workflow API', () => {
     expect(res.status).toBe(204);
   });
 
+  it('POST /api/workflows/batch-delete deletes existing workflows and reports missing ids', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 建三个待删工作流，其中两个会在批量删除中被删除
+    for (const id of ['batch-a', 'batch-b', 'batch-keep']) {
+      await supertest(app)
+        .post('/api/workflows')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ id, name: id, rawJson: '{}' });
+    }
+
+    // 请求含重复 ID（batch-a 出现两次）与不存在的 ID（batch-gone）
+    const res = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ids: ['batch-a', 'batch-gone', 'batch-a', 'batch-b'] });
+
+    // 部分成功语义：存在的删除、缺失的只报告，去重后按请求顺序返回
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toEqual(['batch-a', 'batch-b']);
+    expect(res.body.missing).toEqual(['batch-gone']);
+
+    // 被删工作流后续查询 404，未在入参中的工作流保留
+    const goneA = await supertest(app)
+      .get('/api/workflows/batch-a')
+      .set('Authorization', `Bearer ${token}`);
+    expect(goneA.status).toBe(404);
+    const goneB = await supertest(app)
+      .get('/api/workflows/batch-b')
+      .set('Authorization', `Bearer ${token}`);
+    expect(goneB.status).toBe(404);
+    const kept = await supertest(app)
+      .get('/api/workflows/batch-keep')
+      .set('Authorization', `Bearer ${token}`);
+    expect(kept.status).toBe(200);
+  });
+
+  it('POST /api/workflows/batch-delete validates ids and requires auth', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 缺少 ids
+    const missing = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+    expect(missing.status).toBe(400);
+    expect(missing.body.code).toBe('missing_parameter');
+
+    // ids 为空数组
+    const empty = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ids: [] });
+    expect(empty.status).toBe(400);
+    expect(empty.body.code).toBe('missing_parameter');
+
+    // ids 数组内无任何字符串项
+    const nonString = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ids: [1, null, { id: 'x' }] });
+    expect(nonString.status).toBe(400);
+    expect(nonString.body.code).toBe('missing_parameter');
+
+    // 无 Token 时拒绝
+    const noAuth = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .send({ ids: ['batch-keep'] });
+    expect(noAuth.status).toBe(401);
+  });
+
   it('PUT /api/settings with auth updates setting', async () => {
     const loginRes = await supertest(app)
       .post('/api/auth/login')
@@ -458,6 +531,50 @@ describe('Workflow API', () => {
       .get('/api/workflows/wf-att/attachments')
       .set('Authorization', `Bearer ${token}`);
     expect(after.body).toHaveLength(0);
+  });
+
+  it('POST /api/workflows/batch-delete removes attachment rows and disk files', async () => {
+    const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
+    const token = loginRes.body.token as string;
+
+    // 建两个带附件的工作流：一个复用于批量删除，一个保持不动作为对照
+    for (const id of ['wf-batch-del', 'wf-batch-keep']) {
+      await supertest(app)
+        .post('/api/workflows')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ id, name: id, rawJson: '{}' });
+      await supertest(app)
+        .post(`/api/workflows/${id}/attachments`)
+        .set('Authorization', `Bearer ${token}`)
+        .attach('file', Buffer.from('batch attachment'), '资产.bin');
+    }
+
+    const listRes = await supertest(app)
+      .get('/api/workflows/wf-batch-del/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    const storedName = listRes.body[0].storedName as string;
+    const filePath = path.join(tempDataDir, 'attachments', storedName);
+    // 前置断言：附件文件确实已写入磁盘
+    expect(fs.existsSync(filePath)).toBe(true);
+
+    const res = await supertest(app)
+      .post('/api/workflows/batch-delete')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ ids: ['wf-batch-del'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toEqual(['wf-batch-del']);
+    // 附件磁盘文件已清理（行由 FK 级联清理，工作流本身已不存在）
+    expect(fs.existsSync(filePath)).toBe(false);
+    // 对照工作流及其附件不受影响
+    const keepDetail = await supertest(app)
+      .get('/api/workflows/wf-batch-keep')
+      .set('Authorization', `Bearer ${token}`);
+    expect(keepDetail.status).toBe(200);
+    const keepAttachments = await supertest(app)
+      .get('/api/workflows/wf-batch-keep/attachments')
+      .set('Authorization', `Bearer ${token}`);
+    expect(keepAttachments.body).toHaveLength(1);
   });
 
   it('POST /api/workflows/export returns a ZIP with selected workflows', async () => {

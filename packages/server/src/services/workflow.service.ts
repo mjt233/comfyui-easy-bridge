@@ -1,9 +1,19 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import type { DeclaredParam } from './param.types';
 import type { CandidateOption } from './param-candidates';
 import { normalizeCandidates, parseCandidatesJson, resolveEffectiveCandidates } from './param-candidates';
+
+/**
+ * 批量删除工作流的结果（部分成功语义）
+ */
+export interface DeleteBatchResult {
+  /** 实际删除成功的工作流 ID（按请求顺序，去重后） */
+  deleted: string[];
+  /** 请求中不存在（或已被并发删除）的工作流 ID（按请求顺序，去重后） */
+  missing: string[];
+}
 
 /**
  * 创建工作流的输入
@@ -230,6 +240,37 @@ export class WorkflowService {
    */
   delete(id: string) {
     this.db.delete(schema.workflows).where(eq(schema.workflows.id, id)).run();
+  }
+
+  /**
+   * 批量删除工作流（部分成功语义：不存在的 ID 只记入 missing，不影响其余删除）。
+   * 子表 workflow_params / workflow_tags / task_logs 由 FK ON DELETE CASCADE 级联清理；
+   * 附件的磁盘文件不由本方法负责，调用方需先自行清理。
+   * @param ids 待删除的工作流 ID 列表（允许重复，按首次出现顺序处理）
+   * @returns 删除结果摘要 { deleted, missing }
+   */
+  deleteMany(ids: string[]): DeleteBatchResult {
+    // 按传入顺序去重，避免重复 ID 被计入两次
+    const unique = [...new Set(ids)];
+    // 空输入直接返回空结果，不触发任何 SQL
+    if (unique.length === 0) {
+      return { deleted: [], missing: [] };
+    }
+    // 一次性查出实际存在的工作流 ID，未命中的即为 missing
+    const existing = this.db.select({ id: schema.workflows.id })
+      .from(schema.workflows)
+      .where(inArray(schema.workflows.id, unique))
+      .all();
+    const existingSet = new Set(existing.map((row) => row.id));
+    const deleted = unique.filter((id) => existingSet.has(id));
+    const missing = unique.filter((id) => !existingSet.has(id));
+    // 事务内批量删除本表行，保证子表级联与主表删除的一致性
+    if (deleted.length > 0) {
+      this.db.transaction(() => {
+        this.db.delete(schema.workflows).where(inArray(schema.workflows.id, deleted)).run();
+      });
+    }
+    return { deleted, missing };
   }
 
   /**
