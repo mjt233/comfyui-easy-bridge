@@ -159,7 +159,8 @@
             <v-switch
               v-model="providerForm.autoCleanup"
               label="自动清理上传的资产"
-              hint="任务完成后自动删除本次上传到 ComfyUI 输入目录的文件，避免重复文件堆积"
+              hint="任务完成后自动删除本次上传到 ComfyUI 输入目录的文件，避免重复文件堆积。注意：删除后 ComfyUI 缓存仍可能引用该文件，重负载工作流建议保持关闭并人工清理输入目录"
+              persistent-hint
               color="primary"
               class="mb-2"
             />

@@ -16,10 +16,11 @@ function makeProvider(baseUrl = 'http://127.0.0.1:8188'): ComfyUIProvider {
 /**
  * 构造带本地输入目录配置的 ComfyUIProvider 实例（用于自动清理测试）。
  * @param inputDir 本地输入目录路径
+ * @param autoCleanup 是否开启自动清理开关（默认 true，便于测试「开启时删除」路径）
  * @returns 测试实例
  */
-function makeProviderWithInputDir(inputDir: string): ComfyUIProvider {
-  return new ComfyUIProvider('c1', 'Local', { baseUrl: 'http://127.0.0.1:8188', autoCleanup: true, inputDir }, 1);
+function makeProviderWithInputDir(inputDir: string, autoCleanup = true): ComfyUIProvider {
+  return new ComfyUIProvider('c1', 'Local', { baseUrl: 'http://127.0.0.1:8188', autoCleanup, inputDir }, 1);
 }
 
 describe('ComfyUIProvider', () => {
@@ -42,6 +43,13 @@ describe('ComfyUIProvider', () => {
     // 返回副本：修改结果不得回写内部配置
     provider.getConfig().baseUrl = 'http://mutated';
     expect(provider.getBaseUrl()).toBe('http://127.0.0.1:8188');
+  });
+
+  it('reports autoCleanup only when explicitly enabled', () => {
+    // 未配置与显式 false 一律视为关闭，仅 true 视为开启
+    expect(new ComfyUIProvider('c1', 'Local', { baseUrl: 'http://127.0.0.1:8188' }, 1).getAutoCleanup()).toBe(false);
+    expect(makeProviderWithInputDir('C:\\comfy\\input', false).getAutoCleanup()).toBe(false);
+    expect(makeProviderWithInputDir('C:\\comfy\\input', true).getAutoCleanup()).toBe(true);
   });
 
   it('uploads to /upload/image and returns stored name', async () => {
@@ -102,9 +110,36 @@ describe('ComfyUIProvider.cleanupUploadedFiles', () => {
   it('is a no-op when inputDir is empty', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const provider = makeProvider(); // 无 inputDir 配置
+      // 开关开启但缺少输入目录：无法删除，需记日志提示
+      const provider = makeProviderWithInputDir('');
       await expect(provider.cleanupUploadedFiles(['a.png'])).resolves.toBeUndefined();
       expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('keeps files when autoCleanup is disabled even if inputDir is configured', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'comfy-cleanup-'));
+    try {
+      const a = path.join(dir, 'a.png');
+      writeFileSync(a, 'x');
+      // 开关关闭：inputDir 已配置也不得删除（回归锁定「开关不生效」缺陷）
+      const provider = makeProviderWithInputDir(dir, false);
+      await provider.cleanupUploadedFiles(['a.png']);
+      expect(existsSync(a)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not warn when autoCleanup is disabled and inputDir is empty', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // 开关关闭时应静默返回：不得打印「autoCleanup enabled but inputDir is empty」这类自相矛盾的日志
+      const provider = makeProviderWithInputDir('', false);
+      await expect(provider.cleanupUploadedFiles(['a.png'])).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

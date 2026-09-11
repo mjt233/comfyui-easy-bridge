@@ -92,14 +92,26 @@ export class ComfyUIProvider implements ExecutionProvider {
   }
 
   /**
+   * 是否允许在任务终态删除本实例上传的资产。
+   * 未配置（undefined）时视为关闭，与 provider.service 配置规范化的结果一致。
+   * @returns 配置的 autoCleanup 布尔值
+   */
+  getAutoCleanup(): boolean {
+    return this.config.autoCleanup === true;
+  }
+
+  /**
    * 清理本次上传的资产文件（本地文件系统删除）。
-   * ComfyUI 未提供删除文件的 API，因此仅当配置了本地输入目录（inputDir）时
-   * 才能直接删除文件；inputDir 为空时静默跳过并记录日志。
+   * ComfyUI 未提供删除文件的 API，因此仅当开关开启（autoCleanup=true）且配置了本地输入目录
+   * （inputDir）时才真正删除；开关关闭时直接返回（绝不删除），inputDir 为空时跳过并记录日志。
    * 每个文件名先取 basename 再拼接到 inputDir 内，并校验解析后路径仍在 inputDir
    * 之内（防止路径穿越）；文件不存在（ENOENT）时忽略，其他错误仅记录日志。
    * @param filenames 本次上传的文件名（ComfyUI 存储名）
    */
   async cleanupUploadedFiles(filenames: string[]): Promise<void> {
+    // 开关关闭时绝不删除：inputDir 只表示「输入目录在哪」，不代表「允许删除」
+    // （此为双保险，正常情况下调用方 cleanupTaskUploads 已按开关跳过）
+    if (!this.getAutoCleanup()) return;
     const inputDir = this.config.inputDir?.trim();
     // 未配置本地输入目录时无法清理（无删除 API 兜底），仅记录日志
     if (!inputDir) {

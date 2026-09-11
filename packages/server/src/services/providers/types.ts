@@ -44,8 +44,9 @@ export interface ConnectionTestResult {
 /**
  * 提供商实例配置（按类型区分的判别联合）。
  * - comfyui: { baseUrl, autoCleanup?, inputDir? }
- *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
- *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
+ *   - autoCleanup: 是否允许在任务终态删除本次上传的资产文件（默认 false；false 时任何路径都不删除）
+ *   - inputDir: ComfyUI 输入目录的本地文件系统路径，**仅作为删除时的路径来源**，不用于解析工作流中的文件路径
+ *     （仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
  * - group: { dispatchPolicy, members }
  */
@@ -135,9 +136,16 @@ export interface ExecutionProvider {
   /** 上传媒体文件，返回注入工作流节点的文件名 */
   uploadMedia(file: UploadFileInput, mediaType: MediaType): Promise<string>;
   /**
+   * 是否允许在任务终态删除本实例上传的资产（可选能力查询）。
+   * 仅 comfyui 提供商实现（读取 config.autoCleanup）；未实现该方法的提供商一律视为 false。
+   * 供上层服务在调用 cleanupUploadedFiles 前判断，避免「配置关不掉删除行为」。
+   * @returns true 表示允许在任务终态删除本次上传的资产
+   */
+  getAutoCleanup?(): boolean;
+  /**
    * 清理上传的资产文件（可选能力）。
    * 仅支持本地文件系统删除的提供商（原生 ComfyUI + 本地输入目录）实现；
-   * 未实现或不可用时调用方直接跳过。实现内部负责路径安全与错误吞并。
+   * 未实现或不可用时调用方直接跳过。实现内部负责开关判断、路径安全与错误吞并。
    * @param filenames 本次上传的文件名（ComfyUI 存储名）
    */
   cleanupUploadedFiles?(filenames: string[]): Promise<void>;

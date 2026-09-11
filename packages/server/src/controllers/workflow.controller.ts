@@ -442,8 +442,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 按声明配置上传媒体（真实上传，模拟与真实执行一致）
         const uploadedAliasValues = await processMediaParams(effectiveParams, aliasParams, filesMeta, provider);
 
-        // 预览上传的文件不再被任何执行使用，立即触发自动清理
-        cleanupTaskUploads(provider, JSON.stringify(collectUploadedFilenames(effectiveParams, uploadedAliasValues, filesMeta)));
+        // 预览上传的文件不参与任何执行（从无 prompt 提交），属纯预览产物：忽略 autoCleanup 开关立即清理
+        cleanupTaskUploads(provider, JSON.stringify(collectUploadedFilenames(effectiveParams, uploadedAliasValues, filesMeta)), 'preview');
 
         // 注入并返回
         const finalJson = applyAliases(JSON.stringify(buildResult.workflow), effectiveParams, uploadedAliasValues);

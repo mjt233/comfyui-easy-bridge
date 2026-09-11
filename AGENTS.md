@@ -68,7 +68,7 @@ pnpm --filter server test:watch    # vitest watch 模式
 - 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
 - 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）/ `group`（见下）
 - **实例级启用/停用**：`providers.enabled`（0/1，建实例默认 1）适用于全部类型，未配置即视为启用；停用的实例既不参与解析，也不参与自动分配
-- **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`simulateBuild` 预览上传后立即清理；`inputDir` 为空则跳过并记日志
+- **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径，**仅用于删除**、不用于解析文件路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`autoCleanup=false`（默认）时**任何路径都不删除**（含提交失败路径），文件留存需人工清理；`simulateBuild` 预览上传的文件从无 prompt 提交、必然无人引用，故忽略开关在返回前立即清理；`inputDir` 为空则跳过并记日志。判断入口：`cleanupTaskUploads(provider, json, reason)`，执行路径走开关、预览路径传 `'preview'`；`ComfyUIProvider.cleanupUploadedFiles` 内部再判一次开关作为双保险
 - 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
 - **解析语义（严格）**：工作流显式指定的实例不存在/已停用/配置非法 → 400 `provider_not_configured`，**不静默回退全局默认**；未指定时才用默认实例。只读预览（工作流详情）仍用宽松的 `resolveWorkflowProvider`
 - 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts` / `group.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）、`health.service.ts`（可用性巡检）；`services/execution.service.ts` 按实例维护任务跟踪器

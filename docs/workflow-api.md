@@ -124,10 +124,10 @@ input_image: <file>
 
 | 类型 | 配置 | 说明 |
 |------|------|------|
-| `comfyui` | `config.baseUrl`（必填）+ `config.autoCleanup`（可选）+ `config.inputDir`（可选） | ComfyUI 原生服务地址；`autoCleanup` 开启后任务终态自动清理本次上传的资产，`inputDir` 为 ComfyUI 输入目录的本地路径（见下方说明） |
+| `comfyui` | `config.baseUrl`（必填）+ `config.autoCleanup`（可选，默认 `false`）+ `config.inputDir`（可选） | ComfyUI 原生服务地址；`autoCleanup` 开启后任务终态自动清理本次上传的资产，`inputDir` 为 ComfyUI 输入目录的本地路径（仅用于删除，见下方说明） |
 | `runninghub` | `config.apiKey` + `config.gpuSize` (`'24G'` / `'48G'`) | RunningHub 云端执行；基础地址由 `https://www.runninghub.cn/proxy/<apiKey>`（24G）或 `/proxy-plus/<apiKey>`（48G）推导 |
 
-> **自动清理上传资产**：调用执行接口提交 image/video/audio 文件时，文件会先上传到执行端的资产目录。ComfyUI 未提供删除文件的 API，因此当 `config.autoCleanup = true` 且配置了 `config.inputDir`（ComfyUI 输入目录在**本机**的文件系统路径）时，任务到达终态（成功或失败）后会自动删除本次上传的文件，避免重复调用产生大量重复文件。`simulateBuild` 预览接口上传的文件在返回前立即清理。`inputDir` 为空时清理被跳过（仅记日志）；仅删除本项目追踪到的上传文件，不影响输入目录中的其他文件。
+> **自动清理上传资产**：调用执行接口提交 image/video/audio 文件时，文件会先上传到执行端的资产目录。ComfyUI 未提供删除文件的 API，因此当 `config.autoCleanup = true` 且配置了 `config.inputDir`（ComfyUI 输入目录在**本机**的文件系统路径）时，任务到达终态（成功或失败）后会自动删除本次上传的文件，避免重复调用产生大量重复文件。`simulateBuild` 预览接口上传的文件在返回前立即清理（预览文件从无 prompt 提交，必然无人引用，故不受开关影响）。`config.autoCleanup = false`（默认）时**任何路径都不删除**，上传文件将永久留在输入目录，需人工清理；此时填写 `inputDir` 不会导致任何删除。`inputDir` 仅作为删除时的本地路径来源，**不用于解析工作流中的文件路径**。`inputDir` 为空时清理被跳过（仅记日志）；仅删除本项目追踪到的上传文件，不影响输入目录中的其他文件。删除与否按**任务提交时**的提供商配置快照判定，执行期间修改开关不影响已提交的任务。
 
 以下端点均需认证 (`Authorization: Bearer <token>`)。
 
