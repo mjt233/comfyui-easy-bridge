@@ -22,7 +22,7 @@ function createInMemoryDb() {
   sqlite.exec(`
     CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, provider_id TEXT, provider_name TEXT);
+    CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, provider_id TEXT, provider_name TEXT, actual_provider_id TEXT, actual_provider_name TEXT);
     CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, provider_id TEXT);
   `);
   return drizzle(sqlite, { schema });
@@ -51,6 +51,8 @@ function insertProvider(db: ReturnType<typeof createInMemoryDb>, id: string, bas
 
 /**
  * 直接插入一条 queued 状态的任务记录。
+ * actual_provider_id 与 provider_id 一致：普通实例任务的执行实例即其 providerId，
+ * 跟踪器的并发统计与队列消费统一按实际执行实例口径。
  * @param db 数据库实例
  * @param id 任务 ID
  * @param providerId 归属提供商 ID
@@ -62,6 +64,9 @@ function insertQueuedTask(db: ReturnType<typeof createInMemoryDb>, id: string, p
     workflowId: 'wf-1',
     workflowName: 'wf',
     providerId,
+    providerName: providerId,
+    actualProviderId: providerId,
+    actualProviderName: providerId,
     promptId: null,
     aliasValues: '{}',
     originalForm: null,
@@ -69,6 +74,7 @@ function insertQueuedTask(db: ReturnType<typeof createInMemoryDb>, id: string, p
     comfyuiRequestBody: '{"prompt":{}}',
     comfyuiResponse: null,
     outputFiles: null,
+    uploadedFiles: '[]',
     status: 'queued',
     errorMessage: null,
     progress: null,

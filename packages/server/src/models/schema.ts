@@ -41,10 +41,17 @@ export const taskLogs = sqliteTable('task_logs', {
   id: text('id').primaryKey(),
   workflowId: text('workflow_id').notNull().references(() => workflows.id, { onDelete: 'cascade' }),
   workflowName: text('workflow_name').notNull(),
-  /** 实际使用的提供商实例 ID；历史任务可能为 null */
+  /** 用户选择的提供商实例 ID（分组任务即为分组本身）；历史任务可能为 null */
   providerId: text('provider_id'),
-  /** 实际使用的提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源）；历史任务可能为 null */
+  /** 用户选择的提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源）；历史任务可能为 null */
   providerName: text('provider_name'),
+  /**
+   * 实际执行任务的成员实例 ID（仅分组任务调度成功后写入）。
+   * 非分组任务与排队中的分组任务为 null。
+   */
+  actualProviderId: text('actual_provider_id'),
+  /** 实际执行任务的成员实例名称（冗余存储，实例改名/删除后日志仍可溯源） */
+  actualProviderName: text('actual_provider_name'),
   promptId: text('prompt_id'),
   aliasValues: text('alias_values').notNull(),
   /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */

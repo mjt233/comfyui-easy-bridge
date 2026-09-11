@@ -259,10 +259,16 @@ function formatRawJson(): void {
 async function loadProviders(): Promise<void> {
   try {
     const list = await listProviders();
-    // 仅展示已启用实例，与后端 enabled 门控的解析逻辑保持一致
+    // 仅展示已启用实例，与后端 enabled 门控的解析逻辑保持一致；
+    // 分组实例额外标注成员数与空闲并发，便于判断自动分配是否可用
     providerOptions.value = list
       .filter((p) => p.enabled)
-      .map((p) => ({ title: p.name, value: p.id }));
+      .map((p) => ({
+        title: p.type === 'group'
+          ? `${p.name}（分组自动分配 · ${p.memberCount} 个成员 · 空闲 ${p.availableSlots}）`
+          : p.name,
+        value: p.id,
+      }));
   } catch {
     providerOptions.value = [];
   }

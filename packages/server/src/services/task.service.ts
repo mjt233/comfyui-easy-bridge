@@ -29,6 +29,18 @@ export interface CreateTaskInput {
   uploadedFiles?: string;
 }
 
+/** 分组任务调度结果（写入实际执行任务的成员实例） */
+export interface UpdateActualProviderInput {
+  /** 实际执行任务的成员实例 ID */
+  actualProviderId: string;
+  /** 实际执行任务的成员实例名称（冗余存储，实例改名/删除后日志仍可溯源） */
+  actualProviderName: string;
+  /** 成员实例返回的 prompt_id（提交成功时必填） */
+  promptId: string;
+  /** 成员实例的提交响应 JSON */
+  comfyuiResponse?: string;
+}
+
 /** 输出文件信息 */
 export interface OutputFile {
   /** 文件名 */
@@ -83,6 +95,8 @@ export class TaskService {
       promptId: input.promptId,
       providerId: input.providerId ?? null,
       providerName: input.providerName ?? null,
+      actualProviderId: null,
+      actualProviderName: null,
       uploadedFiles: input.uploadedFiles ?? '[]',
       status: started ? 'pending' : 'failed',
       errorMessage: null,
@@ -111,6 +125,8 @@ export class TaskService {
    * - pending：首次进入时写入 startedAt（已有则不覆盖），清空 completedAt
    * - queued：不写 startedAt，清空 completedAt（排队等待不算执行）
    * - completed/failed：写入 completedAt，保留已有 startedAt
+   * promptId / comfyuiResponse 仅在显式提供时覆盖，缺省保留原值
+   * （分组任务会先以 queued 建单、调度成功后才写入 promptId）。
    */
   updateStatus(id: string, input: UpdateTaskResult) {
     const now = new Date().toISOString();
@@ -133,13 +149,65 @@ export class TaskService {
       timeFields.completedAt = input.completedAt ?? now;
     }
 
+    // 仅在显式提供时覆盖 promptId / comfyuiResponse，避免"只改状态"的调用清空既有值
+    const resultFields: { promptId?: string; comfyuiResponse?: string } = {};
+    if (input.promptId !== undefined) resultFields.promptId = input.promptId;
+    if (input.comfyuiResponse !== undefined) resultFields.comfyuiResponse = input.comfyuiResponse;
+
     this.db.update(schema.taskLogs)
       .set({
         status: input.status,
-        promptId: input.promptId,
-        comfyuiResponse: input.comfyuiResponse,
+        ...resultFields,
         errorMessage: input.errorMessage ?? null,
         ...timeFields,
+      })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id)!;
+  }
+
+  /**
+   * 仅记录任务的实际执行实例（不改变状态）。
+   * 普通实例任务在入队时即可确定执行实例（providerId 本身），
+   * 提前写入该字段使并发统计与队列消费统一按 actual_provider_id 口径工作；
+   * 分组任务则由 updateActualProvider 在调度成功后写入。
+   * @param id 任务 ID
+   * @param input 实际执行实例信息
+   * @returns 更新后的任务行
+   */
+  setActualProvider(id: string, input: UpdateActualProviderInput) {
+    this.db.update(schema.taskLogs)
+      .set({
+        actualProviderId: input.actualProviderId,
+        actualProviderName: input.actualProviderName,
+      })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id)!;
+  }
+
+  /**
+   * 记录分组任务实际执行所用的成员实例，并把任务推进为 pending。
+   * providerId / providerName 保持不变（仍记录用户选择的分组），
+   * 实际成员写入 actualProviderId / actualProviderName。
+   * @param id 任务 ID
+   * @param input 调度结果（成员实例与 prompt_id）
+   * @returns 更新后的任务行
+   */
+  updateActualProvider(id: string, input: UpdateActualProviderInput) {
+    const existing = this.getById(id);
+    const now = new Date().toISOString();
+    this.db.update(schema.taskLogs)
+      .set({
+        status: 'pending',
+        promptId: input.promptId,
+        comfyuiResponse: input.comfyuiResponse,
+        errorMessage: null,
+        actualProviderId: input.actualProviderId,
+        actualProviderName: input.actualProviderName,
+        // 首次进入 pending 才落开始时间（排队时长不计入执行耗时）
+        startedAt: existing && !existing.startedAt ? now : existing?.startedAt ?? now,
+        completedAt: null,
       })
       .where(eq(schema.taskLogs.id, id))
       .run();
@@ -210,5 +278,70 @@ export class TaskService {
     return this.db.select().from(schema.taskLogs)
       .where(eq(schema.taskLogs.promptId, promptId))
       .get() ?? null;
+  }
+
+  /**
+   * 列出某成员实例当前正在执行的任务（按实际执行实例过滤）。
+   * 分组任务调度成功后 provider_id 仍是分组 ID，因此按 provider_id 过滤查不到，
+   * 执行跟踪与并发统计需使用本方法按 actual_provider_id 查询。
+   * @param actualProviderId 实际执行任务的成员实例 ID
+   * @returns pending 状态任务列表
+   */
+  listPendingByActualProvider(actualProviderId: string) {
+    return this.db.select().from(schema.taskLogs)
+      .where(and(
+        eq(schema.taskLogs.status, 'pending'),
+        eq(schema.taskLogs.actualProviderId, actualProviderId),
+      ))
+      .all();
+  }
+
+  /**
+   * 列出某成员实例排队中的任务（按实际执行实例过滤）。
+   * 普通任务的实际执行实例即其 providerId；分组任务入队时 providerId 为分组，
+   * actual_provider_id 为空，因此不会被成员实例的跟踪器消费。
+   * @param actualProviderId 实际执行任务的成员实例 ID
+   * @returns queued 状态任务列表（按提交时间升序）
+   */
+  listQueuedByActualProvider(actualProviderId: string) {
+    return this.db.select().from(schema.taskLogs)
+      .where(and(
+        eq(schema.taskLogs.status, 'queued'),
+        eq(schema.taskLogs.actualProviderId, actualProviderId),
+      ))
+      .orderBy(schema.taskLogs.createdAt)
+      .all();
+  }
+
+  /**
+   * 统计某成员实例当前占用的并发槽位（按实际执行实例统计 pending 任务）。
+   * @param actualProviderId 实际执行任务的成员实例 ID
+   * @returns 占用槽位数
+   */
+  countPendingByActualProvider(actualProviderId: string): number {
+    const row = this.db.select({ c: count() }).from(schema.taskLogs)
+      .where(and(
+        eq(schema.taskLogs.status, 'pending'),
+        eq(schema.taskLogs.actualProviderId, actualProviderId),
+      ))
+      .get();
+    return row?.c ?? 0;
+  }
+
+  /**
+   * 列出全部排队中的分组任务（按提交时间升序）。
+   * 分组任务在调度前不具备 promptId，调度器据此消费队列。
+   * @param groupIds 分组实例 ID 列表；为空数组时返回空列表
+   * @returns queued 状态任务列表
+   */
+  listQueuedByGroups(groupIds: string[]) {
+    if (groupIds.length === 0) return [];
+    return this.db.select().from(schema.taskLogs)
+      .where(and(
+        eq(schema.taskLogs.status, 'queued'),
+        inArray(schema.taskLogs.providerId, groupIds),
+      ))
+      .orderBy(schema.taskLogs.createdAt)
+      .all();
   }
 }

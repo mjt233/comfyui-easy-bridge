@@ -52,7 +52,7 @@ describe('Workflow API', () => {
         mimetype TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, provider_name TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, workflow_name TEXT NOT NULL, provider_id TEXT, provider_name TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, actual_provider_id TEXT, actual_provider_name TEXT);
       CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE tags (
@@ -1473,12 +1473,12 @@ describe('Workflow API', () => {
     expect(task.body.comfyuiUrl).toContain('http://comfy-b:8188');
   });
 
-  it('execute falls back to default provider when workflow provider is disabled', async () => {
+  it('execute rejects when workflow provider is disabled (no silent fallback)', async () => {
     const loginRes = await supertest(app).post('/api/auth/login').send({ password: '0d000721' });
     const token = loginRes.body.token as string;
 
-    // 提供商 A 设为默认；提供商 B 创建后禁用，工作流仍指向 B
-    const providerA = setupDefaultProvider('http://comfy-a:8188');
+    // 提供商 A 设为默认；提供商 B 创建后停用，工作流仍指向 B
+    setupDefaultProvider('http://comfy-a:8188');
     const providerB = setupProvider('http://comfy-b:8188');
     new ProviderService(db).update(providerB.id, { enabled: false });
     await supertest(app)
@@ -1496,17 +1496,9 @@ describe('Workflow API', () => {
     const res = await supertest(app)
       .post('/api/workflows/wf-provider-disabled/execute')
       .send({ prompt: 'cat' });
-    // 提交成功：返回 200 与 task_id
-    expect(res.status).toBe(200);
-    expect(res.body.task_id).toBeDefined();
-
-    const task = await supertest(app)
-      .get(`/api/tasks/${res.body.task_id}`)
-      .set('Authorization', `Bearer ${token}`);
-    expect(task.status).toBe(200);
-    // 工作流指定的 B 已禁用，回退到默认提供商 A
-    expect(task.body.providerId).toBe(providerA.id);
-    expect(task.body.comfyuiUrl).toContain('http://comfy-a:8188');
+    // 工作流显式指定的实例已停用：硬报错，避免任务悄悄跑到其他实例上执行
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('provider_not_configured');
   });
 
   it('execute with explicit providerId override wins over workflow provider and default', async () => {

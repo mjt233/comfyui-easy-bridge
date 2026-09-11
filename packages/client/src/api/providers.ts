@@ -20,7 +20,7 @@ export interface ProviderCreateInput {
   type: ProviderType;
   /** 按类型区分的配置 */
   config: ProviderConfigInput;
-  /** 并发上限（可选，后端默认 1） */
+  /** 并发上限（可选，后端默认 1；分组类型固定为 1） */
   concurrency?: number;
   /** 是否启用（可选，后端默认启用） */
   enabled?: boolean;
@@ -83,5 +83,15 @@ export async function testProviderConfig(type: ProviderType, config: ProviderCon
  */
 export async function testProviderById(id: string): Promise<TestConnectionResult> {
   const res = await client.post<TestConnectionResult>(`/providers/${id}/test`);
+  return res.data;
+}
+
+/**
+ * 查询单个实例的健康状态（分组返回实时的成员空闲槽位与冷却状态）
+ * @param id 实例 ID
+ * @returns 实例摘要（含健康与成员明细）
+ */
+export async function getProviderHealth(id: string): Promise<ProviderSummary> {
+  const res = await client.get<ProviderSummary>(`/providers/${id}/health`);
   return res.data;
 }

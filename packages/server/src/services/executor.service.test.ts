@@ -35,6 +35,7 @@ function makeProviderStub(uploadResults: string[]): {
     getBaseUrl: () => 'http://comfy:8188',
     getDisplayBaseUrl: () => 'http://comfy:8188',
     getConfig: () => ({ baseUrl: 'http://comfy:8188' }),
+    testConnection: async () => ({ ok: true, message: 'ok' }),
     submitPrompt: async (_body: string): Promise<ExecutionResult> => ({
       success: true, comfyuiResponse: null, promptId: 'pid', errorMessage: null,
     }),

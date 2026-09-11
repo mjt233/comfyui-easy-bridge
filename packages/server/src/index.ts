@@ -14,6 +14,10 @@ import { createTagsRoutes } from './routes/tags.routes';
 import { errorHandler } from './middleware/errorHandler';
 import { ensureDefaultPassword } from './services/auth.service';
 import { startExecutionService } from './services/execution.service';
+import { cleanupStaleStaging } from './services/task-staging.service';
+
+/** 启动时清理超过该时长仍残留的分组任务暂存文件（异常中断遗留） */
+const STALE_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const app: Express = express();
 // 端口号支持通过环境变量覆盖，统一转为数字（非法值退化为 NaN 时由 listen 报错）
@@ -103,6 +107,12 @@ function printAccessUrls(port: number): void {
 function startServer() {
   // 启动时检查管理员密码：未设置过则写入默认密码 0d000721 的 bcrypt 哈希
   ensureDefaultPassword(db);
+  // 回收异常中断遗留的分组任务暂存文件（正常路径在任务提交/终态时即清理）
+  void cleanupStaleStaging(STALE_STAGING_MAX_AGE_MS)
+    .then((removed) => {
+      if (removed > 0) console.log(`Cleaned ${removed} stale task staging director${removed === 1 ? 'y' : 'ies'}`);
+    })
+    .catch((err: unknown) => console.error('Stale staging cleanup failed', err));
   startExecutionService(db);
   // 绑定 0.0.0.0：监听所有网络接口，允许局域网设备访问
   const server = app.listen(PORT, '0.0.0.0', () => {

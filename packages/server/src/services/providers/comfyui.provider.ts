@@ -7,8 +7,19 @@ import {
   interruptRequest,
   isPromptRunningRequest,
   submitPromptRequest,
+  testConnectionRequest,
 } from './shared';
-import type { ExecutionProvider, ExecutionResult, MediaType, OutputFileRef, ProviderConfig, ProviderType, UploadFileInput } from './types';
+import type {
+  ComfyUIConfig,
+  ConnectionTestResult,
+  ExecutionProvider,
+  ExecutionResult,
+  MediaType,
+  OutputFileRef,
+  ProviderType,
+  UploadFileInput,
+} from './types';
+import { connectivityProbeConfig } from './types';
 
 /**
  * 原生 ComfyUI 执行提供商。
@@ -29,7 +40,7 @@ export class ComfyUIProvider implements ExecutionProvider {
   constructor(
     readonly id: string,
     readonly name: string,
-    private config: Extract<ProviderConfig, { baseUrl: string }>,
+    private config: ComfyUIConfig,
     readonly concurrency: number,
   ) {}
 
@@ -44,8 +55,13 @@ export class ComfyUIProvider implements ExecutionProvider {
   }
 
   /** 返回 comfyui 类型化配置副本 */
-  getConfig(): Extract<ProviderConfig, { baseUrl: string }> {
+  getConfig(): ComfyUIConfig {
     return { ...this.config };
+  }
+
+  /** 连通性探测：GET {base}/system_stats */
+  testConnection(): Promise<ConnectionTestResult> {
+    return testConnectionRequest(this.getBaseUrl(), connectivityProbeConfig.timeoutMs);
   }
 
   /** 提交 prompt 到 /prompt */

@@ -5,8 +5,19 @@ import {
   interruptRequest,
   isPromptRunningRequest,
   submitPromptRequest,
+  testConnectionRequest,
 } from './shared';
-import type { ExecutionProvider, ExecutionResult, MediaType, OutputFileRef, ProviderConfig, ProviderType, UploadFileInput } from './types';
+import { connectivityProbeConfig } from './types';
+import type {
+  ConnectionTestResult,
+  ExecutionProvider,
+  ExecutionResult,
+  MediaType,
+  OutputFileRef,
+  ProviderType,
+  RunningHubConfig,
+  UploadFileInput,
+} from './types';
 
 /** RunningHub 平台基础地址（上传接口与 proxy 共用） */
 const RUNNINGHUB_BASE_URL = 'https://www.runninghub.cn';
@@ -31,7 +42,7 @@ export class RunningHubProvider implements ExecutionProvider {
   constructor(
     readonly id: string,
     readonly name: string,
-    private config: Extract<ProviderConfig, { apiKey: string; gpuSize: '24G' | '48G' }>,
+    private config: RunningHubConfig,
     readonly concurrency: number,
   ) {}
 
@@ -50,8 +61,13 @@ export class RunningHubProvider implements ExecutionProvider {
   }
 
   /** 返回 runninghub 类型化配置副本（含明文 apiKey，仅脚本侧使用） */
-  getConfig(): Extract<ProviderConfig, { apiKey: string; gpuSize: '24G' | '48G' }> {
+  getConfig(): RunningHubConfig {
     return { ...this.config };
+  }
+
+  /** 连通性探测：RunningHub 的 proxy 地址同为 ComfyUI 兼容接口，探测 GET {base}/system_stats */
+  testConnection(): Promise<ConnectionTestResult> {
+    return testConnectionRequest(this.getBaseUrl(), connectivityProbeConfig.timeoutMs);
   }
 
   /** 提交 prompt 到推导出的 proxy /prompt */

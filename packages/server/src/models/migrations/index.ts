@@ -8,7 +8,8 @@ import { v7 } from './v7-add-tts-voice-clone-tag';
 import { v8 } from './v8-add-task-provider-name';
 import { v9 } from './v9-task-started-at';
 import { v10 } from './v10-param-candidates';
+import { v11 } from './v11-task-actual-provider';
 import type { Migration } from './runner';
 
 /** 迁移注册表：按 version 升序排列；新增迁移时在此追加 */
-export const migrations: readonly Migration[] = [v1, v2, v3, v4, v5, v6, v7, v8, v9, v10];
+export const migrations: readonly Migration[] = [v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11];

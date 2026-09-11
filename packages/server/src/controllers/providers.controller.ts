@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { ProviderService } from '../services/providers/provider.service';
+import { getActiveHealthService } from '../services/execution.service';
 import type { ProviderConfig, ProviderType } from '../services/providers/types';
 
 /**
@@ -11,13 +12,23 @@ import type { ProviderConfig, ProviderType } from '../services/providers/types';
  * @param raw 原始 config
  * @returns 宽松配置结构（字段缺失时回退空值）
  */
-function parseConfigBody(type: ProviderType, raw: unknown): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown; autoCleanup?: unknown; inputDir?: unknown } {
+function parseConfigBody(
+  type: ProviderType,
+  raw: unknown,
+): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown; autoCleanup?: unknown; inputDir?: unknown; dispatchPolicy?: unknown; members?: unknown } {
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   if (type === 'runninghub') {
     return {
       apiKey: typeof obj.apiKey === 'string' ? obj.apiKey : '',
       // gpuSize 原样透出，非法值（如 '12G'）交给 validateInput 拒绝（400）
       gpuSize: obj.gpuSize,
+    };
+  }
+  if (type === 'group') {
+    // 分组：调度策略与成员列表原样透出，非法值交给 validateInput 规范化/拒绝
+    return {
+      dispatchPolicy: obj.dispatchPolicy,
+      members: obj.members,
     };
   }
   // autoCleanup/inputDir 原样透出，非法值交给 validateInput 规范化
@@ -32,16 +43,35 @@ function parseConfigBody(type: ProviderType, raw: unknown): { baseUrl?: unknown;
 export function createProvidersController(db: BetterSQLite3Database<typeof schema>) {
   const providerService = new ProviderService(db);
 
+  /** 解析请求体中的 type 字段（非法值回退 fallback） */
+  function resolveType(raw: unknown, fallback: ProviderType | null): ProviderType | null {
+    if (raw === 'runninghub' || raw === 'comfyui' || raw === 'group') return raw;
+    return fallback;
+  }
+
   return {
-    /** 列出全部提供商实例（含脱敏摘要） */
+    /** 列出全部提供商实例（含脱敏摘要、分组空闲槽位与健康状态） */
     list(_req: Request, res: Response): void {
-      res.json(providerService.list().map((r) => providerService.toSummary(r)));
+      // 执行服务运行时附带实时健康判定；未运行时按「已启用即可用」展示
+      const healthService = getActiveHealthService();
+      res.json(providerService.list().map((r) => providerService.toSummary(r, healthService ?? undefined)));
+    },
+
+    /** 查询单个实例的健康状态；分组返回其成员明细 */
+    health(req: Request, res: Response): void {
+      const row = providerService.getById(req.params.id as string);
+      if (!row) {
+        res.status(404).json({ error: 'Provider not found', code: 'provider_not_found' });
+        return;
+      }
+      const healthService = getActiveHealthService();
+      res.json(providerService.toSummary(row, healthService ?? undefined));
     },
 
     /** 新建提供商实例；校验失败返回 400 */
     create(req: Request, res: Response): void {
       const body = req.body as { name?: unknown; type?: unknown; config?: unknown; concurrency?: unknown; enabled?: unknown };
-      const type = body.type === 'runninghub' ? 'runninghub' : body.type === 'comfyui' ? 'comfyui' : null;
+      const type = resolveType(body.type, null);
       if (!type) {
         res.status(400).json({ error: 'invalid type', code: 'missing_parameter' });
         return;
@@ -74,7 +104,7 @@ export function createProvidersController(db: BetterSQLite3Database<typeof schem
       }
       const body = req.body as { name?: unknown; type?: unknown; config?: unknown; concurrency?: unknown; enabled?: unknown };
       // 未显式指定 type 时沿用现有类型
-      const type = body.type === 'runninghub' ? 'runninghub' : body.type === 'comfyui' ? 'comfyui' : existing.type as ProviderType;
+      const type = resolveType(body.type, existing.type as ProviderType)!;
       // 未显式提供 config 时沿用现有配置，使仅改 name/concurrency/enabled 的部分更新可通过校验
       let config: unknown;
       if (body.config !== undefined) {
@@ -127,17 +157,17 @@ export function createProvidersController(db: BetterSQLite3Database<typeof schem
       try {
         const body = req.body as { type?: unknown; config?: unknown };
         // 未显式指定 type 时默认按 comfyui 处理
-        const type = body.type === 'runninghub' ? 'runninghub' : 'comfyui';
+        const type = resolveType(body.type, 'comfyui')!;
         // parseConfigBody 输出宽松结构，此处收窄为 ProviderConfig 交给连通性测试（非法值仅导致连接失败，不崩溃）
         const config = parseConfigBody(type, body.config) as ProviderConfig;
-        const result = await providerService.testConnection(config);
+        const result = await providerService.testConnection(config, type);
         res.json(result);
       } catch (err) {
         next(err);
       }
     },
 
-    /** 测试已保存实例的连通性 */
+    /** 测试已保存实例的连通性（分组测试其成员是否有可用者） */
     async testById(req: Request, res: Response, next: NextFunction): Promise<void> {
       try {
         const row = providerService.getById(req.params.id as string);
@@ -151,7 +181,7 @@ export function createProvidersController(db: BetterSQLite3Database<typeof schem
           res.json({ ok: false, message: 'Provider config is invalid' });
           return;
         }
-        const result = await providerService.testConnection(config);
+        const result = await providerService.testConnection(config, row.type as ProviderType);
         res.json(result);
       } catch (err) {
         next(err);

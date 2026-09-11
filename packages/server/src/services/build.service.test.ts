@@ -396,6 +396,7 @@ describe('toBuildProviderInfo', () => {
       getBaseUrl: () => 'http://x',
       getDisplayBaseUrl: () => 'http://x',
       getConfig: () => ({ baseUrl: 'http://x' }),
+      testConnection: async () => ({ ok: true, message: 'ok' }),
       submitPrompt: async () => ({ success: true, comfyuiResponse: null, promptId: 'p', errorMessage: null }),
       uploadMedia: async () => 'a.png',
       fetchHistory: async () => ({}),

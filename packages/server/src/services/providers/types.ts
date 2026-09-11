@@ -1,7 +1,45 @@
 import { randomUUID } from 'node:crypto';
 
 /** 执行提供商类型 */
-export type ProviderType = 'comfyui' | 'runninghub';
+export type ProviderType = 'comfyui' | 'runninghub' | 'group';
+
+/**
+ * 分组调度策略。
+ * - priority: 按算力性能权重降序挑选（权重最大者优先，缺省值）
+ * - random: 在有空闲槽位的候选中随机挑选
+ */
+export type GroupDispatchPolicy = 'priority' | 'random';
+
+/**
+ * 分组的一个成员实例。
+ * 成员资格本身表达「该实例参与自动分配」：不在任何分组中的实例不会被自动分配。
+ */
+export interface GroupMemberConfig {
+  /** 被引用实例 ID（仅 comfyui / runninghub；分组不可嵌套） */
+  providerId: string;
+  /** 算力性能权重：正数；缺省 1（非法值一律规范化为 1） */
+  weight: number;
+}
+
+/**
+ * 分组（自动分配）提供商配置。
+ * 分组自身不执行任务：提交到分组的任务先进入独立队列，
+ * 由调度器在成员有空闲并发时按 dispatchPolicy 挑选成员并最终提交。
+ */
+export interface GroupProviderConfig {
+  /** 调度策略；缺省 'priority' */
+  dispatchPolicy: GroupDispatchPolicy;
+  /** 本组成员；数组顺序即 priority 策略下权重相同时的优先次序 */
+  members: GroupMemberConfig[];
+}
+
+/** 连通性测试结果 */
+export interface ConnectionTestResult {
+  /** 是否连通 */
+  ok: boolean;
+  /** 提示信息（成功文案或失败原因） */
+  message: string;
+}
 
 /**
  * 提供商实例配置（按类型区分的判别联合）。
@@ -9,10 +47,17 @@ export type ProviderType = 'comfyui' | 'runninghub';
  *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
  *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
+ * - group: { dispatchPolicy, members }
  */
 export type ProviderConfig =
   | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }
-  | { apiKey: string; gpuSize: '24G' | '48G' };
+  | { apiKey: string; gpuSize: '24G' | '48G' }
+  | GroupProviderConfig;
+
+/** comfyui 类型配置 */
+export type ComfyUIConfig = Extract<ProviderConfig, { baseUrl: string }>;
+/** runninghub 类型配置 */
+export type RunningHubConfig = Extract<ProviderConfig, { apiKey: string; gpuSize: '24G' | '48G' }>;
 
 /** 执行工作流的结果 */
 export interface ExecutionResult {
@@ -28,6 +73,16 @@ export interface ExecutionResult {
 
 /** 本服务连接执行端时使用的稳定 client_id（WebSocket 会话标识） */
 export const COMFYUI_CLIENT_ID: string = randomUUID();
+
+/**
+ * 连通性探测参数。
+ * 定义在无依赖的 types 模块，供各 provider 实现与健康检测服务共同引用，
+ * 避免 provider 实现反向依赖健康检测服务（否则形成循环依赖）。
+ */
+export const connectivityProbeConfig = {
+  /** 单次探测超时（毫秒） */
+  timeoutMs: 3000,
+};
 
 /** 输出文件引用（构造下载地址用） */
 export interface OutputFileRef {
@@ -63,6 +118,11 @@ export interface ExecutionProvider {
   readonly trackingMode: 'websocket' | 'polling';
   /** 解析后的 HTTP 基础地址（内部使用，含完整凭据） */
   getBaseUrl(): string;
+  /**
+   * 连通性探测：GET {baseUrl}/system_stats，2xx 视为可用。
+   * 供调度前校验实例可用性使用；实现内部负责吞掉网络异常，不抛出。
+   */
+  testConnection(): Promise<ConnectionTestResult>;
   /** 对外展示的基础地址（apiKey 等敏感信息已打码，可安全返回给客户端） */
   getDisplayBaseUrl(): string;
   /**

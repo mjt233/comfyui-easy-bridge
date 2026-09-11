@@ -66,11 +66,25 @@ pnpm --filter server test:watch    # vitest watch 模式
 ## 执行提供商
 
 - 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
-- 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）
+- 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）/ `group`（见下）
+- **实例级启用/停用**：`providers.enabled`（0/1，建实例默认 1）适用于全部类型，未配置即视为启用；停用的实例既不参与解析，也不参与自动分配
 - **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`simulateBuild` 预览上传后立即清理；`inputDir` 为空则跳过并记日志
 - 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
-- 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）；`services/execution.service.ts` 按实例维护任务跟踪器
+- **解析语义（严格）**：工作流显式指定的实例不存在/已停用/配置非法 → 400 `provider_not_configured`，**不静默回退全局默认**；未指定时才用默认实例。只读预览（工作流详情）仍用宽松的 `resolveWorkflowProvider`
+- 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts` / `group.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）、`health.service.ts`（可用性巡检）；`services/execution.service.ts` 按实例维护任务跟踪器
 - **API Key 回显与编辑原则**：`apiKey` 永不回显明文（列表/摘要一律打码，编辑弹窗留空不预填）；保存时 API Key 留空 = 不修改原 Key，仅输入新值才更新（前端留空则省略 `config` 回传，后端仅显式提供 `config` 时才覆盖）
+
+### 分组（自动分配）提供商
+
+- `group` 类型自身不执行任务，配置为 `{ dispatchPolicy: 'priority'|'random', members: [{ providerId, weight }] }`
+- **实例是否参与自动分配 = 它是否被某个分组选为成员**（没有独立的「可被自动分配」开关）；成员权重即算力性能权重（正数，缺省 1，非法值规范化为 1）
+- 分组成员仅限 `comfyui` / `runninghub`（**分组不可嵌套**）；停用或已删除的成员自动跳过
+- 提交到分组的任务先进入**分组独立队列**（`status='queued'`），由 `services/dispatcher.service.ts` 在成员出现空闲并发时投递；无任何可分配成员时提交即 400 `provider_no_available_instance`
+- **调度规则**：`priority` 按权重降序取第一个有空闲槽位且健康的成员（权重相同按成员配置顺序）；`random` 在候选中等概率随机
+- **可用性检测**：后台 30s 巡检 + 提交前对候选即时探测 `GET {baseUrl}/system_stats`（3s 超时）；连续 2 次失败进入 60s 冷却，冷却期间跳过该成员，冷却结束自动恢复
+- **媒体上传时机**：分组任务入队时尚无执行实例，媒体先落盘 `DATA_DIR/task-staging/<taskId>/`，调度选定成员后再上传到该成员（各实例文件存储独立）；注入工作流的文件名在暂存阶段即确定
+- **任务归属字段**：`provider_id`/`provider_name` 记录用户选择的分组，`actual_provider_id`/`actual_provider_name` 记录实际执行任务的成员实例；中断、输出回源与资产下载必须走 `actualProviderId`
+- 并发统计与队列消费统一按 `actual_provider_id`（普通任务的该字段即其 `provider_id`），迁移 v11 已回填存量 pending 任务
 
 ## 数据库
 
@@ -99,7 +113,8 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `workflow_not_found` | 工作流不存在 |
 | `alias_conflict` | 别名重复 (UNIQUE 约束) |
 | `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
-| `provider_not_configured` | 未配置默认提供商 / 工作流指定的实例不存在或已禁用 |
+| `provider_not_configured` | 未配置默认提供商 / 显式指定的实例不存在、已停用或配置非法（不静默回退默认） |
+| `provider_no_available_instance` | 提交到分组时该分组没有任何可参与自动分配的成员 |
 | `interrupt_unconfirmed` | 中断请求已发出但未能确认执行端已停止（任务保持 pending） |
 | `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
 | `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |

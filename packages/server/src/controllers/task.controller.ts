@@ -6,7 +6,7 @@ import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
-import { parseHistoryOutputs, drainProviderQueue } from '../services/execution.service';
+import { parseHistoryOutputs, drainProviderQueue, drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
@@ -54,15 +54,38 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
   const providerService = new ProviderService(db);
 
   /**
-   * 按任务解析执行提供商：优先 task.providerId，回退全局默认。
-   * @param task 任务行（含 providerId）
+   * 触发分组队列调度（fire-and-forget）。
+   * 每次调用解析当前活跃的调度器实例，避免捕获陈旧引用；
+   * 执行服务未启动时退回全局入口（其在无调度器时静默返回）。
+   * @param reason 日志用的触发原因
+   */
+  function drainDispatcherSafely(reason: string): void {
+    const dispatcher = getActiveDispatcher();
+    const drain = dispatcher ? dispatcher.drainAll() : drainGroupQueues();
+    void drain.catch(err => {
+      console.error(`[TaskController] group drain after ${reason} error`, err);
+    });
+  }
+
+  /**
+   * 按任务解析「实际执行任务的」提供商实例：
+   * 1. 分组任务：actualProviderId 指向真正执行任务的成员实例（中断、输出回源、下载均需它）；
+   * 2. 普通任务：providerId 即实际执行实例；
+   * 3. 都缺失时回退全局默认。
+   * 注意不能直接用 providerId：分组任务的该字段是分组本身（无执行端点）。
+   * @param task 任务行（含 providerId 与 actualProviderId）
    * @returns 实例化 provider 或 null
    */
-  function resolveProviderForTask(task: { providerId: string | null }): ExecutionProvider | null {
-    // 任务显式指定的实例优先（历史任务即使实例已禁用也按原实例回源/下载）；否则回退全局默认
+  function resolveProviderForTask(task: { providerId: string | null; actualProviderId: string | null }): ExecutionProvider | null {
+    // 实际执行实例优先（历史任务即使实例已停用也按原实例回源/下载）
+    if (task.actualProviderId) {
+      const p = providerService.getProviderById(task.actualProviderId);
+      if (p) return p;
+    }
+    // 普通任务：providerId 指向的即为实际执行实例；分组任务在此场景下实例化的是分组，不能用于执行端交互
     if (task.providerId) {
       const p = providerService.getProviderById(task.providerId);
-      if (p) return p;
+      if (p && p.type !== 'group') return p;
     }
     return providerService.getDefaultProvider();
   }
@@ -193,7 +216,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       }
     },
 
-    /** 立即提交 queued 任务（无视并发限制） */
+    /** 立即提交 queued 任务（普通实例无视并发限制直接提交；分组任务触发一次自动分配） */
     async submit(req: Request, res: Response): Promise<void> {
       const task = taskService.getById(req.params.taskId as string);
       if (!task) {
@@ -203,6 +226,26 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       if (task.status !== 'queued') {
         res.status(400).json({ error: 'Task is not in queued status', code: 'invalid_status' });
         return;
+      }
+      // 分组任务由调度器挑选成员实例，手动「立即提交」等价于立即触发一次自动分配
+      if (task.providerId) {
+        const owner = providerService.getById(task.providerId);
+        if (owner?.type === 'group') {
+          const dispatcher = getActiveDispatcher();
+          if (!dispatcher) {
+            res.status(503).json({ error: 'Dispatch service is not running', code: 'provider_not_configured' });
+            return;
+          }
+          await dispatcher.drainGroup(owner.id);
+          // 调度可能未成功（成员并发已满或均不可用）：据实返回任务当前状态
+          const after = taskService.getById(task.id);
+          res.json({
+            task_id: task.id,
+            status: after?.status ?? 'queued',
+            error_message: after?.errorMessage ?? undefined,
+          });
+          return;
+        }
       }
       const provider = resolveProviderForTask(task);
       if (!provider) {
@@ -219,6 +262,12 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
           status: 'pending',
           promptId: result.promptId ?? undefined,
           comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
+        });
+        // 记录实际执行实例，保证跟踪器与并发统计口径一致
+        taskService.setActualProvider(task.id, {
+          actualProviderId: provider.id,
+          actualProviderName: provider.name,
+          promptId: result.promptId ?? '',
         });
         res.json({ task_id: task.id, status: 'pending', comfyui_response: result.comfyuiResponse });
       } else {
@@ -244,6 +293,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
           status: 'failed',
           errorMessage: 'Cancelled by user',
         });
+        // 队列少了一个任务：立即触发一次分发，让后续排队任务尽快投递
+        drainDispatcherSafely('queue cancel');
         res.json({ task_id: task.id, status: 'failed' });
         return;
       }
@@ -278,6 +329,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         void drainProviderQueue(provider.id).catch(err => {
           console.error('[TaskController] drain after cancel error', err);
         });
+        // 该实例可能是分组成员：同时触发分组调度，让分组队列中的任务尽快投递
+        drainDispatcherSafely('cancel');
       }
       res.json({ task_id: task.id, status: 'failed' });
     },

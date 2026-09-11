@@ -5,10 +5,14 @@ export interface TaskLog {
   id: string;
   workflowId: string;
   workflowName: string;
-  /** 实际执行的提供商实例 ID；历史任务可能为 null */
+  /** 用户选择的提供商实例 ID（分组任务即为分组本身）；历史任务可能为 null */
   providerId: string | null;
-  /** 实际执行的提供商实例名称；历史任务可能为 null */
+  /** 用户选择的提供商实例名称；历史任务可能为 null */
   providerName: string | null;
+  /** 实际执行任务的成员实例 ID（仅分组任务调度成功后写入）；普通任务与排队中为 null */
+  actualProviderId: string | null;
+  /** 实际执行任务的成员实例名称（冗余存储） */
+  actualProviderName: string | null;
   promptId: string | null;
   aliasValues: string;
   /** 用户原始请求表单 JSON（含参数与上传文件元数据）；旧任务可能为 null */

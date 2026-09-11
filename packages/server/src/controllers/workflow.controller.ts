@@ -14,11 +14,15 @@ import {
   toRuntimeParams,
 } from '../services/executor.service';
 import { cleanupTaskUploads } from '../services/cleanup.service';
+import { drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
+import { buildUniqueUploadFilename } from '../services/upload.service';
+import { stageUploads, type StagedFileMeta } from '../services/task-staging.service';
 import { runBuildScript, toBuildProviderInfo, toBuildRequestInfo } from '../services/build.service';
 import { BUILD_SCRIPT_API_DTS, type ComfyWorkflow } from '../services/build-script-api';
 import type { DeclaredParam } from '../services/param.types';
+import type { RuntimeParam } from '../services/param.types';
 import type { CandidateOption } from '../services/param-candidates';
 import { normalizeCandidates, parseCandidatesJson, resolveEffectiveCandidates } from '../services/param-candidates';
 import { getNodeInfoCached, generateBuildDts, toNodeReferenceList } from '../services/node-info.service';
@@ -41,13 +45,18 @@ interface UploadedFileMeta {
  * 构建原始请求表单 JSON（用户提交的参数 + 上传文件元数据），用于任务日志。
  * 原始表单保留用户提交的原始值（含动态构建脚本消费的动态别名字段），
  * 文件仅记录元数据（表单 key / 原始文件名 / 大小），不保存文件内容。
+ *
+ * 分组任务的媒体文件在提交时尚未确定执行实例，改为暂存到本地磁盘；
+ * 此时额外写入 stagedFiles（含存储名与媒体类型），供调度器在选定成员后上传。
  * @param aliasValues 用户提交的非文件参数
  * @param uploadedFiles 按表单 key 分组的上传文件
+ * @param stagedFiles 暂存文件元数据列表；非分组任务为空数组
  * @returns 原始表单 JSON 字符串
  */
 function buildOriginalForm(
   aliasValues: Record<string, unknown>,
   uploadedFiles: Record<string, UploadedFileMeta[]>,
+  stagedFiles: StagedFileMeta[] = [],
 ): string {
   const files: Array<{ alias: string; filename: string; size: number; mimetype: string }> = [];
   for (const [alias, list] of Object.entries(uploadedFiles)) {
@@ -55,7 +64,87 @@ function buildOriginalForm(
       files.push({ alias, filename: f.originalname, size: f.size, mimetype: f.mimetype });
     }
   }
+  // 仅在存在暂存文件时输出该字段，保持非分组任务的原始表单结构不变
+  if (stagedFiles.length > 0) {
+    return JSON.stringify({ params: aliasValues, files, stagedFiles });
+  }
   return JSON.stringify({ params: aliasValues, files });
+}
+
+/**
+ * 为分组任务暂存媒体文件（上传到最终成员实例之前）。
+ *
+ * 分组任务在提交时尚无执行实例，而媒体必须上传到实际执行任务的实例
+ * （各实例的文件存储相互独立），因此先把文件落到本地暂存目录，
+ * 并把「本地生成的存储名」注入工作流；调度器选定成员后再把暂存文件上传到该成员。
+ * 由于注入值与暂存阶段一致，无需在调度阶段改写请求体。
+ *
+ * 本函数只负责生成存储名与元数据，实际落盘由调用方在任务记录创建后执行
+ * （暂存目录以任务 ID 命名）。
+ * @param params 有效参数配置（含脚本声明的媒体参数）
+ * @param aliasValues 请求传入的别名值
+ * @param files 按别名分组的上传文件
+ * @returns 暂存任务（元数据 + 文件内容）、最终别名值与上传文件名单 JSON
+ */
+function stageGroupMedia(
+  params: RuntimeParam[],
+  aliasValues: Record<string, unknown>,
+  files: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]>,
+): {
+  stagedFiles: StagedFileMeta[];
+  jobs: Array<{ meta: StagedFileMeta; buffer: Buffer }>;
+  finalAliasValues: Record<string, unknown>;
+  uploadedFilesJson: string;
+} {
+  const finalAliasValues: Record<string, unknown> = { ...aliasValues };
+  const stagedFiles: StagedFileMeta[] = [];
+  const jobs: Array<{ meta: StagedFileMeta; buffer: Buffer }> = [];
+  // 每个别名独立的下标（与 processMediaParams 的 multi 判定保持一致）
+  const mediaAliasCount: Record<string, number> = {};
+  for (const param of params) {
+    if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
+    if (param.alias == null || param.alias === '') continue;
+    mediaAliasCount[param.alias] = (mediaAliasCount[param.alias] ?? 0) + 1;
+  }
+  const processedAliases = new Set<string>();
+
+  for (const param of params) {
+    if (!['image', 'video', 'audio'].includes(param.paramType)) continue;
+    if (param.alias == null || param.alias === '') continue;
+    // 同一别名只处理一次（同别名多参数共享同一批文件）
+    if (processedAliases.has(param.alias)) continue;
+    const fileList = files[param.alias];
+    if (!fileList || fileList.length === 0) continue;
+    processedAliases.add(param.alias);
+
+    const multi = mediaAliasCount[param.alias] > 1 || fileList.length > 1;
+    const names: string[] = [];
+    for (const file of fileList) {
+      // 存储名与真实上传时一致，保证注入工作流的值可直接被成员实例找到
+      const stagedName = buildUniqueUploadFilename(file.originalname);
+      const meta: StagedFileMeta = {
+        alias: param.alias,
+        fieldName: param.alias,
+        stagedName,
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+        paramType: param.paramType as 'image' | 'video' | 'audio',
+      };
+      stagedFiles.push(meta);
+      jobs.push({ meta, buffer: file.buffer });
+      names.push(stagedName);
+    }
+    finalAliasValues[param.alias] = multi ? names : names[0];
+  }
+
+  // 落盘动作由调用方在任务记录创建后执行，这里只返回待写入的任务列表
+  return {
+    stagedFiles,
+    jobs,
+    finalAliasValues,
+    uploadedFilesJson: JSON.stringify(collectUploadedFilenames(params, finalAliasValues, files)),
+  };
 }
 
 /**
@@ -659,12 +748,12 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           uploadedFiles = {};
         }
 
-        // 解析执行提供商：本次执行显式指定（须为启用状态）> 工作流指定 > 全局默认
+        // 解析执行提供商：本次执行显式指定（须为启用状态）> 工作流指定（显式指定停用/缺失则报错）> 全局默认
         let provider: ExecutionProvider | null = null;
         if (overrideProviderId) {
           provider = providerService.getEnabledProviderById(overrideProviderId);
           if (!provider) {
-            // 显式指定不可用（不存在/已禁用/config 非法）：明确报错，不回退
+            // 显式指定不可用（不存在/已停用/config 非法）：明确报错，不回退
             res.status(400).json({
               error: 'Specified execution provider is not available',
               code: 'provider_not_configured',
@@ -672,17 +761,33 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
             return;
           }
         } else {
-          // 未显式指定：按工作流配置解析（工作流指定优先，否则全局默认）
-          provider = providerService.resolveWorkflowProvider(id);
-          if (!provider) {
-            res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
+          // 未显式指定：按工作流配置解析；工作流显式指定的实例已停用/缺失时硬报错（不静默回退默认）
+          const resolved = providerService.resolveWorkflowProviderStrict(id);
+          if (!resolved.provider) {
+            res.status(400).json({ error: resolved.message, code: resolved.error });
             return;
           }
+          provider = resolved.provider;
+        }
+        // 分组实例不直接执行任务：任务先进入分组独立队列，由调度器挑选成员实例
+        const isGroup = provider.type === 'group';
+        const groupProvider = isGroup ? providerService.resolveGroupById(provider.id) : null;
+        // 分组无任何可参与自动分配的成员时直接拒绝，避免任务永久滞留队列
+        if (isGroup && (!groupProvider || groupProvider.listMembers().length === 0)) {
+          res.status(400).json({
+            error: '分组内没有可用的成员实例',
+            code: 'provider_no_available_instance',
+          });
+          return;
         }
         const baseUrl = provider.getBaseUrl();
 
         // 任务日志记录用户原始请求表单（保留原始值，含动态构建脚本消费的动态别名字段；文件仅记元数据）
-        const originalFormJson = buildOriginalForm(aliasValues, uploadedFiles);
+        let originalFormJson = buildOriginalForm(aliasValues, uploadedFiles);
+        /** 分组任务的待上传媒体（暂存到本地，调度选定成员后再上传） */
+        let stagedFilesMeta: StagedFileMeta[] = [];
+        /** 本次上传/待上传的资产文件名 JSON 数组字符串（供终态后自动清理） */
+        let uploadedFilesJson = '[]';
 
         // 静态参数转运行时形态（脚本声明的基底）
         const baseParams = toRuntimeParams(params);
@@ -728,11 +833,26 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 应用本次执行类型覆盖（用户显式覆盖优先于静态配置/脚本声明，仅本次执行有效）
         effectiveParams = applyParamTypeOverrides(effectiveParams, paramTypeOverrides);
 
-        // 【媒体上传】按有效参数配置（含脚本声明的媒体参数与 fileIndex）上传文件
-        const finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
-
-        // 收集本次上传的资产文件名（供任务终态后自动清理；仅统计实际上传的文件）
-        const uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues, uploadedFiles));
+        // 【媒体上传】
+        // - 普通实例：直接上传到该实例，注入执行端返回的文件名（既有行为）
+        // - 分组：尚不确定最终执行实例，先暂存到本地磁盘并注入本地存储名；
+        //   调度器选定成员后再把暂存文件上传到该成员，注入值与暂存阶段保持一致
+        let finalAliasValues: Record<string, unknown>;
+        /** 分组任务创建后待落盘的暂存文件 */
+        let stagedJobs: Array<{ meta: StagedFileMeta; buffer: Buffer }> = [];
+        if (isGroup) {
+          const staged = stageGroupMedia(effectiveParams, aliasValues, uploadedFiles);
+          stagedFilesMeta = staged.stagedFiles;
+          stagedJobs = staged.jobs;
+          finalAliasValues = staged.finalAliasValues;
+          uploadedFilesJson = staged.uploadedFilesJson;
+        } else {
+          finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
+          // 收集本次上传的资产文件名（供任务终态后自动清理；仅统计实际上传的文件）
+          uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues, uploadedFiles));
+        }
+        // 暂存元数据写入原始表单，供调度器解析待上传文件
+        originalFormJson = buildOriginalForm(aliasValues, uploadedFiles, stagedFilesMeta);
 
         // 将别名值注入工作流 JSON（缺失参数跳过，保留默认值，作用于构建后的 JSON）
         const modifiedJson = applyAliases(buildSource, effectiveParams, finalAliasValues);
@@ -745,7 +865,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const concurrency = provider.concurrency;
         const pendingCount = taskService.countByStatus('pending', provider.id);
 
-        if (pendingCount >= concurrency) {
+        // 分组任务统一先入队（此时尚未确定执行实例），随后立即尝试一次调度；
+        // 普通实例并发满时同样进入排队，由该实例的跟踪器消费
+        if (isGroup || pendingCount >= concurrency) {
           // 超过并发限制，进入排队
           const task = taskService.create({
             workflowId: wf.id,
@@ -762,9 +884,33 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           });
           // 覆盖为 queued 状态
           taskService.updateStatus(task.id, { status: 'queued' });
+          if (!isGroup) {
+            // 普通实例任务此刻已确定执行实例，提前写入实际执行字段，
+            // 使并发统计与队列消费统一按 actual_provider_id 口径工作
+            taskService.setActualProvider(task.id, {
+              actualProviderId: provider.id,
+              actualProviderName: provider.name,
+              promptId: '',
+            });
+          }
+          if (isGroup) {
+            // 分组：媒体落盘暂存（目录以任务 ID 命名），由调度器在选定成员后上传
+            await stageUploads(task.id, stagedJobs);
+            // 立即触发一次调度，有可用成员时空闲槽位会立刻被占用（任务转为 pending）；
+            // 解析「当前活跃」的调度器实例，避免捕获陈旧引用
+            const dispatcher = getActiveDispatcher();
+            if (dispatcher) {
+              await dispatcher.drainGroup(provider.id);
+            } else {
+              // 执行服务未启动（如未调用 startExecutionService）：退回全局入口
+              await drainGroupQueues();
+            }
+          }
+          // 调度后状态可能已变为 pending（已提交给成员实例），据实返回
+          const afterDispatch = taskService.getById(task.id);
           res.json({
             task_id: task.id,
-            status: 'queued',
+            status: afterDispatch?.status ?? 'queued',
             comfyui_response: null,
           });
           return;
@@ -784,6 +930,12 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           providerId: provider.id,
           providerName: provider.name,
           uploadedFiles: uploadedFilesJson,
+        });
+        // 直接提交路径：该实例即实际执行实例，写入实际执行字段供跟踪器与并发统计使用
+        taskService.setActualProvider(task.id, {
+          actualProviderId: provider.id,
+          actualProviderName: provider.name,
+          promptId: result.promptId ?? '',
         });
 
         if (!result.success) {

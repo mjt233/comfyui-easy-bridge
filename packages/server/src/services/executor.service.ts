@@ -196,14 +196,50 @@ export function resolveSubmittedAliasValues(
 }
 
 /**
+ * 按别名 + 上传顺序索引生成预置文件名的键。
+ * 同一别名可能对应多个文件（多选/同别名多参数），因此需要下标参与键。
+ * @param alias 参数别名
+ * @param index 该别名下文件的上传顺序下标
+ * @returns 预置文件名映射的键
+ */
+export function presetUploadKey(alias: string, index: number): string {
+  return `${alias}\u0000${index}`;
+}
+
+/**
+ * 按别名构建「预置上传文件名」映射（别名 + 下标 → 存储名）。
+ * 供分组任务使用：媒体在提交分组时已生成本地存储名，调度选定成员后
+ * 直接把该名字注入工作流，无需依赖上传接口的返回值。
+ * @param stagedFiles 暂存文件元数据（按上传顺序）
+ * @returns 预置文件名映射；无文件时返回空对象
+ */
+export function buildPresetUploadNames(
+  stagedFiles: Array<{ alias: string; stagedName: string }>,
+): Record<string, string> {
+  const preset: Record<string, string> = {};
+  // 每个别名独立的文件下标
+  const counters: Record<string, number> = {};
+  for (const file of stagedFiles) {
+    const index = counters[file.alias] ?? 0;
+    counters[file.alias] = index + 1;
+    preset[presetUploadKey(file.alias, index)] = file.stagedName;
+  }
+  return preset;
+}
+
+/**
  * 处理媒体参数：将上传的文件发送到执行端，返回最终 aliasValues。
  * 无别名的参数不参与对外媒体上传。
  * 同别名被多个参数引用（或该别名文件数 > 1）时，result[alias] 为文件名数组
  * （按 files[alias] 上传顺序），供 applyAliases 按 fileIndex 分别注入；否则为单文件名 string。
+ *
+ * presetNames 提供「预置文件名」时为分组调度路径：该文件的上传仅为把资产落到
+ * 选定的成员实例，注入工作流的值改用预置存储名（与暂存阶段生成的一致）。
  * @param params 参数配置列表
  * @param aliasValues 请求传入的别名值
  * @param files 按别名分组的上传文件
  * @param provider 执行提供商（负责媒体上传）
+ * @param presetNames 预置文件名映射（键由 presetUploadKey 生成）；缺省为空表示使用上传返回值
  * @returns 合并上传结果后的别名值（媒体多文件时值为 string[]）
  */
 export async function processMediaParams(
@@ -211,6 +247,7 @@ export async function processMediaParams(
   aliasValues: Record<string, unknown>,
   files: Record<string, { buffer: Buffer; originalname: string; mimetype: string }[]>,
   provider: ExecutionProvider,
+  presetNames: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = { ...aliasValues };
 
@@ -240,22 +277,22 @@ export async function processMediaParams(
     const multi = mediaAliasCount[param.alias] > 1 || fileList.length > 1;
     if (multi) {
       const names: string[] = [];
-      for (const file of fileList) {
-        // 交由执行提供商上传媒体，返回注入节点的文件名
-        const filename = await provider.uploadMedia(
+      for (const [index, file] of fileList.entries()) {
+        // 交由执行提供商上传媒体；预置文件名存在时以预置值注入（分组调度路径）
+        const uploaded = await provider.uploadMedia(
           file,
           param.paramType as 'image' | 'video' | 'audio',
         );
-        names.push(filename);
+        names.push(presetNames[presetUploadKey(param.alias, index)] ?? uploaded);
       }
       result[param.alias] = names;
     } else {
-      // 交由执行提供商上传媒体，返回注入节点的文件名
-      const filename = await provider.uploadMedia(
+      // 交由执行提供商上传媒体；预置文件名存在时以预置值注入（分组调度路径）
+      const uploaded = await provider.uploadMedia(
         fileList[0],
         param.paramType as 'image' | 'video' | 'audio',
       );
-      result[param.alias] = filename;
+      result[param.alias] = presetNames[presetUploadKey(param.alias, 0)] ?? uploaded;
     }
   }
   return result;

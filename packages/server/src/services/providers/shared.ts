@@ -1,8 +1,25 @@
-import { COMFYUI_CLIENT_ID, type ExecutionResult, type OutputFileRef } from './types';
+import { COMFYUI_CLIENT_ID, type ConnectionTestResult, type ExecutionResult, type OutputFileRef } from './types';
 
 /** 延迟指定毫秒数 */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 探测执行端连通性：GET {base}/system_stats，2xx 视为可用。
+ * 网络异常与超时均被吞掉，统一转为 ok=false，调用方无需 try/catch。
+ * @param baseUrl 执行端基础 URL
+ * @param timeoutMs 单次探测超时（毫秒）
+ * @returns 连通性结果
+ */
+export async function testConnectionRequest(baseUrl: string, timeoutMs: number): Promise<ConnectionTestResult> {
+  try {
+    const res = await fetch(`${baseUrl}/system_stats`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (res.ok) return { ok: true, message: '连接成功' };
+    return { ok: false, message: `HTTP ${res.status}` };
+  } catch (err: unknown) {
+    return { ok: false, message: err instanceof Error ? err.message : 'Unknown error' };
+  }
 }
 
 /**

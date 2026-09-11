@@ -790,20 +790,27 @@ const codeExamplesDialog = ref(false);
 const codeExampleRequest = ref<ExecuteExampleRequest | null>(null);
 
 /**
- * 执行提供商下拉选项（仅启用中的实例；未配置任何可用实例时为空列表）
+ * 执行提供商下拉选项（仅启用中的实例；未配置任何可用实例时为空列表）。
+ * 分组实例标注成员数与空闲并发，便于判断自动分配当前是否可用。
  */
 const executeProviderOptions = computed(() =>
   executeProviders.value
     .filter((p) => p.enabled)
-    .map((p) => ({ title: p.name, value: p.id })),
+    .map((p) => ({
+      title: p.type === 'group' ? `${p.name}（自动分配 · 空闲 ${p.availableSlots}）` : p.name,
+      value: p.id,
+    })),
 );
 
 /**
- * 执行提供商下拉提示：展示当前选中实例的类型与解析地址
+ * 执行提供商下拉提示：展示当前选中实例的类型与解析地址（分组展示成员与空闲并发）
  */
 const executeProviderHint = computed(() => {
   const selected = executeProviders.value.find((p) => p.id === executeProviderId.value);
   if (!selected) return '未选择执行提供商，将按工作流配置解析';
+  if (selected.type === 'group') {
+    return `分组（自动分配）· ${selected.memberCount} 个成员 · 空闲并发 ${selected.availableSlots}`;
+  }
   return `${selected.type} · ${selected.resolvedBaseUrl}`;
 });
 

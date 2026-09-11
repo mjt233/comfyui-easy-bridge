@@ -1,5 +1,31 @@
 /** 执行提供商类型 */
-export type ProviderType = 'comfyui' | 'runninghub';
+export type ProviderType = 'comfyui' | 'runninghub' | 'group';
+
+/** 分组调度策略：priority=按权重优先（缺省）；random=随机分配 */
+export type GroupDispatchPolicy = 'priority' | 'random';
+
+/**
+ * 分组成员配置。
+ * 成员资格本身表达「该实例参与自动分配」：不在任何分组中的实例不会被自动分配。
+ */
+export interface GroupMemberConfig {
+  /** 被引用实例 ID（仅 comfyui / runninghub；分组不可嵌套） */
+  providerId: string;
+  /** 算力性能权重：正数；缺省 1（非法值一律规范化为 1） */
+  weight: number;
+}
+
+/**
+ * 分组（自动分配）提供商配置。
+ * 分组自身不执行任务：提交到分组的任务先进入独立队列，
+ * 由调度器在成员有空闲并发时按调度策略挑选成员并最终提交。
+ */
+export interface GroupProviderConfig {
+  /** 调度策略 */
+  dispatchPolicy: GroupDispatchPolicy;
+  /** 本组成员 */
+  members: GroupMemberConfig[];
+}
 
 /**
  * 提供商配置（按类型区分的判别联合）。
@@ -7,10 +33,50 @@ export type ProviderType = 'comfyui' | 'runninghub';
  *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
  *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
+ * - group: { dispatchPolicy, members }
  */
 export type ProviderConfigInput =
   | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }
-  | { apiKey: string; gpuSize: '24G' | '48G' };
+  | { apiKey: string; gpuSize: '24G' | '48G' }
+  | GroupProviderConfig;
+
+/** 分组成员的展示摘要（含空闲槽位与健康状态） */
+export interface GroupMemberSummary {
+  /** 成员实例 ID */
+  providerId: string;
+  /** 成员实例展示名；实例已删除时为 null */
+  providerName: string | null;
+  /** 成员实例类型；实例已删除时为 null */
+  type: ProviderType | null;
+  /** 算力性能权重 */
+  weight: number;
+  /** 成员实例是否已启用 */
+  enabled: boolean;
+  /** 成员实例并发上限 */
+  concurrency: number;
+  /** 当前占用的并发槽位 */
+  pendingCount: number;
+  /** 当前空闲并发槽位 */
+  availableSlots: number;
+  /** 是否可用（已启用、未删除且未处于健康冷却期） */
+  healthy: boolean;
+  /** 是否处于健康冷却期 */
+  inCooldown: boolean;
+  /** 不可用原因；可用时为 null */
+  unavailableReason: string | null;
+}
+
+/** 实例自身的健康状态 */
+export interface ProviderHealth {
+  /** 是否可用 */
+  healthy: boolean;
+  /** 是否处于健康冷却期 */
+  inCooldown: boolean;
+  /** 最近一次探测时间；从未探测过为 null */
+  lastCheckedAt: string | null;
+  /** 最近一次失败原因；无失败为 null */
+  lastError: string | null;
+}
 
 /**
  * 提供商实例摘要（API 返回；runninghub 的 apiKey 已打码）
@@ -28,10 +94,20 @@ export interface ProviderSummary {
   concurrency: number;
   /** 是否启用 */
   enabled: boolean;
-  /** 解析后的执行地址 */
+  /** 解析后的执行地址（分组为空串） */
   resolvedBaseUrl: string;
   /** 任务跟踪模式 */
   trackingMode: 'websocket' | 'polling';
+  /** 分组专属：调度策略；非分组为 null */
+  dispatchPolicy: GroupDispatchPolicy | null;
+  /** 分组专属：成员数量；非分组为 0 */
+  memberCount: number;
+  /** 分组专属：全部成员的空闲并发槽位合计；非分组为 0 */
+  availableSlots: number;
+  /** 分组专属：成员明细；非分组为空数组 */
+  members: GroupMemberSummary[];
+  /** 实例自身的健康状态（分组为 null，其健康由成员体现） */
+  health: ProviderHealth | null;
 }
 
 /**

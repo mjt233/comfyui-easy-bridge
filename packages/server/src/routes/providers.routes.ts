@@ -21,6 +21,8 @@ export function createProvidersRoutes(db: BetterSQLite3Database<typeof schema>):
   router.put('/:id', auth, controller.update);
   router.delete('/:id', auth, controller.delete);
   router.post('/:id/test', auth, controller.testById);
+  // 实例健康状态（分组返回成员明细与空闲槽位）
+  router.get('/:id/health', auth, controller.health);
 
   return router;
 }

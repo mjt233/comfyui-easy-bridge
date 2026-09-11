@@ -39,6 +39,15 @@
             <v-chip :color="statusColor(item.status)" size="small">
               {{ statusText(item.status) }}
             </v-chip>
+            <!-- 分组任务排队中：等待成员实例释放并发槽位（或从健康冷却中恢复） -->
+            <v-chip
+              v-if="item.status === 'queued' && isGroupTask(item)"
+              size="small"
+              variant="text"
+              color="blue"
+            >
+              等待可用实例
+            </v-chip>
             <v-progress-circular
               v-if="item.status === 'pending' && item.progress != null"
               :model-value="item.progress"
@@ -121,6 +130,14 @@
               <v-list-item-title>{{ providerLabel(selectedTask) }}</v-list-item-title>
               <v-list-item-subtitle v-if="selectedTask.providerId" class="text-caption text-grey">
                 ID: {{ selectedTask.providerId }}
+              </v-list-item-subtitle>
+            </v-list-item>
+            <!-- 分组任务：展示自动分配到的实际执行实例 -->
+            <v-list-item v-if="actualProviderLabel(selectedTask)">
+              <v-list-item-subtitle>实际执行实例（自动分配）</v-list-item-subtitle>
+              <v-list-item-title>{{ actualProviderLabel(selectedTask) }}</v-list-item-title>
+              <v-list-item-subtitle v-if="selectedTask.actualProviderId" class="text-caption text-grey">
+                ID: {{ selectedTask.actualProviderId }}
               </v-list-item-subtitle>
             </v-list-item>
             <v-list-item>
@@ -526,6 +543,27 @@ let pollTimer: ReturnType<typeof setInterval> | undefined;
 function providerLabel(task: TaskLog): string | null {
   if (task.providerName) return task.providerName;
   return task.providerId ?? null;
+}
+
+/**
+ * 判断任务是否通过分组（自动分配）提交。
+ * 分组任务的实际执行实例记录在 actualProviderId 中。
+ * @param task 任务日志
+ * @returns 是否为分组任务
+ */
+function isGroupTask(task: TaskLog): boolean {
+  return task.actualProviderId != null && task.actualProviderId !== task.providerId;
+}
+
+/**
+ * 实际执行该任务的实例名称（供分组任务展示调度结果）。
+ * 排队中（尚未调度）的分组任务返回 null。
+ * @param task 任务日志
+ * @returns 实例名称；非分组任务或尚未调度时为 null
+ */
+function actualProviderLabel(task: TaskLog): string | null {
+  if (!isGroupTask(task)) return null;
+  return task.actualProviderName ?? task.actualProviderId;
 }
 
 function formatTime(iso: string): string {
