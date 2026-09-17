@@ -271,6 +271,14 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         });
         res.json({ task_id: task.id, status: 'pending', comfyui_response: result.comfyuiResponse });
       } else {
+        // 手动提交失败：把原始错误与执行端原始响应体输出到控制台，便于定位失败原因
+        console.error(
+          `[TaskController] manual submit failed, task ${task.id}: ${result.errorMessage ?? 'Submit failed'}`,
+        );
+        console.error(
+          `[TaskController] task ${task.id} original response: `
+          + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`,
+        );
         taskService.updateStatus(task.id, {
           status: 'failed',
           errorMessage: result.errorMessage ?? 'Submit failed',

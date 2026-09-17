@@ -238,7 +238,14 @@ export class DispatcherService {
       }
 
       // 提交失败：区分永久性失败（工作流问题）与瞬时故障（实例问题）
+      const failureDetail = `[Dispatcher:${group.id}] submit failed on ${member.providerName} `
+        + `(task ${taskId}): ${result.errorMessage ?? 'Submit failed'}`;
+      const failureResponse = `[Dispatcher:${group.id}] task ${taskId} original response: `
+        + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`;
       if (isPermanentSubmitError(result.errorMessage)) {
+        // 永久性失败不会重试：必须打印原始错误，否则问题只留在任务记录里无人可见
+        console.error(failureDetail);
+        console.error(failureResponse);
         this.taskService.updateStatus(taskId, {
           status: 'failed',
           errorMessage: result.errorMessage ?? 'Submit failed',
@@ -247,9 +254,10 @@ export class DispatcherService {
         void releaseStaged(taskId);
         return 'task-failed';
       }
-      // 瞬时故障：标记成员不可用并停止本轮，任务保留在队列中改投其他成员
+      // 瞬时故障：标记成员不可用并停止本轮，任务保留在队列中改投其他成员（打印原始错误便于排查）
       this.healthService.markFailedNow(member.providerId, result.errorMessage ?? 'Submit failed');
-      console.warn(`[Dispatcher:${group.id}] submit failed on ${member.providerName}: ${result.errorMessage}`);
+      console.error(failureDetail);
+      console.error(failureResponse);
       return 'member-failed';
     } finally {
       this.taskInFlight.delete(taskId);

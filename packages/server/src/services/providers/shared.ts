@@ -46,25 +46,127 @@ function ensureClientIdInBody(body: string): string {
 }
 
 /**
+ * 提交日志上下文（供日志定位到具体执行实例，不参与任何业务逻辑）。
+ */
+export interface SubmitPromptContext {
+  /** 执行实例 ID */
+  providerId: string;
+  /** 执行实例展示名 */
+  providerName: string;
+  /** 执行实例类型（comfyui / runninghub） */
+  providerType: string;
+}
+
+/** 提交失败日志中原始响应体的最大打印长度（超出部分截断，避免单行日志过长） */
+const ORIGINAL_BODY_LOG_LIMIT = 4000;
+
+/** 将未知值转为可打印的原始文本（对象统一 JSON 序列化） */
+function toDisplayText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    // 含循环引用等无法序列化的值：退化为 String 转换
+    return String(value);
+  }
+}
+
+/**
+ * 截断超长文本，仅用于控制台输出（不改变返回值中的原始内容）。
+ * @param text 原始文本
+ * @returns 未超长时原样返回；超长时截断并标注原始长度
+ */
+function truncateForLog(text: string): string {
+  if (text.length <= ORIGINAL_BODY_LOG_LIMIT) return text;
+  return `${text.slice(0, ORIGINAL_BODY_LOG_LIMIT)}…[truncated, total ${text.length} chars]`;
+}
+
+/**
+ * 从响应体中提取简短错误摘要（对象形态），供日志快速定位失败原因。
+ * 兼容 RunningHub（msg / message + code）与原生 ComfyUI（error）两种错误体。
+ * @param body 已解析的响应体
+ * @returns 摘要文本；无法提取时返回空字符串
+ */
+function summarizeErrorBody(body: unknown): string {
+  // 非对象响应体（纯文本）没有可提取的字段
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return '';
+  const record = body as Record<string, unknown>;
+  const code = record.code;
+  // RunningHub 用 msg，部分错误体用 message
+  const rawMessage = record.msg ?? record.message ?? record.error;
+  const message = typeof rawMessage === 'string' ? rawMessage : toDisplayText(rawMessage);
+  const codeText = typeof code === 'string' || typeof code === 'number' ? String(code) : '';
+  if (message && codeText) return `code=${codeText} msg=${message}`;
+  if (message) return message;
+  if (codeText) return `code=${codeText}`;
+  return '';
+}
+
+/**
+ * 打印提交失败的原始错误（HTTP 状态码 + 原始响应体），便于排查执行端返回的真实原因。
+ * 成功路径不打印，避免正常日志被污染；仅在提供了上下文时输出。
+ * @param ctx 执行实例上下文；缺省表示调用方另有日志，跳过打印
+ * @param url 实际请求的提交地址（含执行端前缀）
+ * @param status HTTP 状态码；网络异常时为 null
+ * @param body 原始响应体（未截断，打印时按上限截断）
+ * @param transportMessage 网络层异常信息；无则省略
+ */
+function logSubmitFailure(
+  ctx: SubmitPromptContext | undefined,
+  url: string,
+  status: number | null,
+  body: unknown,
+  transportMessage?: string,
+): void {
+  if (!ctx) return;
+  const bodyText = toDisplayText(body);
+  const lines = [
+    `[ExecutionProvider:${ctx.providerType}:${ctx.providerId}] submit prompt failed (${ctx.providerName}):`,
+    status === null ? `  POST ${url} → 网络异常` : `  POST ${url} → HTTP ${status}`,
+  ];
+  if (status !== null) {
+    lines.push(`  original response: ${bodyText === '' ? '<empty body>' : truncateForLog(bodyText)}`);
+    const summary = summarizeErrorBody(body);
+    if (summary) lines.push(`  summary: ${summary}`);
+  }
+  if (transportMessage) {
+    lines.push(`  transport error: ${transportMessage}`);
+  }
+  console.error(lines.join('\n'));
+}
+
+/**
  * 提交 prompt JSON 到执行端并返回结果。
  * 自动注入稳定 client_id，使 execution_error 等事件可经 WebSocket 送达。
+ * 失败时（HTTP 非 2xx 或网络异常）会把原始错误输出到控制台，便于定位执行端返回的真实原因。
  * @param baseUrl 执行端基础 URL
  * @param body 请求体 JSON 字符串（通常含 prompt）
+ * @param ctx 执行实例上下文（提供后失败时打印原始响应体）；缺省时仅返回错误、不打印
  * @returns 提交结果；网络/HTTP 异常不抛出，通过 ExecutionResult.errorMessage 返回
  */
-export async function submitPromptRequest(baseUrl: string, body: string): Promise<ExecutionResult> {
+export async function submitPromptRequest(
+  baseUrl: string,
+  body: string,
+  ctx?: SubmitPromptContext,
+): Promise<ExecutionResult> {
+  // 日志与错误信息共用的提交地址
+  const url = `${baseUrl}/prompt`;
   try {
     // 注入稳定 client_id，与 WebSocket 连接保持一致
     const requestBody = ensureClientIdInBody(body);
-    const response = await fetch(`${baseUrl}/prompt`, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: requestBody,
     });
     const text = await response.text();
+    console.info(`已提交工作流到 ${baseUrl}，接口响应: ${text}`);
     let responseBody: unknown;
     try { responseBody = JSON.parse(text); } catch { responseBody = text; }
     if (!response.ok) {
+      // 原始响应体已完整放入 errorMessage，同时打印到控制台（保留原始文本，不做摘要替换）
+      logSubmitFailure(ctx, url, response.status, responseBody);
       return {
         success: false,
         comfyuiResponse: responseBody,
@@ -75,11 +177,14 @@ export async function submitPromptRequest(baseUrl: string, body: string): Promis
     const promptId = (responseBody as { prompt_id?: string }).prompt_id ?? null;
     return { success: true, comfyuiResponse: responseBody, promptId, errorMessage: null };
   } catch (err: unknown) {
+    // 网络/超时异常：无 HTTP 状态码与响应体，打印传输层错误信息
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    logSubmitFailure(ctx, url, null, null, message);
     return {
       success: false,
       comfyuiResponse: null,
       promptId: null,
-      errorMessage: err instanceof Error ? err.message : 'Unknown error',
+      errorMessage: message,
     };
   }
 }

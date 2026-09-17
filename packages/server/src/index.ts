@@ -104,9 +104,40 @@ function printAccessUrls(port: number): void {
   }
 }
 
+/** 进程级全局错误处理是否已注册（模块被重复加载/重复启动时避免同一错误被打印多次） */
+let globalErrorHandlersRegistered = false;
+
+/**
+ * 注册进程级全局错误处理，确保任何未被捕获的异常/未处理的 Promise 拒绝都输出到控制台。
+ * 采用「打印后继续运行」策略：不退出进程，避免一次意外异常导致队列任务与在途工作流全部丢失。
+ * 注意 Express 4 不会自动捕获 async 路由抛出的异常，因此这些异常只会经此处上报。
+ * 重复调用不会重复注册监听器。
+ */
+function registerGlobalErrorHandlers(): void {
+  // 幂等保护：重复注册会让同一个异常被打印多次
+  if (globalErrorHandlersRegistered) return;
+  globalErrorHandlersRegistered = true;
+
+  process.on('uncaughtException', (err: Error, origin: string) => {
+    // origin 可区分 uncaughtException / unhandledRejection 等来源
+    console.error(`[Fatal] uncaughtException (origin: ${origin})`, err);
+  });
+
+  process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
+    console.error('[Fatal] unhandledRejection at:', promise, 'reason:', reason);
+  });
+
+  // Node 运行时告警（如 DeprecationWarning）同样输出，便于提前发现隐患
+  process.on('warning', (warning: Error) => {
+    console.warn(`[NodeWarning] ${warning.name}: ${warning.message}`);
+  });
+}
+
 function startServer() {
   // 启动时检查管理员密码：未设置过则写入默认密码 0d000721 的 bcrypt 哈希
   ensureDefaultPassword(db);
+  // 进程级兜底：未捕获异常与未处理的 Promise 拒绝一律打印到控制台
+  registerGlobalErrorHandlers();
   // 回收异常中断遗留的分组任务暂存文件（正常路径在任务提交/终态时即清理）
   void cleanupStaleStaging(STALE_STAGING_MAX_AGE_MS)
     .then((removed) => {
@@ -127,5 +158,5 @@ if (process.env.VITEST !== 'true') {
   startServer();
 }
 
-export { app, startServer };
+export { app, startServer, registerGlobalErrorHandlers };
 export default app;

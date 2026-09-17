@@ -213,4 +213,61 @@ describe('shared provider http', () => {
     expect(sentBody.client_id).toBe('existing-id');
     expect(sentBody.client_id).not.toBe(COMFYUI_CLIENT_ID);
   });
+
+  it('submitPromptRequest logs the original RunningHub error body when ctx is provided', async () => {
+    // RunningHub 形态错误体：应完整打印原始响应体，并额外输出 code/msg 摘要
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errorBody = { code: 421, msg: 'APIKEY_NOT_FOUND', data: null };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(errorBody), { status: 421 })));
+
+    const result = await submitPromptRequest('https://www.runninghub.cn/proxy/sk-x', '{}', {
+      providerId: 'rh-1',
+      providerName: 'RunningHub',
+      providerType: 'runninghub',
+    });
+
+    // 返回值仍保留原始错误文本（行为不变）
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toContain('421');
+    expect(result.comfyuiResponse).toEqual(errorBody);
+
+    // 日志包含实例标识、地址、HTTP 状态、原始响应体与摘要
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const logged = String(errorSpy.mock.calls[0][0]);
+    expect(logged).toContain('runninghub:rh-1');
+    expect(logged).toContain('https://www.runninghub.cn/proxy/sk-x/prompt');
+    expect(logged).toContain('HTTP 421');
+    expect(logged).toContain('APIKEY_NOT_FOUND');
+    expect(logged).toContain('code=421');
+    errorSpy.mockRestore();
+  });
+
+  it('submitPromptRequest logs transport errors when fetch rejects', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
+
+    const result = await submitPromptRequest('http://comfy:8188', '{}', {
+      providerId: 'c1',
+      providerName: 'Local',
+      providerType: 'comfyui',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorMessage).toBe('ECONNREFUSED');
+    const logged = String(errorSpy.mock.calls[0][0]);
+    expect(logged).toContain('网络异常');
+    expect(logged).toContain('ECONNREFUSED');
+    errorSpy.mockRestore();
+  });
+
+  it('submitPromptRequest stays silent on failure when ctx is omitted', async () => {
+    // 未传上下文（旧调用方/测试 mock）时不打印，避免重复日志
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+
+    await submitPromptRequest('http://comfy:8188', '{}');
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });

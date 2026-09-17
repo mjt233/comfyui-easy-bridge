@@ -353,6 +353,14 @@ function createProviderTracker(
           // 继续尝试填满下一个槽位
           continue;
         }
+        // 提交失败：把原始错误与执行端原始响应体输出到控制台，便于定位排队任务失败原因
+        console.error(
+          `[ExecutionService:${providerId}] submit failed, task ${nextTask.id}: ${result.errorMessage ?? 'Submit failed'}`,
+        );
+        console.error(
+          `[ExecutionService:${providerId}] task ${nextTask.id} original response: `
+          + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`,
+        );
         taskService.updateStatus(nextTask.id, {
           status: 'failed',
           errorMessage: result.errorMessage ?? 'Submit failed',

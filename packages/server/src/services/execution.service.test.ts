@@ -492,4 +492,41 @@ describe('queue drain triggers', () => {
       svc.stop();
     }
   });
+
+  it('提交失败时把原始错误与执行端原始响应体输出到控制台', async () => {
+    const db = createInMemoryDb();
+    insertProvider(db, 'p1', 'http://a');
+    const taskService = new TaskService(db);
+
+    // 监听 console.error：断言失败原因与原始响应体都被打印
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 执行端（如 RunningHub）返回 400 与原始错误体
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: { type: 'prompt_outputs_failed_validation', message: 'bad workflow' } }),
+      { status: 400 },
+    )));
+
+    const svc = startExecutionService(db);
+    try {
+      // 服务启动后再插入排队任务，触发一次显式调度
+      insertQueuedTask(db, 't1', 'p1');
+      await drainProviderQueue('p1');
+
+      // 任务落库为 failed 且保留原始错误信息（行为不变）
+      const failed = taskService.getById('t1');
+      expect(failed?.status).toBe('failed');
+      expect(failed?.errorMessage).toContain('400');
+      expect(failed?.comfyuiResponse).toContain('prompt_outputs_failed_validation');
+
+      // 控制台输出包含实例上下文、原始错误与原始响应体
+      const logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(logged).toContain('[ExecutionService:p1]');
+      expect(logged).toContain('t1');
+      expect(logged).toContain('400');
+      expect(logged).toContain('prompt_outputs_failed_validation');
+    } finally {
+      errorSpy.mockRestore();
+      svc.stop();
+    }
+  });
 });

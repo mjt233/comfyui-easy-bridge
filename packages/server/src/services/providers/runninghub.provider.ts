@@ -70,9 +70,14 @@ export class RunningHubProvider implements ExecutionProvider {
     return testConnectionRequest(this.getBaseUrl(), connectivityProbeConfig.timeoutMs);
   }
 
-  /** 提交 prompt 到推导出的 proxy /prompt */
+  /** 提交 prompt 到推导出的 proxy /prompt（失败时按实例上下文打印原始响应体） */
   submitPrompt(body: string): Promise<ExecutionResult> {
-    return submitPromptRequest(this.getBaseUrl(), body);
+    // RunningHub 的错误体形如 { code, msg, data }，日志中会额外输出 code/msg 摘要
+    return submitPromptRequest(this.getBaseUrl(), body, {
+      providerId: this.id,
+      providerName: this.name,
+      providerType: this.type,
+    });
   }
 
   /**
@@ -102,6 +107,7 @@ export class RunningHubProvider implements ExecutionProvider {
     if (!result.data?.fileName) {
       throw new Error('RunningHub upload failed: missing fileName');
     }
+    console.info(`上传文件到runninghub 保存为${result.data?.fileName}`);
     return result.data.fileName;
   }
 

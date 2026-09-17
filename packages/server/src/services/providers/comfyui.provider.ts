@@ -64,9 +64,13 @@ export class ComfyUIProvider implements ExecutionProvider {
     return testConnectionRequest(this.getBaseUrl(), connectivityProbeConfig.timeoutMs);
   }
 
-  /** 提交 prompt 到 /prompt */
+  /** 提交 prompt 到 /prompt（失败时按实例上下文打印原始响应体） */
   submitPrompt(body: string): Promise<ExecutionResult> {
-    return submitPromptRequest(this.getBaseUrl(), body);
+    return submitPromptRequest(this.getBaseUrl(), body, {
+      providerId: this.id,
+      providerName: this.name,
+      providerType: this.type,
+    });
   }
 
   /** 上传媒体文件到 /upload/image，返回 ComfyUI 存储文件名 */
