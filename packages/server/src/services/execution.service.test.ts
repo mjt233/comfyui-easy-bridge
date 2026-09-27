@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
@@ -80,6 +80,65 @@ function insertQueuedTask(db: ReturnType<typeof createInMemoryDb>, id: string, p
     progress: null,
     createdAt: now,
     startedAt: null,
+    completedAt: null,
+  }).run();
+}
+
+/**
+ * 直接插入一条启用状态的 runninghub 提供商记录。
+ * @param db 数据库实例
+ * @param id 提供商 ID
+ * @param apiKey RunningHub API Key
+ */
+function insertRunningHubProvider(db: ReturnType<typeof createInMemoryDb>, id: string, apiKey: string): void {
+  const now = new Date().toISOString();
+  db.insert(schema.providers).values({
+    id,
+    name: id,
+    type: 'runninghub',
+    config: JSON.stringify({ apiKey, gpuSize: '24G' }),
+    concurrency: 1,
+    enabled: 1,
+    createdAt: now,
+    updatedAt: now,
+  }).run();
+}
+
+/**
+ * 直接插入一条 pending 状态、已带 prompt_id 的任务记录（模拟已提交执行端的任务）。
+ * @param db 数据库实例
+ * @param id 任务 ID
+ * @param providerId 归属（实际执行）提供商 ID
+ * @param promptId 执行端 prompt_id（RunningHub 同时就是平台 taskId）
+ */
+function insertPendingTask(
+  db: ReturnType<typeof createInMemoryDb>,
+  id: string,
+  providerId: string,
+  promptId: string,
+): void {
+  const now = new Date().toISOString();
+  db.insert(schema.taskLogs).values({
+    id,
+    workflowId: 'wf-1',
+    workflowName: 'wf',
+    providerId,
+    providerName: providerId,
+    actualProviderId: providerId,
+    actualProviderName: providerId,
+    promptId,
+    aliasValues: '{}',
+    originalForm: null,
+    comfyuiUrl: 'http://x',
+    comfyuiRequestBody: '{"prompt":{}}',
+    comfyuiResponse: null,
+    outputFiles: null,
+    uploadedFiles: '[]',
+    status: 'pending',
+    errorMessage: null,
+    progress: null,
+    createdAt: now,
+    startedAt: now,
     completedAt: null,
   }).run();
 }
@@ -526,6 +585,188 @@ describe('queue drain triggers', () => {
       expect(logged).toContain('prompt_outputs_failed_validation');
     } finally {
       errorSpy.mockRestore();
+      svc.stop();
+    }
+  });
+});
+
+/**
+ * 任务状态探测数据源测试：
+ * RunningHub 实例的状态判定与产出解析全部走平台结果查询 V2（不再依赖 proxy /history）；
+ * 原生 ComfyUI 实例保持 history 路径不变。
+ */
+describe('task status probing data source', () => {
+  /** 用例前的兜底轮询间隔，用例结束后恢复 */
+  const defaultFallbackIntervalMs = executionServiceConfig.fallbackIntervalMs;
+
+  beforeEach(() => {
+    // 缩短兜底轮询间隔，避免用例真实等待 10s
+    executionServiceConfig.fallbackIntervalMs = 20;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    executionServiceConfig.fallbackIntervalMs = defaultFallbackIntervalMs;
+  });
+
+  it('stores platform outputs with absolute urls when runninghub query reports SUCCESS', async () => {
+    const db = createInMemoryDb();
+    insertRunningHubProvider(db, 'rh1', 'sk-key');
+    insertPendingTask(db, 't1', 'rh1', '2009217245938851841');
+    const taskService = new TaskService(db);
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      taskId: '2009217245938851841',
+      status: 'SUCCESS',
+      errorCode: '',
+      errorMessage: '',
+      results: [{ url: 'https://rh-cdn.example.com/output/final.png', outputType: 'png' }],
+    }), { status: 200 })));
+
+    const svc = startExecutionService(db);
+    try {
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('completed');
+      });
+      const task = taskService.getById('t1');
+      // 落库的产出带平台绝对地址，下载可直接回源
+      expect(JSON.parse(task?.outputFiles ?? '[]')).toEqual([
+        {
+          filename: 'final.png',
+          subfolder: '',
+          type: 'output',
+          nodeId: '',
+          fileType: 'image',
+          url: 'https://rh-cdn.example.com/output/final.png',
+        },
+      ]);
+      // 响应详情记录平台查询结果，便于排查
+      expect(task?.comfyuiResponse).toContain('SUCCESS');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('fails the task with the platform reason when runninghub query reports FAILED', async () => {
+    const db = createInMemoryDb();
+    insertRunningHubProvider(db, 'rh1', 'sk-key');
+    insertPendingTask(db, 't1', 'rh1', 't-1');
+    const taskService = new TaskService(db);
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      taskId: 't-1',
+      status: 'FAILED',
+      errorCode: '805',
+      errorMessage: 'APIKEY_TASK_STATUS_ERROR',
+      results: null,
+      failedReason: { exception_message: 'SONIC_PreData.sampler_main() missing 2 required positional arguments' },
+    }), { status: 200 })));
+
+    const svc = startExecutionService(db);
+    try {
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('failed');
+      });
+      expect(taskService.getById('t1')?.errorMessage).toContain('SONIC_PreData');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('fails the task when runninghub query reports SUCCESS without any output', async () => {
+    const db = createInMemoryDb();
+    insertRunningHubProvider(db, 'rh1', 'sk-key');
+    insertPendingTask(db, 't1', 'rh1', 't-1');
+    const taskService = new TaskService(db);
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      taskId: 't-1', status: 'SUCCESS', errorCode: '', errorMessage: '', results: null,
+    }), { status: 200 })));
+
+    const svc = startExecutionService(db);
+    try {
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('failed');
+      });
+      expect(taskService.getById('t1')?.errorMessage).toContain('未返回输出文件');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('keeps the task running while the platform reports a non-terminal status', async () => {
+    const db = createInMemoryDb();
+    insertRunningHubProvider(db, 'rh1', 'sk-key');
+    insertPendingTask(db, 't1', 'rh1', 't-1');
+    const taskService = new TaskService(db);
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      taskId: 't-1', status: 'RUNNING', errorCode: '', errorMessage: '', results: null,
+    }), { status: 200 })));
+
+    const svc = startExecutionService(db);
+    try {
+      // 多个轮询周期后仍应保持 pending（不误判终态）
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(taskService.getById('t1')?.status).toBe('pending');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('fails the task after repeated query errors without falling back to proxy history', async () => {
+    const db = createInMemoryDb();
+    insertRunningHubProvider(db, 'rh1', 'sk-key');
+    insertPendingTask(db, 't1', 'rh1', 't-1');
+    const taskService = new TaskService(db);
+
+    // 记录是否出现任何 /history 请求：RunningHub 不应再回退到 proxy history
+    const historyCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('/history/')) historyCalls.push(url);
+      return new Response('boom', { status: 500 });
+    }));
+
+    const svc = startExecutionService(db);
+    try {
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('failed');
+      }, { timeout: 3000 });
+      expect(taskService.getById('t1')?.errorMessage).toContain('Task status check failed');
+      expect(historyCalls).toEqual([]);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('keeps resolving comfyui tasks through proxy history', async () => {
+    const db = createInMemoryDb();
+    insertProvider(db, 'p1', 'http://a');
+    insertPendingTask(db, 't1', 'p1', 'pid-1');
+    const taskService = new TaskService(db);
+
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/history/pid-1')) {
+        return new Response(JSON.stringify({
+          'pid-1': {
+            status: { status_str: 'success', completed: true, messages: [] },
+            outputs: { '9': { images: [{ filename: 'out.png', subfolder: '', type: 'output' }] } },
+          },
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    const svc = startExecutionService(db);
+    try {
+      await vi.waitFor(() => {
+        expect(taskService.getById('t1')?.status).toBe('completed');
+      });
+      // history 路径的产出不带平台绝对地址（行为与改造前一致）
+      expect(JSON.parse(taskService.getById('t1')?.outputFiles ?? '[]')).toEqual([
+        { filename: 'out.png', subfolder: '', type: 'output', nodeId: '9', fileType: 'image' },
+      ]);
+    } finally {
       svc.stop();
     }
   });

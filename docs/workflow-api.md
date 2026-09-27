@@ -115,6 +115,14 @@ input_image: <file>
 | `404` | `workflow_not_found` | 工作流不存在 |
 
 > 说明：工作流执行通过「执行提供商」实例进行（见第 2 节「提供商管理」），执行端可能是 ComfyUI 原生或 RunningHub。`comfyui_response` 为执行端的原始响应体、`prompt_id` 语义不变，执行端地址不再来自全局 `comfyui_base_url` 设置。执行端不可达等错误不会以 HTTP 错误返回，而是任务状态变为 `failed`（`task.status = "failed"`）。
+>
+> **任务终态判定与产出解析的数据源按实例类型区分**：
+> - `comfyui`：轮询（或经 WebSocket 事件触发）执行端 `GET /history/{prompt_id}`，并从中解析 `outputs`（行为与早期版本一致）；
+> - `runninghub`：轮询平台 [`POST /openapi/v2/query`](https://www.runninghub.cn/runninghub-api-doc-cn/api-425767306)，其 `taskId` 即 proxy 提交返回的 `prompt_id`（两者是同一个值）。平台返回的 `results[].url` 直接作为产出文件地址，**不再调用执行端 `/history`**。
+>
+> RunningHub 实例的终态完全以平台接口为准：`SUCCESS`（且返回了产出）→ `completed`；`FAILED` / `CANCEL`、`SUCCESS` 但无产出、`errorCode` 非空（如 API Key 失效）、接口非 2xx 或网络异常（连续 5 次）→ `failed`。**任一失败路径都不会回退到 proxy `/history`**，因此任务不会出现「本地无输出但状态已完成」的静默状态。
+>
+> RunningHub 的 `progress` 字段恒为 `null`：平台结果查询接口不提供执行进度（详见 `docs/dev-plans/2026-09-27-runninghub-v2-task-state-design.md`）。
 
 ---
 
@@ -424,7 +432,7 @@ GET /api/tasks/:taskId/output-files
 
 需认证 (`Authorization: Bearer <token>`)。
 
-当任务状态为 `completed` 但本地尚未写入输出列表时，接口会向 ComfyUI `GET /history/{prompt_id}` 实时补全并回填数据库。  
+当任务状态为 `completed` 但本地尚未写入输出列表时，接口会向执行端实时补全并回填数据库（`runninghub` 实例走平台结果查询接口，`comfyui` 实例走 `GET /history/{prompt_id}`；两者与终态判定共用同一数据源）。  
 首次补全为空时会**阻塞约 2 秒再重试一次**，然后返回结果。  
 工作流本身无输出时仍返回空数组（最坏约 2 秒延迟）。  
 建议外部调用在 `status=completed` 后使用本接口获取文件列表，而不是仅依赖任务详情中的 `outputFiles` 字段。
@@ -448,12 +456,12 @@ GET /api/tasks/:taskId/output-files
 
 | 字段 | 说明 |
 |------|------|
-| `filename` | 文件名 |
-| `subfolder` | ComfyUI output 子目录 |
+| `filename` | 文件名（`runninghub` 实例由平台产出地址的末段推导） |
+| `subfolder` | ComfyUI output 子目录（`runninghub` 实例恒为 `""`） |
 | `type` | 固定为 `output` |
-| `nodeId` | 生成该文件的节点 ID |
+| `nodeId` | 生成该文件的节点 ID（`runninghub` 实例恒为 `""`，平台结果不含节点信息） |
 | `fileType` | `image` / `video` / `audio` |
-| `url` | 下载 URL（proxy 模式为本站路径，direct 模式为执行提供商直连路径） |
+| `url` | 下载 URL。`proxy` 模式恒为本站代理路径；`direct` 模式为执行端直连路径——`runninghub` 实例直接使用平台返回的绝对地址，`comfyui` 实例按 `/view` 拼装 |
 
 ### 下载单个文件
 
@@ -470,7 +478,12 @@ GET /api/tasks/:taskId/output-files/:filename
 | `subfolder` | string | `""` | ComfyUI output 子目录 |
 | `type` | string | `output` | ComfyUI 文件类型 |
 
-**响应**: 流式返回文件内容，`Content-Type` 自动从 ComfyUI 响应头获取。
+**响应**: 流式返回文件内容，`Content-Type` 自动从回源响应头获取。
+
+回源地址的解析顺序：
+
+1. 该文件在任务 `output_files` 中记录的**平台绝对地址**（`runninghub` 实例的产出，后端直接回源该地址并转发，无需鉴权头）；
+2. 否则按执行端 `{baseUrl}/view?filename=...&subfolder=...&type=...` 拼装（`comfyui` 实例）。
 
 示例：
 

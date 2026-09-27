@@ -53,6 +53,12 @@ export interface OutputFile {
   nodeId: string;
   /** 文件类型分类 */
   fileType: 'image' | 'video' | 'audio';
+  /**
+   * 平台返回的绝对下载地址（如 RunningHub 结果查询 V2 的 results[].url）。
+   * 存在时下载直接回源该地址，不再按 `{baseUrl}/view?filename=...` 拼装；
+   * 原生 ComfyUI 的输出经 history 解析得到，无此字段。
+   */
+  url?: string;
 }
 
 /** 更新任务结果的输入参数 */

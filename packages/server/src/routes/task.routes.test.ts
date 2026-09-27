@@ -77,6 +77,23 @@ function buildHistoryJson(promptId: string, withOutputs: boolean): unknown {
   };
 }
 
+/**
+ * 构造 RunningHub 结果查询 V2 的成功响应体。
+ * @param fileUrl 产出文件绝对地址
+ * @param outputType 平台返回的文件类型标识（扩展名或 image/video/audio）
+ */
+function buildRunningHubSuccessJson(fileUrl: string, outputType = 'png'): unknown {
+  return {
+    taskId: 'prompt-provider',
+    status: 'SUCCESS',
+    errorCode: '',
+    errorMessage: '',
+    results: [{ url: fileUrl, outputType }],
+    clientId: '',
+    promptTips: '',
+  };
+}
+
 describe('Task output files endpoints', () => {
   let app: express.Express;
   let appUnreachable: express.Express;
@@ -156,6 +173,107 @@ describe('Task output files endpoints', () => {
       .get(`/api/tasks/${unreachableTaskId}/output-files/output.png`);
     expect(res.status).toBe(502);
     expect(res.body.code).toBe('comfyui_unreachable');
+  });
+});
+
+/**
+ * 平台产出（RunningHub 结果查询 V2）落库时携带绝对地址，
+ * 列表与下载据此分流：proxy 模式由后端回源平台地址后转发，direct 模式直接给出绝对地址。
+ */
+describe('Task output files carrying platform absolute urls', () => {
+  /** 保存原始 fetch，用例结束后恢复 */
+  const originalFetch = globalThis.fetch;
+  /** 平台产出的绝对地址 */
+  const remoteUrl = 'https://rh-cdn.example.com/output/final.png';
+  let app: express.Express;
+  let settings: SettingsService;
+  let taskId: string;
+  /** 未配置任何提供商的应用：验证平台产出下载不依赖 provider */
+  let appNoProvider: express.Express;
+  let taskIdNoProvider: string;
+
+  beforeEach(() => {
+    const ctx = createOutputFilesTestApp('http://localhost:8188');
+    app = ctx.app;
+    settings = new SettingsService(ctx.db);
+    const task = ctx.taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: 'task-platform',
+    });
+    ctx.taskService.updateStatus(task.id, { status: 'completed' });
+    ctx.taskService.updateOutputFiles(task.id, [
+      { filename: 'final.png', subfolder: '', type: 'output', nodeId: '', fileType: 'image', url: remoteUrl },
+    ]);
+    taskId = task.id;
+
+    const noProvider = createOutputFilesTestApp(null);
+    appNoProvider = noProvider.app;
+    const orphan = noProvider.taskService.create({
+      workflowId: 'wf1', workflowName: 'test', aliasValues: '{}',
+      comfyuiUrl: '', comfyuiRequestBody: null,
+      comfyuiResponse: null, promptId: 'task-platform-orphan',
+    });
+    noProvider.taskService.updateStatus(orphan.id, { status: 'completed' });
+    noProvider.taskService.updateOutputFiles(orphan.id, [
+      { filename: 'final.png', subfolder: '', type: 'output', nodeId: '', fileType: 'image', url: remoteUrl },
+    ]);
+    taskIdNoProvider = orphan.id;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps returning the backend proxy url in proxy mode', async () => {
+    const res = await supertest(app)
+      .get(`/api/tasks/${taskId}/output-files`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.files).toHaveLength(1);
+    expect(res.body.files[0].filename).toBe('final.png');
+    expect(res.body.files[0].url).toContain(`/api/tasks/${taskId}/output-files/final.png`);
+    // proxy 模式不直接暴露平台地址
+    expect(res.body.files[0].url).not.toBe(remoteUrl);
+  });
+
+  it('returns the platform absolute url in direct mode', async () => {
+    settings.set('output_download_mode', 'direct');
+
+    const res = await supertest(app)
+      .get(`/api/tasks/${taskId}/output-files`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.files[0].url).toBe(remoteUrl);
+  });
+
+  it('downloads by re-fetching the stored platform url', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('binary', {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    }));
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await supertest(app)
+      .get(`/api/tasks/${taskId}/output-files/final.png`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('image/png');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    // 回源的是平台绝对地址，而不是执行端 /view
+    expect(String(mockFetch.mock.calls[0]?.[0])).toBe(remoteUrl);
+  });
+
+  it('downloads platform outputs even when no provider is configured', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('binary', { status: 200 }));
+    globalThis.fetch = mockFetch as unknown as typeof fetch;
+
+    const res = await supertest(appNoProvider)
+      .get(`/api/tasks/${taskIdNoProvider}/output-files/final.png`);
+
+    expect(res.status).toBe(200);
+    expect(String(mockFetch.mock.calls[0]?.[0])).toBe(remoteUrl);
   });
 });
 
@@ -447,7 +565,7 @@ describe('Task output files provider resolution', () => {
     outputHistoryBackfillConfig.retryDelayMs = defaultRetryDelayMs;
   });
 
-  it('backfills via runninghub proxy URL when task has provider_id', async () => {
+  it('backfills via runninghub query API when task has provider_id', async () => {
     // 创建 runninghub 实例，任务显式引用它（应优先于全局默认的 comfyui 实例）
     const rh = providerService.create({
       name: 'rh-test', type: 'runninghub',
@@ -460,10 +578,10 @@ describe('Task output files provider resolution', () => {
     });
     taskService.updateStatus(task.id, { status: 'completed' });
 
-    // stub 全局 fetch，捕获回源请求的 URL
+    // stub 全局 fetch：RunningHub 产出改走平台结果查询 V2
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => buildHistoryJson(promptId, true),
+      json: async () => buildRunningHubSuccessJson('https://rh-cdn.example.com/output/final.png'),
     });
     globalThis.fetch = mockFetch as unknown as typeof fetch;
 
@@ -472,11 +590,14 @@ describe('Task output files provider resolution', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.files).toHaveLength(1);
-    expect(res.body.files[0].filename).toBe('history-out.png');
-    // 回源请求应打到 runninghub 推导出的 proxy 地址
+    // 文件名由平台地址末段推导
+    expect(res.body.files[0].filename).toBe('final.png');
+    expect(res.body.files[0].fileType).toBe('image');
+    // 回源应打到平台结果查询接口，且带任务引用实例的 API Key
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
-    expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
+    const [calledUrl, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://www.runninghub.cn/openapi/v2/query');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test-key');
   });
 
   it('download returns 502 when task provider_id is missing and no default provider', async () => {
@@ -508,10 +629,10 @@ describe('Task output files provider resolution', () => {
     });
     taskService.updateStatus(task.id, { status: 'completed' });
 
-    // stub 全局 fetch，捕获回源请求的 URL
+    // stub 全局 fetch，捕获回源请求
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => buildHistoryJson(promptId, true),
+      json: async () => buildRunningHubSuccessJson('https://rh-cdn.example.com/output/history-out.png'),
     });
     globalThis.fetch = mockFetch as unknown as typeof fetch;
 
@@ -521,10 +642,11 @@ describe('Task output files provider resolution', () => {
     expect(res.status).toBe(200);
     expect(res.body.files).toHaveLength(1);
     expect(res.body.files[0].filename).toBe('history-out.png');
-    // 即使实例已禁用，仍解析到该 runninghub 实例推导出的 proxy 地址（而非全局默认的 comfyui）
+    // 即使实例已禁用，仍用该 runninghub 实例的 API Key 回源（而非全局默认的 comfyui）
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    const calledUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
-    expect(calledUrl).toContain(`/proxy/sk-test-key/history/${promptId}`);
+    const [calledUrl, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(calledUrl).toBe('https://www.runninghub.cn/openapi/v2/query');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk-test-key');
   });
 });
 

@@ -6,6 +6,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 按输出类型 key、文件扩展名或平台 `outputType` 推断文件类型。
+ * 同时服务两条产出解析路径：
+ * - ComfyUI history：key 形如 `images` / `videos` / `gifs` / `audio`；
+ * - 平台结果接口（RunningHub V2）：key 为 `outputType`（`jpg` / `png` / `mp4` / `image` …）或 URL 文件名。
+ * @param key 类型 key、扩展名或文件名
+ * @returns 归一化文件类型；无法识别时按图片处理
+ */
+export function guessFileType(key: string): 'image' | 'video' | 'audio' {
+  const lower = key.toLowerCase();
+  if (lower.includes('image') || lower.includes('gif')) return 'image';
+  if (lower.includes('video')) return 'video';
+  if (lower.includes('audio')) return 'audio';
+  const ext = lower.split('.').pop() ?? '';
+  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
+  if (['mp4', 'webm', 'avi', 'mov', 'mkv'].includes(ext)) return 'video';
+  if (['wav', 'mp3', 'ogg', 'flac', 'aac'].includes(ext)) return 'audio';
+  return 'image';
+}
+
+/**
  * 探测执行端连通性：GET {base}/system_stats，2xx 视为可用。
  * 网络异常与超时均被吞掉，统一转为 ok=false，调用方无需 try/catch。
  * @param baseUrl 执行端基础 URL

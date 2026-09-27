@@ -8,14 +8,15 @@ import { DispatcherService } from './dispatcher.service';
 import { cleanupTaskUploads } from './cleanup.service';
 import { releaseStaged } from './task-staging.service';
 import { COMFYUI_CLIENT_ID } from './providers/types';
-import type { ExecutionProvider } from './providers/types';
+import type { ExecutionProvider, ProviderOutputFile, ProviderTaskState } from './providers/types';
+import { guessFileType } from './providers/shared';
 
 /**
  * 执行服务可调参数。
  * 抽为对象供测试覆盖（缩短间隔），避免用例真实等待。
  */
 export const executionServiceConfig = {
-  /** 后备轮询 /history 的间隔（毫秒），同时驱动队列兜底扫描 */
+  /** 后备轮询任务状态的间隔（毫秒），同时驱动队列兜底扫描 */
   fallbackIntervalMs: 10000,
   /** 进度 100% 但尚未完成任务的快速轮询间隔（毫秒） */
   completionPollIntervalMs: 1000,
@@ -184,18 +185,33 @@ export function parseHistoryOutputs(historyData: unknown, promptId: string): Out
   return result;
 }
 
-/** 按 ComfyUI 输出类型 key 或文件扩展名推断文件类型 */
-function guessFileType(key: string): 'image' | 'video' | 'audio' {
-  const lower = key.toLowerCase();
-  if (lower.includes('image') || lower.includes('gif')) return 'image';
-  if (lower.includes('video')) return 'video';
-  if (lower.includes('audio')) return 'audio';
-  const ext = lower.split('.').pop() ?? '';
-  if (['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
-  if (['mp4', 'webm', 'avi', 'mov', 'mkv'].includes(ext)) return 'video';
-  if (['wav', 'mp3', 'ogg', 'flac', 'aac'].includes(ext)) return 'audio';
-  return 'image';
+/**
+ * 将平台侧产出文件映射为任务输出文件记录。
+ * 平台产出没有 ComfyUI 的 subfolder / type / nodeId 语义，统一填占位值；
+ * 同时保留平台给出的绝对下载地址，供后端代理下载与前端直连两种模式复用。
+ * @param files 平台侧产出文件
+ * @returns 可直接落库的任务输出文件列表
+ */
+export function toOutputFiles(files: ProviderOutputFile[]): OutputFile[] {
+  return files.map(file => ({
+    filename: file.filename,
+    subfolder: '',
+    type: 'output',
+    nodeId: '',
+    fileType: file.fileType,
+    url: file.url,
+  }));
 }
+
+/**
+ * pending 任务一次状态探测的归一化结果。
+ * 两条数据源（平台状态接口 / 执行端 history）都收敛到本类型，
+ * 使终态处理逻辑只有一份实现。
+ */
+type TaskProbeOutcome =
+  | { kind: 'running' }
+  | { kind: 'completed'; files: OutputFile[]; raw: unknown }
+  | { kind: 'failed'; errorMessage: string; raw: unknown };
 
 /** 单个提供商实例的跟踪器 */
 interface ProviderTracker {
@@ -289,10 +305,10 @@ function createProviderTracker(
   let stopped = false;
   /** 是否正在执行 drainQueue（防止并发重复提交同一任务） */
   let draining = false;
-  /** 连续 history 拉取失败计数（按任务 ID）；达到阈值后将该任务置为失败 */
-  const historyErrorCounts = new Map<string, number>();
+  /** 连续状态探测失败计数（按任务 ID）；达到阈值后将该任务置为失败 */
+  const statusErrorCounts = new Map<string, number>();
   /** 连续失败阈值：达到后不再重试，将任务标记为失败 */
-  const MAX_CONSECUTIVE_HISTORY_ERRORS = 5;
+  const MAX_CONSECUTIVE_STATUS_ERRORS = 5;
 
   /**
    * 统计本实例当前占用的并发槽位。
@@ -378,18 +394,23 @@ function createProviderTracker(
     }
   }
 
-  /** 将 pending 任务标记为已完成，提取输出文件并触发队列调度 */
+  /**
+   * 将 pending 任务标记为已完成，异步补全输出文件并触发队列调度。
+   * 仅由 WebSocket 的 execution_success 事件驱动，当前只有原生 ComfyUI 实例走该路径。
+   * @param promptId 执行端 prompt_id
+   */
   async function completeTask(promptId: string): Promise<void> {
     const task = taskService.getByPromptId(promptId);
     if (!task || task.status !== 'pending') return;
     taskService.updateStatus(task.id, { status: 'completed' });
     // 任务已进入终态，清理其连续失败计数
-    historyErrorCounts.delete(task.id);
+    statusErrorCounts.delete(task.id);
     // 终态后触发自动清理本次上传的资产与本地暂存文件
     cleanupTaskUploads(provider, task.uploadedFiles);
     void releaseStaged(task.id);
-    fetchHistoryAndExtractOutputs(promptId)
-      .catch(err => console.error(`[ExecutionService:${providerId}] fetch outputs error`, err));
+    // 输出文件补全失败不影响已确认的完成状态（读路径会再次回源兜底）
+    backfillCompletedOutputs(promptId)
+      .catch(err => console.error(`[ExecutionService:${providerId}] backfill outputs error`, err));
     afterSlotReleased();
   }
 
@@ -402,7 +423,7 @@ function createProviderTracker(
       errorMessage: errorMessage || 'Execution error',
     });
     // 任务已进入终态，清理其连续失败计数
-    historyErrorCounts.delete(task.id);
+    statusErrorCounts.delete(task.id);
     // 终态后触发自动清理本次上传的资产与本地暂存文件
     cleanupTaskUploads(provider, task.uploadedFiles);
     void releaseStaged(task.id);
@@ -410,50 +431,78 @@ function createProviderTracker(
   }
 
   /**
-   * 拉取 history 并提取输出文件，写入任务输出列表（异步兜底，失败仅记录日志）。
-   * @param promptId ComfyUI prompt_id
+   * 探测 pending 任务的执行状态与产出。
+   * 实现了平台状态查询能力的提供商（RunningHub）走平台接口，其余走执行端 `/history`；
+   * 两条路径都归一化为 TaskProbeOutcome，使终态处理只有一份实现。
+   * @param promptId 执行端 prompt_id（RunningHub 同时就是平台 taskId）
+   * @returns 归一化探测结果；网络/HTTP 异常向上抛出，由调用方按连续失败计数处理
    */
-  async function fetchHistoryAndExtractOutputs(promptId: string): Promise<void> {
-    try {
-      const data = await provider.fetchHistory(promptId);
-      const files = parseHistoryOutputs(data, promptId);
-      if (files.length === 0) return;
-      const task = taskService.getByPromptId(promptId);
-      if (task) {
-        taskService.updateOutputFiles(task.id, files);
+  async function probeTask(promptId: string): Promise<TaskProbeOutcome> {
+    // 1) 平台状态查询能力优先：RunningHub 完全不再依赖 proxy /history
+    if (provider.queryTaskState) {
+      const state: ProviderTaskState = await provider.queryTaskState(promptId);
+      if (state.kind === 'completed') {
+        return { kind: 'completed', files: toOutputFiles(state.files), raw: state.raw };
       }
-    } catch (err) {
-      console.error(`[ExecutionService:${providerId}] fetchHistoryAndExtractOutputs error`, err);
+      if (state.kind === 'failed') {
+        return { kind: 'failed', errorMessage: state.errorMessage, raw: state.raw };
+      }
+      return { kind: 'running' };
+    }
+
+    // 2) 兜底路径：原生 ComfyUI 执行端 history（语义与改造前完全一致）
+    const data = await provider.fetchHistory(promptId);
+    const outcome = resolveHistoryOutcome(data, promptId);
+    if (outcome.kind === 'completed') {
+      return { kind: 'completed', files: parseHistoryOutputs(data, promptId), raw: data };
+    }
+    if (outcome.kind === 'failed') {
+      return { kind: 'failed', errorMessage: outcome.errorMessage, raw: data };
+    }
+    return { kind: 'running' };
+  }
+
+  /**
+   * 任务已确认完成后异步补全输出文件（WebSocket 路径专用）。
+   * 复用 probeTask 的数据源选择：平台状态接口优先，其次执行端 history。
+   * 失败仅记录日志，不影响已确认的完成状态。
+   * @param promptId 执行端 prompt_id
+   */
+  async function backfillCompletedOutputs(promptId: string): Promise<void> {
+    const outcome = await probeTask(promptId);
+    // 产出尚未回报时静默返回（读路径的输出列表回源会再次兜底）
+    if (outcome.kind !== 'completed' || outcome.files.length === 0) return;
+    const task = taskService.getByPromptId(promptId);
+    if (task) {
+      taskService.updateOutputFiles(task.id, outcome.files);
     }
   }
 
-  /** 按 history 解析结果更新 pending 任务终态 */
-  function applyHistoryOutcome(taskId: string, promptId: string, data: unknown): boolean {
-    const outcome = resolveHistoryOutcome(data, promptId);
+  /**
+   * 按探测结果更新 pending 任务终态，并完成槽位释放与终态清理。
+   * @param taskId 任务 ID
+   * @param outcome 探测结果
+   * @returns 是否已进入终态（running 返回 false，下一轮继续探测）
+   */
+  function applyProbeOutcome(taskId: string, outcome: TaskProbeOutcome): boolean {
     if (outcome.kind === 'running') return false;
 
+    // 任务已进入终态，清理其连续失败计数
+    statusErrorCounts.delete(taskId);
+
     if (outcome.kind === 'completed') {
-      taskService.updateStatus(taskId, { status: 'completed', comfyuiResponse: JSON.stringify(data) });
-      // 任务已进入终态，清理其连续失败计数
-      historyErrorCounts.delete(taskId);
-      const files = parseHistoryOutputs(data, promptId);
-      if (files.length > 0) {
-        taskService.updateOutputFiles(taskId, files);
+      taskService.updateStatus(taskId, { status: 'completed', comfyuiResponse: JSON.stringify(outcome.raw) });
+      if (outcome.files.length > 0) {
+        taskService.updateOutputFiles(taskId, outcome.files);
       }
-      // 终态后触发自动清理本次上传的资产与本地暂存文件
-      cleanupTaskUploads(provider, taskService.getById(taskId)?.uploadedFiles);
-      void releaseStaged(taskId);
-      afterSlotReleased();
-      return true;
+    } else {
+      taskService.updateStatus(taskId, {
+        status: 'failed',
+        errorMessage: outcome.errorMessage,
+        comfyuiResponse: JSON.stringify(outcome.raw),
+      });
     }
 
-    taskService.updateStatus(taskId, {
-      status: 'failed',
-      errorMessage: outcome.errorMessage,
-      comfyuiResponse: JSON.stringify(data),
-    });
-    // 任务已进入终态，清理其连续失败计数
-    historyErrorCounts.delete(taskId);
     // 终态后触发自动清理本次上传的资产与本地暂存文件
     cleanupTaskUploads(provider, taskService.getById(taskId)?.uploadedFiles);
     void releaseStaged(taskId);
@@ -527,8 +576,8 @@ function createProviderTracker(
         for (const task of stuck) {
           if (!task.promptId) continue;
           try {
-            const data = await provider.fetchHistory(task.promptId);
-            applyHistoryOutcome(task.id, task.promptId, data);
+            const outcome = await probeTask(task.promptId);
+            applyProbeOutcome(task.id, outcome);
           } catch {
             // retry next cycle
           }
@@ -551,7 +600,7 @@ function createProviderTracker(
     await drainQueue();
   }
 
-  /** 后备轮询 /history 补偿丢失消息（同时驱动队列兜底调度） */
+  /** 后备轮询任务状态补偿丢失消息（同时驱动队列兜底调度） */
   function startFallback(): void {
     fallbackTimer = setInterval(async () => {
       // 已停止的跟踪器不再产生任何副作用（clearInterval 无法取消已在途的回调）
@@ -565,18 +614,18 @@ function createProviderTracker(
         for (const task of pending) {
           if (!task.promptId) continue;
           try {
-            const data = await provider.fetchHistory(task.promptId);
-            historyErrorCounts.delete(task.id);
-            applyHistoryOutcome(task.id, task.promptId, data);
+            const outcome = await probeTask(task.promptId);
+            statusErrorCounts.delete(task.id);
+            applyProbeOutcome(task.id, outcome);
           } catch (err) {
             // 连续失败计数：达到阈值后终止任务，避免永久卡在 pending
-            const count = (historyErrorCounts.get(task.id) ?? 0) + 1;
-            historyErrorCounts.set(task.id, count);
-            if (count >= MAX_CONSECUTIVE_HISTORY_ERRORS) {
-              historyErrorCounts.delete(task.id);
+            const count = (statusErrorCounts.get(task.id) ?? 0) + 1;
+            statusErrorCounts.set(task.id, count);
+            if (count >= MAX_CONSECUTIVE_STATUS_ERRORS) {
+              statusErrorCounts.delete(task.id);
               taskService.updateStatus(task.id, {
                 status: 'failed',
-                errorMessage: err instanceof Error ? `History check failed: ${err.message}` : 'History check failed',
+                errorMessage: err instanceof Error ? `Task status check failed: ${err.message}` : 'Task status check failed',
               });
               // 终态后触发自动清理本次上传的资产与本地暂存文件
               cleanupTaskUploads(provider, task.uploadedFiles);

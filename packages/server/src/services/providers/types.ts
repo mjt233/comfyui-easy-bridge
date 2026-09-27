@@ -92,6 +92,33 @@ export interface OutputFileRef {
   type: string;
 }
 
+/**
+ * 平台侧返回的单个产出文件。
+ * 平台直接给出可下载的绝对地址（如 RunningHub 结果查询 V2 的 `results[].url`），
+ * 因此没有 ComfyUI 那套 subfolder / type / nodeId 语义，也不需要拼装 /view 地址。
+ */
+export interface ProviderOutputFile {
+  /** 文件展示名（由平台地址推导，通常为 URL 末段） */
+  filename: string;
+  /** 文件类型分类 */
+  fileType: 'image' | 'video' | 'audio';
+  /** 平台返回的绝对下载地址 */
+  url: string;
+}
+
+/**
+ * 平台侧一次任务状态探测的归一化结果。
+ * 由实现了 `queryTaskState` 的提供商产出，供任务跟踪器统一处理终态与产出，
+ * 与 `resolveHistoryOutcome` + `parseHistoryOutputs` 的 history 路径语义一一对应。
+ */
+export type ProviderTaskState =
+  /** 仍在排队或执行中：本轮不终态化，下一轮继续探测 */
+  | { kind: 'running' }
+  /** 执行成功：携带平台产出文件（可能为空数组） */
+  | { kind: 'completed'; files: ProviderOutputFile[]; raw: unknown }
+  /** 执行失败或平台判定异常：携带可读失败原因 */
+  | { kind: 'failed'; errorMessage: string; raw: unknown };
+
 /** 上传文件元数据 */
 export interface UploadFileInput {
   buffer: Buffer;
@@ -151,6 +178,15 @@ export interface ExecutionProvider {
   cleanupUploadedFiles?(filenames: string[]): Promise<void>;
   /** 拉取指定 prompt 的 history；非 2xx 或网络错误时可能抛错，调用方需自行捕获 */
   fetchHistory(promptId: string): Promise<unknown>;
+  /**
+   * 查询平台侧任务状态与产出（可选能力）。
+   * 实现该方法的提供商（RunningHub）不再依赖执行端 `/history` 判定终态与解析产出：
+   * 任务跟踪器每轮轮询改为调用本方法，`kind` 即终态判据。
+   * 未实现时调用方沿用 `fetchHistory` + history 解析路径，行为完全不变。
+   * @param taskId 平台任务 ID（RunningHub 即 proxy 提交返回的 prompt_id）
+   * @returns 归一化状态；网络/HTTP 异常由实现抛出，调用方按「连续失败计数」处理
+   */
+  queryTaskState?(taskId: string): Promise<ProviderTaskState>;
   /** 中断任务，可带 promptId 轮询确认停止 */
   interrupt(promptId?: string): Promise<boolean>;
   /** 查询 prompt 是否仍在执行队列 */

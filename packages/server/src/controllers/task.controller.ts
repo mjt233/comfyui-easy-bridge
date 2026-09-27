@@ -6,7 +6,7 @@ import { TaskService, type OutputFile } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
-import { parseHistoryOutputs, drainProviderQueue, drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
+import { parseHistoryOutputs, toOutputFiles, drainProviderQueue, drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
@@ -31,14 +31,50 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 从执行提供商 history 拉取并解析输出文件列表。
+ * 解析任务已持久化的输出文件列表。
+ * @param outputFiles 任务的 output_files JSON（可能为 null 或内容损坏）
+ * @returns 输出文件列表；无法解析时返回空数组
+ */
+function parseStoredOutputFiles(outputFiles: string | null): OutputFile[] {
+  if (!outputFiles) return [];
+  try {
+    const parsed: unknown = JSON.parse(outputFiles);
+    // 仅接受数组形态；元素结构由写入方（跟踪器）保证
+    return Array.isArray(parsed) ? (parsed as OutputFile[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 在任务已持久化的输出文件列表里按文件名查找平台绝对下载地址。
+ * 平台产出（RunningHub 结果查询 V2）落库时带 `url`，据此可跳过 `/view` 拼装直接回源。
+ * @param outputFiles 任务的 output_files JSON
+ * @param filename 目标文件名
+ * @returns 平台绝对地址；未找到或该条目无地址时返回 null
+ */
+function findStoredOutputUrl(outputFiles: string | null, filename: string): string | null {
+  const hit = parseStoredOutputFiles(outputFiles)
+    .find(f => f.filename === filename && typeof f.url === 'string' && f.url !== '');
+  return hit?.url ?? null;
+}
+
+/**
+ * 从执行提供商拉取并解析输出文件列表。
+ * 实现了平台状态查询能力的提供商（RunningHub）走平台结果接口，
+ * 其余走执行端 history；两者与终态判定共用同一数据源，避免口径不一致。
  * 网络错误或非 2xx 时返回空数组（软失败，不抛错）。
  * @param provider 任务使用的执行提供商
- * @param promptId 执行端 prompt_id
+ * @param promptId 执行端 prompt_id（RunningHub 同时是平台 taskId）
  * @returns 解析到的输出文件；失败或无输出时为 []
  */
-async function fetchOutputsFromHistory(provider: ExecutionProvider, promptId: string): Promise<OutputFile[]> {
+async function fetchOutputsFromProvider(provider: ExecutionProvider, promptId: string): Promise<OutputFile[]> {
   try {
+    // 平台状态接口优先：RunningHub 的产出解析与终态判定口径保持一致
+    if (provider.queryTaskState) {
+      const state = await provider.queryTaskState(promptId);
+      return state.kind === 'completed' ? toOutputFiles(state.files) : [];
+    }
     // 回源执行端 history，供 completed 任务本地尚未回填时补全
     const data = await provider.fetchHistory(promptId);
     return parseHistoryOutputs(data, promptId);
@@ -114,7 +150,7 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
 
     /**
      * 获取任务的输出文件列表。
-     * 当任务已 completed 但本地 outputFiles 仍为空时，向 ComfyUI /history 回源补全；
+     * 当任务已 completed 但本地 outputFiles 仍为空时，向执行端回源补全；
      * 首次为空则阻塞 2s 再重试一次，成功后回填 DB。
      */
     async listOutputFiles(req: Request, res: Response): Promise<void> {
@@ -125,18 +161,10 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       }
       const provider = resolveProviderForTask(task);
       const mode = settingsService.get('output_download_mode') || 'proxy';
-      let files: OutputFile[] = [];
       // 优先使用本地已持久化的输出列表
-      if (task.outputFiles) {
-        try {
-          const parsed = JSON.parse(task.outputFiles);
-          files = Array.isArray(parsed) ? parsed : [];
-        } catch {
-          files = [];
-        }
-      }
+      let files: OutputFile[] = parseStoredOutputFiles(task.outputFiles);
 
-      // 读路径兜底：completed 且本地为空时，从执行端 history 补全（最多 2 次）
+      // 读路径兜底：completed 且本地为空时，从执行端回源补全（最多 2 次）
       if (
         files.length === 0
         && task.status === 'completed'
@@ -144,11 +172,11 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         && provider
       ) {
         // 第 1 次回源
-        files = await fetchOutputsFromHistory(provider, task.promptId);
-        // 首次为空则阻塞后重试一次，覆盖 history 瞬时未就绪
+        files = await fetchOutputsFromProvider(provider, task.promptId);
+        // 首次为空则阻塞后重试一次，覆盖产出瞬时未就绪
         if (files.length === 0) {
           await sleep(outputHistoryBackfillConfig.retryDelayMs);
-          files = await fetchOutputsFromHistory(provider, task.promptId);
+          files = await fetchOutputsFromProvider(provider, task.promptId);
         }
         // 回填 DB，供后续请求与任务日志直接读取
         if (files.length > 0) {
@@ -156,16 +184,24 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         }
       }
 
-      const result = files.map(f => ({
-        ...f,
-        url: mode === 'direct' && provider
-          ? provider.buildOutputViewUrl(f)
-          : `/api/tasks/${task.id}/output-files/${encodeURIComponent(f.filename)}?subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`,
-      }));
+      const result = files.map(f => {
+        // 直连模式下优先使用平台给出的绝对地址；无地址且实例可用时按执行端 /view 拼装
+        const directUrl = f.url ?? (provider ? provider.buildOutputViewUrl(f) : null);
+        return {
+          ...f,
+          url: mode === 'direct' && directUrl
+            ? directUrl
+            : `/api/tasks/${task.id}/output-files/${encodeURIComponent(f.filename)}?subfolder=${encodeURIComponent(f.subfolder)}&type=${f.type}`,
+        };
+      });
       res.json({ files: result });
     },
 
-    /** 代理下载输出文件（从 ComfyUI 流式转发） */
+    /**
+     * 代理下载输出文件。
+     * 平台产出带绝对地址时直接回源该地址（RH COS 预签名地址无需鉴权头），
+     * 否则按执行端 `/view` 拼装后流式转发。
+     */
     async downloadOutputFile(req: Request, res: Response): Promise<void> {
       const task = taskService.getById(req.params.taskId as string);
       if (!task) {
@@ -173,19 +209,23 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         return;
       }
       const provider = resolveProviderForTask(task);
-      if (!provider) {
-        res.status(502).json({ error: 'No execution provider configured', code: 'comfyui_unreachable' });
-        return;
-      }
 
       const filename = req.params.filename as string;
       const subfolder = (req.query.subfolder as string) || '';
       const type = (req.query.type as string) || 'output';
 
-      const comfyUrl = provider.buildOutputViewUrl({ filename, subfolder, type });
+      // 解析回源地址：平台绝对地址优先，其次执行端 /view；两者都没有时无法下载
+      let sourceUrl = findStoredOutputUrl(task.outputFiles, filename);
+      if (!sourceUrl && provider) {
+        sourceUrl = provider.buildOutputViewUrl({ filename, subfolder, type });
+      }
+      if (!sourceUrl) {
+        res.status(502).json({ error: 'No execution provider configured', code: 'comfyui_unreachable' });
+        return;
+      }
 
       try {
-        const comfyRes = await fetch(comfyUrl);
+        const comfyRes = await fetch(sourceUrl);
         if (!comfyRes.ok) {
           res.status(comfyRes.status).json({ error: 'ComfyUI error', code: 'comfyui_unreachable' });
           return;
