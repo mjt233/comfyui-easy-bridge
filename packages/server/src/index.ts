@@ -23,7 +23,29 @@ const app: Express = express();
 // 端口号支持通过环境变量覆盖，统一转为数字（非法值退化为 NaN 时由 listen 报错）
 const PORT = Number(process.env.PORT ?? 10721);
 
-app.use(helmet());
+/**
+ * 安全响应头（helmet）配置。
+ *
+ * 在 helmet 默认 CSP 基础上放宽**产物媒体**的加载来源，默认的 `img-src 'self' data:`
+ * 与回落到 `default-src 'self'` 的 `media-src` 会导致任务产物无法预览：
+ * - `proxy` 下载模式：前端用带鉴权请求取回 Blob 后用 `blob:` 临时地址渲染（Chrome 要求显式列出 `blob:`）；
+ * - `direct` 下载模式：`<img>` / `<video>` 直接加载执行提供商（ComfyUI `/view`、RunningHub 预签名地址）
+ *   的绝对地址，主机名由用户配置决定、无法预先枚举。
+ * 其余指令保持 helmet 默认值（脚本、样式、表单提交等仍限制为同源）。
+ */
+const HELMET_OPTIONS = {
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      // 图片：本站 + data: + blob:（代理预览）+ 执行端/平台绝对地址（直连预览）
+      'img-src': ["'self'", 'data:', 'blob:', 'http:', 'https:'],
+      // 音视频：本站 + blob:（代理预览）+ 执行端/平台绝对地址（直连预览）
+      'media-src': ["'self'", 'blob:', 'http:', 'https:'],
+    },
+  },
+} as const;
+
+app.use(helmet(HELMET_OPTIONS));
 app.use(cors());
 app.use(express.json());
 

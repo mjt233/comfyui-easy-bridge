@@ -1,4 +1,5 @@
 import client from './client';
+import { triggerDownload, isAbsoluteHttpUrl } from '@/utils/download';
 
 /** 任务日志 */
 export interface TaskLog {
@@ -108,4 +109,52 @@ export interface OutputFile {
 export async function fetchTaskOutputFiles(taskId: string): Promise<{ files: OutputFile[] }> {
   const res = await client.get<{ files: OutputFile[] }>(`/tasks/${taskId}/output-files`);
   return res.data;
+}
+
+/**
+ * 构造输出文件的后端代理请求路径（与后端 `proxy` 模式返回的 `url` 同构）。
+ * 不论 `output_download_mode` 为何值，该路径都能取到文件：后端会自行解析回源地址
+ * （平台绝对地址优先，其次执行端 `/view`）。
+ * @param taskId 任务 ID
+ * @param file 输出文件（使用其 filename / subfolder / type 定位）
+ * @returns 相对 `/api` 的请求路径（含查询参数）
+ */
+export function buildOutputFileRequestPath(taskId: string, file: OutputFile): string {
+  const subfolder = encodeURIComponent(file.subfolder ?? '');
+  const type = encodeURIComponent(file.type || 'output');
+  return `/tasks/${taskId}/output-files/${encodeURIComponent(file.filename)}?subfolder=${subfolder}&type=${type}`;
+}
+
+/**
+ * 以带鉴权的方式取回输出文件内容。
+ *
+ * 输出文件接口受鉴权保护（`auth_enabled=1` 时要求 `Authorization: Bearer`），
+ * 而 `<img>` / `<video>` / `<a href>` 等浏览器原生请求不会携带该头（会得到 401），
+ * 因此统一改为经 axios 请求（拦截器自动附加 token）取回 Blob。
+ * @param taskId 任务 ID
+ * @param file 输出文件
+ * @returns 文件内容 Blob
+ */
+export async function fetchOutputFileBlob(taskId: string, file: OutputFile): Promise<Blob> {
+  const res = await client.get<Blob>(buildOutputFileRequestPath(taskId, file), { responseType: 'blob' });
+  return res.data;
+}
+
+/**
+ * 下载输出文件（触发浏览器保存）。
+ *
+ * - `direct` 模式：`url` 为执行端/平台绝对地址，直接交给浏览器打开（无需本站鉴权头，也不占用本站带宽）；
+ * - `proxy` 模式：`url` 为本站代理路径，用 `<a href>` 打开时不会带鉴权头（401），
+ *   因此先带鉴权取回 Blob 再本地保存。
+ * @param taskId 任务 ID
+ * @param file 输出文件
+ */
+export async function downloadOutputFile(taskId: string, file: OutputFile): Promise<void> {
+  // 绝对地址：同步发起导航，保留用户手势上下文（避免被浏览器拦截新窗口）
+  if (isAbsoluteHttpUrl(file.url)) {
+    window.open(file.url, '_blank', 'noopener');
+    return;
+  }
+  const blob = await fetchOutputFileBlob(taskId, file);
+  triggerDownload(blob, file.filename);
 }

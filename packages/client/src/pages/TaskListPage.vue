@@ -540,15 +540,13 @@
                       icon="mdi-eye"
                       size="small"
                       variant="text"
-                      @click.stop="openPreview(file)"
+                      @click.stop="openPreview(selectedTask!.id, file)"
                     />
                     <v-btn
                       icon="mdi-download"
                       size="small"
                       variant="text"
-                      :href="file.url"
-                      target="_blank"
-                      @click.stop
+                      @click.stop="handleDownload(selectedTask!.id, file)"
                     />
                   </template>
                 </v-list-item>
@@ -615,15 +613,13 @@
                   icon="mdi-eye"
                   size="small"
                   variant="text"
-                  @click.stop="openPreview(file)"
+                  @click.stop="openPreview(listOutputTaskId!, file)"
                 />
                 <v-btn
                   icon="mdi-download"
                   size="small"
                   variant="text"
-                  :href="file.url"
-                  target="_blank"
-                  @click.stop
+                  @click.stop="handleDownload(listOutputTaskId!, file)"
                 />
               </template>
             </v-list-item>
@@ -642,8 +638,8 @@
             icon="mdi-download"
             size="small"
             variant="text"
-            :href="previewFile.url"
-            target="_blank"
+            :disabled="downloading"
+            @click="handleDownload(previewTaskId!, previewFile)"
           />
           <v-btn
             icon="mdi-close"
@@ -655,18 +651,25 @@
         <v-divider />
         <v-card-text class="pa-0">
           <div class="preview-container">
+            <!-- 加载中：proxy 模式需先带鉴权取回整个文件，再生成可播放的临时地址 -->
+            <div v-if="previewLoading" class="text-center pa-8">
+              <v-progress-circular indeterminate color="primary" />
+              <div class="text-body-2 text-grey mt-3">
+                正在加载文件…
+              </div>
+            </div>
             <!-- 图片预览 -->
             <img
-              v-if="previewFile.fileType === 'image'"
-              :src="previewFile.url"
+              v-else-if="previewFile.fileType === 'image' && previewSrc"
+              :src="previewSrc"
               :alt="previewFile.filename"
               class="preview-media"
               @error="previewError = true"
             >
             <!-- 视频预览 -->
             <video
-              v-else-if="previewFile.fileType === 'video'"
-              :src="previewFile.url"
+              v-else-if="previewFile.fileType === 'video' && previewSrc"
+              :src="previewSrc"
               class="preview-media"
               controls
               autoplay
@@ -675,8 +678,8 @@
             </video>
             <!-- 音频预览 -->
             <audio
-              v-else-if="previewFile.fileType === 'audio'"
-              :src="previewFile.url"
+              v-else-if="previewFile.fileType === 'audio' && previewSrc"
+              :src="previewSrc"
               class="preview-audio"
               controls
               autoplay
@@ -697,11 +700,15 @@
     </v-dialog>
     <!-- 节点详情对话框：点击画布节点时展示该节点全部参数 -->
     <NodeDetailsDialog v-model="nodeDetailsOpen" :node="selectedNode" />
+    <!-- 下载等操作的轻量提示 -->
+    <v-snackbar v-model="snackbar.show" :color="snackbar.color">
+      {{ snackbar.text }}
+    </v-snackbar>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import {
   listTasks,
   clearCompletedTasks,
@@ -709,9 +716,12 @@ import {
   cancelTask,
   updateTaskProvider,
   fetchTaskOutputFiles,
+  fetchOutputFileBlob,
+  downloadOutputFile,
   type TaskLog,
   type OutputFile,
 } from '@/api/tasks';
+import { isAbsoluteHttpUrl } from '@/utils/download';
 import { listProviders } from '@/api/providers';
 import type { ProviderSummary } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
@@ -783,6 +793,20 @@ const forceSubmitError = ref<string | null>(null);
 const previewDialog = ref(false);
 const previewFile = ref<OutputFile | null>(null);
 const previewError = ref(false);
+/** 预览弹窗中媒体的可加载地址：proxy 模式为带鉴权取回后生成的临时 object URL，direct 模式为原始绝对地址 */
+const previewSrc = ref('');
+/** 预览内容加载中（proxy 模式需先取回整个文件） */
+const previewLoading = ref(false);
+/** 预览文件所属任务 ID（proxy 模式取回文件时用于定位） */
+const previewTaskId = ref<string | null>(null);
+/** 当前预览占用的临时 object URL（关闭弹窗时释放，避免内存泄漏） */
+let previewObjectUrl: string | null = null;
+/** 预览请求序号：用于丢弃过期响应，避免快速切换文件时旧请求覆盖新内容 */
+let previewRequestSeq = 0;
+/** 下载中标记（防止重复点击并发触发多次下载） */
+const downloading = ref(false);
+/** 轻量提示（如下载失败） */
+const snackbar = ref({ show: false, text: '', color: 'success' });
 
 /** 节点详情对话框是否打开（画布节点点击时展示） */
 const nodeDetailsOpen = ref(false);
@@ -1097,12 +1121,87 @@ async function openListOutputFiles(task: TaskLog) {
   }
 }
 
-/** 打开文件预览弹窗 */
-function openPreview(file: OutputFile) {
+/**
+ * 释放预览占用的临时 object URL（幂等）。
+ * 媒体标签已卸载或即将被替换时才调用，避免刚撤销地址就被播放器重新请求。
+ */
+function releasePreviewObjectUrl(): void {
+  if (previewObjectUrl) {
+    URL.revokeObjectURL(previewObjectUrl);
+    previewObjectUrl = null;
+  }
+}
+
+/**
+ * 打开文件预览弹窗。
+ *
+ * 开启鉴权后，本站代理路径只认 `Authorization: Bearer`，而 `<img>` / `<video>` / `<audio>`
+ * 的原生资源请求不会携带该头（会得到 401）；因此 proxy 模式先用带鉴权的 axios 请求取回
+ * Blob，再生成临时 object URL 交给媒体标签。`direct` 模式的执行端/平台绝对地址浏览器可
+ * 直连，保持原生加载（可边下边播）。
+ * @param taskId 文件所属任务 ID
+ * @param file 输出文件
+ */
+async function openPreview(taskId: string, file: OutputFile): Promise<void> {
+  // 记录本次请求序号，用于识别响应到达时预览目标是否已被切换
+  const seq = ++previewRequestSeq;
+  previewTaskId.value = taskId;
   previewFile.value = file;
   previewError.value = false;
   previewDialog.value = true;
+  // 切换文件：先释放上一个文件的临时地址
+  releasePreviewObjectUrl();
+  previewSrc.value = '';
+
+  // direct 模式：绝对地址交给浏览器原生加载，无需经过本站鉴权
+  if (isAbsoluteHttpUrl(file.url)) {
+    previewLoading.value = false;
+    previewSrc.value = file.url;
+    return;
+  }
+
+  previewLoading.value = true;
+  try {
+    const blob = await fetchOutputFileBlob(taskId, file);
+    // 响应过期（期间已切换文件或关闭弹窗）时丢弃，避免覆盖当前预览内容
+    if (seq !== previewRequestSeq) return;
+    previewObjectUrl = URL.createObjectURL(blob);
+    previewSrc.value = previewObjectUrl;
+  } catch {
+    if (seq !== previewRequestSeq) return;
+    previewError.value = true;
+  } finally {
+    if (seq === previewRequestSeq) previewLoading.value = false;
+  }
 }
+
+/**
+ * 下载输出文件。
+ *
+ * proxy 模式下 `file.url` 是本站代理路径：`<a href>` 原生打开不会带鉴权头（401），
+ * 因此改为带鉴权取回 Blob 后本地保存；direct 模式为执行端绝对地址，直接原生打开。
+ * @param taskId 文件所属任务 ID
+ * @param file 输出文件
+ */
+async function handleDownload(taskId: string, file: OutputFile): Promise<void> {
+  if (downloading.value) return;
+  downloading.value = true;
+  try {
+    await downloadOutputFile(taskId, file);
+  } catch {
+    snackbar.value = { show: true, text: `下载失败：${file.filename}`, color: 'error' };
+  } finally {
+    downloading.value = false;
+  }
+}
+
+// 关闭预览弹窗时释放临时地址，并作废仍在途的取回请求
+watch(previewDialog, (open) => {
+  if (!open) {
+    previewRequestSeq += 1;
+    releasePreviewObjectUrl();
+  }
+});
 
 /** Vuetify v-data-table 行点击事件处理：从事件数据中提取 item */
 function handleRowClick(_event: PointerEvent, data: { item: TaskLog }) {
@@ -1256,6 +1355,8 @@ onUnmounted(() => {
   if (pollTimer !== undefined) {
     clearInterval(pollTimer);
   }
+  // 页面卸载：释放可能仍被预览占用的临时地址
+  releasePreviewObjectUrl();
 });
 </script>
 

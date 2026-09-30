@@ -463,6 +463,11 @@ GET /api/tasks/:taskId/output-files
 | `fileType` | `image` / `video` / `audio` |
 | `url` | 下载 URL。`proxy` 模式恒为本站代理路径；`direct` 模式为执行端直连路径——`runninghub` 实例直接使用平台返回的绝对地址，`comfyui` 实例按 `/view` 拼装 |
 
+> 鉴权提示：开启身份验证（`auth_enabled=1`）后，`proxy` 模式的 `url` 指向的本站端点同样要求
+> `Authorization: Bearer` 头，因此**不能**直接作为 `<img src>` / `<video src>` / `<a href>` 使用
+> （浏览器原生请求不会携带该头，会得到 401 `unauthorized`）；调用方需自行带鉴权头请求，
+> 或改用 `direct` 模式（绝对地址直连执行端，不受本站鉴权约束）。Web 界面内部即按此约定处理。
+
 ### 下载单个文件
 
 ```
