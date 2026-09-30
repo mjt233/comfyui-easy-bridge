@@ -5,16 +5,15 @@ import { WorkflowService } from '../services/workflow.service';
 import { AttachmentService } from '../services/attachment.service';
 import { WorkflowIOService } from '../services/workflow-io.service';
 import {
-  executeWorkflow,
   applyAliases,
   applyParamTypeOverrides,
-  processMediaParams,
   collectUploadedFilenames,
+  processMediaParams,
   resolveSubmittedAliasValues,
   toRuntimeParams,
 } from '../services/executor.service';
 import { cleanupTaskUploads } from '../services/cleanup.service';
-import { drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
+import { drainAllQueues } from '../services/execution.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
 import { buildUniqueUploadFilename } from '../services/upload.service';
@@ -72,21 +71,22 @@ function buildOriginalForm(
 }
 
 /**
- * 为分组任务暂存媒体文件（上传到最终成员实例之前）。
+ * 为任务暂存媒体文件（上传到最终执行实例之前）。
  *
- * 分组任务在提交时尚无执行实例，而媒体必须上传到实际执行任务的实例
- * （各实例的文件存储相互独立），因此先把文件落到本地暂存目录，
- * 并把「本地生成的存储名」作为占位注入工作流；调度器选定成员后上传，
- * 再用上传接口返回的实例侧真实文件名回写请求体（各实例/平台的命名规则不同，
- * 本地存储名仅用于在暂存目录中定位文件）。
+ * 任务提交时先进入【待调度】队列，此时尚未确定真正执行任务的实例
+ * （分组需按策略挑选成员；具体实例目标也要等调度器探测通过、有空闲槽位才提交），
+ * 而媒体必须上传到实际执行的实例上（各实例的文件存储相互独立），
+ * 因此先把文件落到本地暂存目录，并把「本地生成的存储名」作为占位注入工作流；
+ * 调度器提交前上传到选定实例，再用上传接口返回的实例侧真实文件名回写请求体
+ * （各实例/平台的命名规则不同，本地存储名仅用于在暂存目录中定位文件）。
  * 本函数只负责生成存储名与元数据，实际落盘由调用方在任务记录创建后执行
  * （暂存目录以任务 ID 命名）。
  * @param params 有效参数配置（含脚本声明的媒体参数）
  * @param aliasValues 请求传入的别名值
  * @param files 按别名分组的上传文件
- * @returns 暂存任务（元数据 + 文件内容）、最终别名值与上传文件名单 JSON
+ * @returns 暂存任务（元数据 + 文件内容）、最终别名值与待上传文件名单 JSON
  */
-function stageGroupMedia(
+function stageTaskMedia(
   params: RuntimeParam[],
   aliasValues: Record<string, unknown>,
   files: Record<string, { buffer: Buffer; originalname: string; mimetype: string; size: number }[]>,
@@ -120,7 +120,7 @@ function stageGroupMedia(
     const multi = mediaAliasCount[param.alias] > 1 || fileList.length > 1;
     const names: string[] = [];
     for (const file of fileList) {
-      // 存储名与真实上传时一致，保证注入工作流的值可直接被成员实例找到
+      // 存储名与真实上传时一致，保证注入工作流的值可直接被执行实例找到
       const stagedName = buildUniqueUploadFilename(file.originalname);
       const meta: StagedFileMeta = {
         alias: param.alias,
@@ -782,12 +782,9 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         }
         const baseUrl = provider.getBaseUrl();
 
-        // 任务日志记录用户原始请求表单（保留原始值，含动态构建脚本消费的动态别名字段；文件仅记元数据）
+        // 任务日志记录用户原始请求表单（保留原始值，含动态构建脚本消费的动态别名字段；文件仅记元数据）。
+        // 媒体暂存元数据稍后补充写入（见下方【媒体统一暂存】），构建失败路径沿用此处的初值
         let originalFormJson = buildOriginalForm(aliasValues, uploadedFiles);
-        /** 分组任务的待上传媒体（暂存到本地，调度选定成员后再上传） */
-        let stagedFilesMeta: StagedFileMeta[] = [];
-        /** 本次上传/待上传的资产文件名 JSON 数组字符串（供终态后自动清理） */
-        let uploadedFilesJson = '[]';
 
         // 静态参数转运行时形态（脚本声明的基底）
         const baseParams = toRuntimeParams(params);
@@ -833,24 +830,17 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         // 应用本次执行类型覆盖（用户显式覆盖优先于静态配置/脚本声明，仅本次执行有效）
         effectiveParams = applyParamTypeOverrides(effectiveParams, paramTypeOverrides);
 
-        // 【媒体上传】
-        // - 普通实例：直接上传到该实例，注入执行端返回的文件名（既有行为）
-        // - 分组：尚不确定最终执行实例，先暂存到本地磁盘并把本地存储名作为占位注入；
-        //   调度器选定成员后上传，并用实例侧真实文件名回写请求体（见 dispatcher.rewriteUploadedFilenames）
-        let finalAliasValues: Record<string, unknown>;
-        /** 分组任务创建后待落盘的暂存文件 */
-        let stagedJobs: Array<{ meta: StagedFileMeta; buffer: Buffer }> = [];
-        if (isGroup) {
-          const staged = stageGroupMedia(effectiveParams, aliasValues, uploadedFiles);
-          stagedFilesMeta = staged.stagedFiles;
-          stagedJobs = staged.jobs;
-          finalAliasValues = staged.finalAliasValues;
-          uploadedFilesJson = staged.uploadedFilesJson;
-        } else {
-          finalAliasValues = await processMediaParams(effectiveParams, aliasValues, uploadedFiles, provider);
-          // 收集本次上传的资产文件名（供任务终态后自动清理；仅统计实际上传的文件）
-          uploadedFilesJson = JSON.stringify(collectUploadedFilenames(effectiveParams, finalAliasValues, uploadedFiles));
-        }
+        // 【媒体统一暂存】
+        // 重构后所有任务都先进入【待调度】队列（不再有"空闲直接提交"路径），
+        // 入队时尚未真正确定执行实例（即使目标为具体实例，调度器在提交前还会探测可用性），
+        // 因此媒体一律先暂存到本地磁盘（目录以任务 ID 命名）并把本地存储名作为占位注入工作流；
+        // 调度器选定实例后上传，并用实例侧真实文件名回写请求体（见 dispatcher.rewriteUploadedFilenames）
+        const staged = stageTaskMedia(effectiveParams, aliasValues, uploadedFiles);
+        const stagedFilesMeta = staged.stagedFiles;
+        const stagedJobs = staged.jobs;
+        const finalAliasValues = staged.finalAliasValues;
+        /** 本次待上传的资产文件名 JSON 数组字符串（暂存名，调度器上传后会追加实例侧真实文件名） */
+        const uploadedFilesJson = staged.uploadedFilesJson;
         // 暂存元数据写入原始表单，供调度器解析待上传文件
         originalFormJson = buildOriginalForm(aliasValues, uploadedFiles, stagedFilesMeta);
 
@@ -861,63 +851,8 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
         const submittedAliasValues = resolveSubmittedAliasValues(effectiveParams, finalAliasValues);
         const submittedAliasValuesJson = JSON.stringify(submittedAliasValues);
 
-        // 检查并发数（取自提供商实例配置，按提供商分别统计 pending 任务）
-        const concurrency = provider.concurrency;
-        const pendingCount = taskService.countByStatus('pending', provider.id);
-
-        // 分组任务统一先入队（此时尚未确定执行实例），随后立即尝试一次调度；
-        // 普通实例并发满时同样进入排队，由该实例的跟踪器消费
-        if (isGroup || pendingCount >= concurrency) {
-          // 超过并发限制，进入排队
-          const task = taskService.create({
-            workflowId: wf.id,
-            workflowName: wf.name,
-            aliasValues: submittedAliasValuesJson,
-            originalForm: originalFormJson,
-            comfyuiUrl: `${baseUrl}/prompt`,
-            comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
-            comfyuiResponse: null,
-            promptId: null,
-            providerId: provider.id,
-            providerName: provider.name,
-            uploadedFiles: uploadedFilesJson,
-          });
-          // 覆盖为 queued 状态
-          taskService.updateStatus(task.id, { status: 'queued' });
-          if (!isGroup) {
-            // 普通实例任务此刻已确定执行实例，提前写入实际执行字段，
-            // 使并发统计与队列消费统一按 actual_provider_id 口径工作
-            taskService.setActualProvider(task.id, {
-              actualProviderId: provider.id,
-              actualProviderName: provider.name,
-              promptId: '',
-            });
-          }
-          if (isGroup) {
-            // 分组：媒体落盘暂存（目录以任务 ID 命名），由调度器在选定成员后上传
-            await stageUploads(task.id, stagedJobs);
-            // 立即触发一次调度，有可用成员时空闲槽位会立刻被占用（任务转为 pending）；
-            // 解析「当前活跃」的调度器实例，避免捕获陈旧引用
-            const dispatcher = getActiveDispatcher();
-            if (dispatcher) {
-              await dispatcher.drainGroup(provider.id);
-            } else {
-              // 执行服务未启动（如未调用 startExecutionService）：退回全局入口
-              await drainGroupQueues();
-            }
-          }
-          // 调度后状态可能已变为 pending（已提交给成员实例），据实返回
-          const afterDispatch = taskService.getById(task.id);
-          res.json({
-            task_id: task.id,
-            status: afterDispatch?.status ?? 'queued',
-            comfyui_response: null,
-          });
-          return;
-        }
-
-        const result = await executeWorkflow(buildSource, effectiveParams, finalAliasValues, provider);
-
+        // 统一入队：所有任务先进入【待调度】队列（status=queued），
+        // 由统一调度器在目标可用时按提交顺序投递（providerId 记录用户选择的目标）
         const task = taskService.create({
           workflowId: wf.id,
           workflowName: wf.name,
@@ -925,32 +860,34 @@ export function createWorkflowController(db: BetterSQLite3Database<typeof schema
           originalForm: originalFormJson,
           comfyuiUrl: `${baseUrl}/prompt`,
           comfyuiRequestBody: JSON.stringify({ prompt: JSON.parse(modifiedJson) }),
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : null,
-          promptId: result.promptId,
+          comfyuiResponse: null,
+          promptId: null,
           providerId: provider.id,
           providerName: provider.name,
           uploadedFiles: uploadedFilesJson,
         });
-        // 直接提交路径：该实例即实际执行实例，写入实际执行字段供跟踪器与并发统计使用
-        taskService.setActualProvider(task.id, {
-          actualProviderId: provider.id,
-          actualProviderName: provider.name,
-          promptId: result.promptId ?? '',
-        });
-
-        if (!result.success) {
-          taskService.updateStatus(task.id, {
-            status: 'failed',
-            errorMessage: result.errorMessage ?? 'Unknown error',
+        // 覆盖为 queued 状态（待调度）
+        taskService.updateStatus(task.id, { status: 'queued' });
+        if (!isGroup) {
+          // 具体实例目标：此刻已确定执行实例，提前写入实际执行字段，
+          // 使并发统计与队列消费统一按 actual_provider_id 口径工作
+          taskService.setActualProvider(task.id, {
+            actualProviderId: provider.id,
+            actualProviderName: provider.name,
+            promptId: '',
           });
-          // 提交失败的任务不会被跟踪器置终态，这里直接触发自动清理本次上传的资产
-          cleanupTaskUploads(provider, uploadedFilesJson);
         }
+        // 媒体落盘暂存（目录以任务 ID 命名），由调度器在选定实例后上传
+        await stageUploads(task.id, stagedJobs);
+        // 立即触发一次调度：目标空闲时任务会立刻被投递（状态转为 pending）
+        await drainAllQueues();
 
+        // 调度后状态可能已变为 pending（已提交给实例），据实返回
+        const afterDispatch = taskService.getById(task.id);
         res.json({
           task_id: task.id,
-          status: task.status,
-          comfyui_response: result.comfyuiResponse,
+          status: afterDispatch?.status ?? 'queued',
+          comfyui_response: null,
         });
       } catch (err) {
         next(err);

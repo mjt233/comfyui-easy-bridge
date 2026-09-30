@@ -12,6 +12,9 @@ export function createTaskRoutes(db: BetterSQLite3Database<typeof schema>): Rout
 
   router.get('/', auth, controller.list);
   router.delete('/completed', auth, controller.clearCompleted);
+  // 修改排队任务的执行目标（人工干预自动调度；仅 queued 任务）
+  router.patch('/:taskId/provider', auth, controller.updateProvider);
+  // 立即提交（插队）：无视并发上限直接投递到指定的具体实例
   router.post('/:taskId/submit', auth, controller.submit);
   router.post('/:taskId/cancel', auth, controller.cancel);
   router.get('/:taskId/output-files', auth, controller.listOutputFiles);

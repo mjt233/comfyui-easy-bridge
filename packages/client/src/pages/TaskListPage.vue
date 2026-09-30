@@ -17,19 +17,47 @@
   </v-app-bar>
 
   <v-container>
+    <!-- 两个页签：待调度（queued，尚未提交到任何实例）/ 已提交（已真实提交到具体实例） -->
     <v-card>
+      <v-tabs v-model="activeTab" color="primary" density="comfortable">
+        <v-tab value="pending-dispatch">
+          <v-icon start>mdi-timer-sand</v-icon>
+          待调度
+          <v-chip v-if="queuedTasks.length > 0" size="x-small" class="ml-2" color="blue">
+            {{ queuedTasks.length }}
+          </v-chip>
+        </v-tab>
+        <v-tab value="submitted">
+          <v-icon start>mdi-cloud-upload-outline</v-icon>
+          已提交
+          <v-chip v-if="submittedTasks.length > 0" size="x-small" class="ml-2" color="orange">
+            {{ submittedTasks.length }}
+          </v-chip>
+        </v-tab>
+      </v-tabs>
+      <v-divider />
+
+      <!-- 待调度：等待匹配的执行提供商空闲后按顺序提交 -->
       <v-data-table
-        :headers="headers"
-        :items="tasks"
+        v-if="activeTab === 'pending-dispatch'"
+        :headers="queuedHeaders"
+        :items="queuedTasks"
         :loading="loading"
         item-value="id"
+        no-data-text="暂无待调度任务"
         @click:row="handleRowClick"
       >
         <template #[`item.providerName`]="{ item }">
-          <span v-if="providerLabel(item)" class="text-body-2">
-            {{ providerLabel(item) }}
-          </span>
-          <span v-else class="text-caption text-grey">-</span>
+          <div class="d-flex align-center ga-2">
+            <span v-if="providerLabel(item)" class="text-body-2">
+              {{ providerLabel(item) }}
+            </span>
+            <span v-else class="text-caption text-grey">-</span>
+            <!-- 目标为分组：等待分组内成员释放并发槽位 -->
+            <v-chip v-if="item.actualProviderId == null" size="x-small" variant="text" color="blue">
+              分组
+            </v-chip>
+          </div>
         </template>
         <template #[`item.createdAt`]="{ value }">
           {{ formatTime(value) }}
@@ -39,14 +67,79 @@
             <v-chip :color="statusColor(item.status)" size="small">
               {{ statusText(item.status) }}
             </v-chip>
-            <!-- 分组任务排队中：等待成员实例释放并发槽位（或从健康冷却中恢复） -->
+            <v-chip size="small" variant="text" color="blue">
+              等待可用实例
+            </v-chip>
+          </div>
+        </template>
+        <template #[`item.actions`]="{ item }">
+          <v-btn
+            color="primary"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            prepend-icon="mdi-swap-horizontal"
+            @click.stop="openReassign(item)"
+          >
+            修改实例
+          </v-btn>
+          <v-btn
+            color="orange-darken-2"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            prepend-icon="mdi-flash"
+            @click.stop="openForceSubmit(item)"
+          >
+            立即提交
+          </v-btn>
+          <v-btn
+            icon="mdi-information-outline"
+            size="small"
+            variant="text"
+            @click.stop="openDetail(item)"
+          />
+        </template>
+      </v-data-table>
+
+      <!-- 已提交：已真实提交到具体执行提供商实例（含执行中与已结束） -->
+      <v-data-table
+        v-else
+        :headers="submittedHeaders"
+        :items="submittedTasks"
+        :loading="loading"
+        item-value="id"
+        no-data-text="暂无已提交任务"
+        @click:row="handleRowClick"
+      >
+        <template #[`item.providerName`]="{ item }">
+          <span v-if="providerLabel(item)" class="text-body-2">
+            {{ providerLabel(item) }}
+          </span>
+          <span v-else class="text-caption text-grey">-</span>
+        </template>
+        <!-- 实际执行实例：分组任务展示调度器选定并提交的成员实例，并标注来源 -->
+        <template #[`item.actualProviderName`]="{ item }">
+          <div v-if="actualProviderLabel(item)" class="d-flex align-center ga-2">
+            <span class="text-body-2">{{ actualProviderLabel(item) }}</span>
             <v-chip
-              v-if="item.status === 'queued' && isGroupTask(item)"
-              size="small"
+              v-if="isGroupDispatched(item)"
+              size="x-small"
               variant="text"
               color="blue"
             >
-              等待可用实例
+              自动分配
+            </v-chip>
+          </div>
+          <span v-else class="text-caption text-grey">-</span>
+        </template>
+        <template #[`item.createdAt`]="{ value }">
+          {{ formatTime(value) }}
+        </template>
+        <template #[`item.status`]="{ item }">
+          <div class="d-flex align-center ga-2">
+            <v-chip :color="statusColor(item.status)" size="small">
+              {{ statusText(item.status) }}
             </v-chip>
             <v-progress-circular
               v-if="item.status === 'pending' && item.progress != null"
@@ -81,16 +174,6 @@
         </template>
         <template #[`item.actions`]="{ item }">
           <v-btn
-            v-if="item.status === 'queued'"
-            color="primary"
-            size="small"
-            variant="tonal"
-            class="mr-1"
-            @click.stop="handleSubmitTask(item.id)"
-          >
-            立即提交
-          </v-btn>
-          <v-btn
             v-if="item.status === 'pending'"
             color="error"
             size="small"
@@ -110,6 +193,116 @@
       </v-data-table>
     </v-card>
 
+    <!-- 修改执行实例：仅影响自动调度逻辑，不会立即提交 -->
+    <v-dialog v-model="reassignDialog" max-width="560">
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon>mdi-swap-horizontal</v-icon>
+          <span>修改执行实例</span>
+        </v-card-title>
+        <v-divider />
+        <v-card-text>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            仅调整该任务的调度归属（自动调度按新目标的空闲情况提交），不会立即提交工作流。
+            若需要插队立即执行，请使用「立即提交」。
+          </p>
+          <v-select
+            v-model="reassignProviderId"
+            :items="providerOptions"
+            item-title="label"
+            item-value="value"
+            label="执行提供商实例"
+            density="comfortable"
+            variant="outlined"
+            hide-details="auto"
+          />
+          <!-- 目标分组无可用成员：明确提示任务将持续排队（前端预判 + 后端归因） -->
+          <v-alert
+            v-if="reassignDialogWarning"
+            type="warning"
+            variant="tonal"
+            density="comfortable"
+            class="mt-3"
+            :text="reassignDialogWarning"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="reassignDialog = false">
+            取消
+          </v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :loading="reassignSubmitting"
+            :disabled="!reassignProviderId"
+            @click="handleReassignConfirm"
+          >
+            确认修改
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- 立即提交（插队）：必须选择具体实例，分组目标不可直接提交 -->
+    <v-dialog v-model="forceSubmitDialog" max-width="600">
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon>mdi-flash</v-icon>
+          <span>立即提交（插队）</span>
+        </v-card-title>
+        <v-divider />
+        <v-card-text>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            无视目标实例的并发上限直接提交工作流，并将该任务的归属改为所选实例。
+            仅当实例可正常连通时才会提交，失败时任务保持待调度。
+          </p>
+          <!-- 区分展示当前分组的成员与其他实例，便于就近选择 -->
+          <v-select
+            v-model="forceSubmitProviderId"
+            :items="forceSubmitOptions"
+            item-title="label"
+            item-value="value"
+            label="提交到执行实例"
+            density="comfortable"
+            variant="outlined"
+            hide-details="auto"
+          >
+            <template #item="{ props: itemProps, item }">
+              <v-list-subheader v-if="item.raw.header">
+                {{ item.raw.header }}
+              </v-list-subheader>
+              <v-list-item v-else v-bind="itemProps" :title="item.raw.label" />
+            </template>
+          </v-select>
+          <!-- 提交失败（实例不可达等）：任务保持待调度，可改选实例重试 -->
+          <v-alert
+            v-if="forceSubmitError"
+            type="error"
+            variant="tonal"
+            density="comfortable"
+            class="mt-3"
+            :text="forceSubmitError"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="forceSubmitDialog = false">
+            取消
+          </v-btn>
+          <v-btn
+            color="orange-darken-2"
+            variant="flat"
+            :loading="forceSubmitSubmitting"
+            :disabled="!forceSubmitProviderId"
+            @click="handleForceSubmitConfirm"
+          >
+            立即提交
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <v-dialog v-model="detailDialog" max-width="960">
       <v-card v-if="selectedTask">
         <v-card-title>任务详情</v-card-title>
@@ -125,20 +318,38 @@
               <v-list-item-subtitle>工作流</v-list-item-subtitle>
               <v-list-item-title>{{ selectedTask.workflowName }}</v-list-item-title>
             </v-list-item>
+            <!-- 选择的提供商：入队时的目标，或最近一次人工改派后的目标（可能为分组） -->
             <v-list-item v-if="providerLabel(selectedTask)">
-              <v-list-item-subtitle>执行提供商</v-list-item-subtitle>
+              <v-list-item-subtitle>选择的提供商</v-list-item-subtitle>
               <v-list-item-title>{{ providerLabel(selectedTask) }}</v-list-item-title>
               <v-list-item-subtitle v-if="selectedTask.providerId" class="text-caption text-grey">
                 ID: {{ selectedTask.providerId }}
               </v-list-item-subtitle>
             </v-list-item>
-            <!-- 分组任务：展示自动分配到的实际执行实例 -->
-            <v-list-item v-if="actualProviderLabel(selectedTask)">
-              <v-list-item-subtitle>实际执行实例（自动分配）</v-list-item-subtitle>
-              <v-list-item-title>{{ actualProviderLabel(selectedTask) }}</v-list-item-title>
+            <!-- 实际执行实例：仅在任务已真实提交后展示；分组目标由调度器选定成员后写入 -->
+            <v-list-item v-if="selectedTask.status !== 'queued' && actualProviderLabel(selectedTask)">
+              <v-list-item-subtitle>实际执行实例</v-list-item-subtitle>
+              <v-list-item-title>
+                {{ actualProviderLabel(selectedTask) }}
+                <v-chip
+                  v-if="isGroupDispatched(selectedTask)"
+                  size="x-small"
+                  variant="text"
+                  color="blue"
+                  class="ml-2"
+                >
+                  由分组自动分配
+                </v-chip>
+              </v-list-item-title>
               <v-list-item-subtitle v-if="selectedTask.actualProviderId" class="text-caption text-grey">
                 ID: {{ selectedTask.actualProviderId }}
               </v-list-item-subtitle>
+            </v-list-item>
+            <v-list-item v-else-if="selectedTask.status === 'queued'">
+              <v-list-item-subtitle>实际执行实例</v-list-item-subtitle>
+              <v-list-item-title class="text-grey">
+                待调度（尚未提交到具体实例）
+              </v-list-item-title>
             </v-list-item>
             <v-list-item>
               <v-list-item-subtitle>状态</v-list-item-subtitle>
@@ -491,15 +702,38 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { listTasks, clearCompletedTasks, submitTask, cancelTask, fetchTaskOutputFiles, type TaskLog, type OutputFile } from '@/api/tasks';
+import {
+  listTasks,
+  clearCompletedTasks,
+  submitTask,
+  cancelTask,
+  updateTaskProvider,
+  fetchTaskOutputFiles,
+  type TaskLog,
+  type OutputFile,
+} from '@/api/tasks';
+import { listProviders } from '@/api/providers';
+import type { ProviderSummary } from '@/types';
 import WorkflowCanvas from '@/components/workflow-canvas/WorkflowCanvas.vue';
 import NodeDetailsDialog from '@/components/build-script/NodeDetailsDialog.vue';
 import { parseWorkflowGraph, type GraphNode } from '@/components/workflow-canvas/workflowGraph';
 
-const headers = [
+/** 待调度（queued）任务的表格列：不含输出/耗时/完成时间（尚未执行） */
+const queuedHeaders = [
   { title: '提交时间', key: 'createdAt' },
   { title: '工作流', key: 'workflowName' },
-  { title: '提供商', key: 'providerName' },
+  { title: '选择的提供商', key: 'providerName' },
+  { title: '状态', key: 'status', sortable: false },
+  { title: '操作', key: 'actions', sortable: false },
+];
+
+/** 已提交任务的表格列：含实际执行实例、输出文件与执行耗时 */
+const submittedHeaders = [
+  { title: '提交时间', key: 'createdAt' },
+  { title: '工作流', key: 'workflowName' },
+  { title: '选择的提供商', key: 'providerName' },
+  // 实际执行实例：具体实例目标即该实例；分组目标为调度器选定并提交的成员实例
+  { title: '实际执行实例', key: 'actualProviderName' },
   { title: '状态', key: 'status' },
   { title: '输出', key: 'outputFiles', sortable: false },
   { title: '执行耗时', key: 'duration', sortable: false },
@@ -509,6 +743,8 @@ const headers = [
 
 const tasks = ref<TaskLog[]>([]);
 const loading = ref(true);
+/** 当前激活的页签：pending-dispatch=待调度 / submitted=已提交 */
+const activeTab = ref('pending-dispatch');
 const detailDialog = ref(false);
 /** 详情对话框当前激活的页签 */
 const detailTab = ref('params');
@@ -518,6 +754,31 @@ const selectedTask = ref<TaskLog | null>(null);
 const outputFiles = ref<OutputFile[]>([]);
 const outputFilesLoading = ref(false);
 const hasCompleted = ref(false);
+
+/** 全部执行提供商实例（供改派/插队弹窗选择目标） */
+const providers = ref<ProviderSummary[]>([]);
+
+/** 修改执行实例弹窗 */
+const reassignDialog = ref(false);
+/** 改派目标实例 ID */
+const reassignProviderId = ref<string | null>(null);
+/** 改派提交中（防重复点击） */
+const reassignSubmitting = ref(false);
+/** 改派滞留风险提示（目标分组无可用成员时由后端返回） */
+const reassignWarning = ref<string | null>(null);
+/** 当前正在改派的任务 ID */
+const reassignTaskId = ref<string | null>(null);
+
+/** 立即提交（插队）弹窗 */
+const forceSubmitDialog = ref(false);
+/** 插队目标实例 ID */
+const forceSubmitProviderId = ref<string | null>(null);
+/** 插队提交中（防重复点击） */
+const forceSubmitSubmitting = ref(false);
+/** 当前正在插队提交的任务 ID */
+const forceSubmitTaskId = ref<string | null>(null);
+/** 插队目标弹窗的错误提示（实例不可达等） */
+const forceSubmitError = ref<string | null>(null);
 
 const previewDialog = ref(false);
 const previewFile = ref<OutputFile | null>(null);
@@ -535,6 +796,73 @@ const listOutputLoading = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 
+/** 待调度任务：尚未提交到任何具体执行实例 */
+const queuedTasks = computed(() => tasks.value.filter(t => t.status === 'queued'));
+
+/** 已提交任务：已真实提交到具体执行提供商实例（含执行中与已结束） */
+const submittedTasks = computed(() => tasks.value.filter(t => t.status !== 'queued'));
+
+/** 仅启用中的实例可作为改派/插队目标 */
+const enabledProviders = computed(() => providers.value.filter(p => p.enabled));
+
+/**
+ * 改派目标下拉选项：全部启用实例（含分组）。
+ * 分组目标标注「分组」，便于区分自动分配与直接指定。
+ */
+const providerOptions = computed(() => enabledProviders.value.map(p => ({
+  value: p.id,
+  label: p.type === 'group' ? `${p.name}（分组）` : p.name,
+})));
+
+/** 分组类型的目标：改派到分组时用于判断是否需要提示无成员 */
+const selectedReassignProvider = computed(
+  () => enabledProviders.value.find(p => p.id === reassignProviderId.value) ?? null,
+);
+
+/**
+ * 改派表单内的即时警告：目标分组当前没有可参与自动分配的成员时提示会滞留队列。
+ * 与后端返回的 warning 相互独立（前端预判，后端兜底）。
+ */
+const reassignDialogWarning = computed(() => {
+  if (reassignWarning.value) return reassignWarning.value;
+  const provider = selectedReassignProvider.value;
+  if (provider && provider.type === 'group' && provider.memberCount === 0) {
+    return '该分组当前没有可参与自动分配的成员实例，任务将持续排队等待，直到分组配置成员或再次调整执行实例';
+  }
+  return null;
+});
+
+/**
+ * 插队目标下拉选项：仅具体实例（分组无自有提交端点，后端会拒绝）。
+ * 目标实例为分组时按「当前分组的成员 / 其他实例」分组展示，便于就近选择。
+ */
+const forceSubmitOptions = computed(() => {
+  const groupId = forceSubmitTask.value?.providerId ?? null;
+  const group = groupId ? providers.value.find(p => p.id === groupId) ?? null : null;
+  const memberIds = new Set(
+    group && group.type === 'group' ? group.members.map(m => m.providerId) : [],
+  );
+  const options: Array<{ value?: string; label?: string; header?: string; props?: { disabled: boolean } }> = [];
+  const instances = enabledProviders.value.filter(p => p.type !== 'group');
+  // 当前分组的成员优先展示（插队到同组成员通常最省事）
+  const groupMembers = instances.filter(p => memberIds.has(p.id));
+  const others = instances.filter(p => !memberIds.has(p.id));
+  if (groupMembers.length > 0) {
+    options.push({ header: '当前分组的成员实例' });
+    for (const p of groupMembers) options.push({ value: p.id, label: p.name });
+  }
+  if (others.length > 0) {
+    options.push({ header: groupMembers.length > 0 ? '其他实例' : '可用实例' });
+    for (const p of others) options.push({ value: p.id, label: p.name });
+  }
+  return options;
+});
+
+/** 当前正在插队提交的任务（用于解析其归属分组） */
+const forceSubmitTask = computed(
+  () => queuedTasks.value.find(t => t.id === forceSubmitTaskId.value) ?? null,
+);
+
 /**
  * 任务关联的执行提供商展示文案：名称优先，缺失（如历史任务）时回退实例 ID。
  * @param task 任务日志
@@ -546,23 +874,24 @@ function providerLabel(task: TaskLog): string | null {
 }
 
 /**
- * 判断任务是否通过分组（自动分配）提交。
- * 分组任务的实际执行实例记录在 actualProviderId 中。
+ * 判断任务是否由分组自动分配（选择的提供商为分组，实际执行的是其成员实例）。
  * @param task 任务日志
- * @returns 是否为分组任务
+ * @returns 是否为分组自动分配的任务
  */
-function isGroupTask(task: TaskLog): boolean {
-  return task.actualProviderId != null && task.actualProviderId !== task.providerId;
+function isGroupDispatched(task: TaskLog): boolean {
+  return task.providerId != null
+    && task.actualProviderId != null
+    && task.actualProviderId !== task.providerId;
 }
 
 /**
- * 实际执行该任务的实例名称（供分组任务展示调度结果）。
- * 排队中（尚未调度）的分组任务返回 null。
+ * 实际执行该任务的实例名称（提交成功后由调度器写入 actual_* 字段）。
+ * 待调度任务尚未提交到任何实例，返回 null（详情中展示为待调度提示）。
  * @param task 任务日志
- * @returns 实例名称；非分组任务或尚未调度时为 null
+ * @returns 实例名称；尚无实际执行实例时为 null
  */
 function actualProviderLabel(task: TaskLog): string | null {
-  if (!isGroupTask(task)) return null;
+  if (!task.actualProviderId) return null;
   return task.actualProviderName ?? task.actualProviderId;
 }
 
@@ -810,6 +1139,15 @@ async function fetchTasks() {
   }
 }
 
+/** 拉取执行提供商实例列表（供改派/插队弹窗选择目标；失败时静默保留上次结果） */
+async function fetchProviders(): Promise<void> {
+  try {
+    providers.value = await listProviders();
+  } catch {
+    // ignore
+  }
+}
+
 async function handleClear() {
   try {
     await clearCompletedTasks();
@@ -819,13 +1157,84 @@ async function handleClear() {
   }
 }
 
-async function handleSubmitTask(taskId: string) {
+/**
+ * 打开「修改执行实例」弹窗。
+ * 默认选中任务当前的目标实例，避免用户重复选择。
+ * @param task 待调度任务
+ */
+function openReassign(task: TaskLog): void {
+  reassignTaskId.value = task.id;
+  reassignProviderId.value = task.providerId;
+  reassignWarning.value = null;
+  reassignSubmitting.value = false;
+  reassignDialog.value = true;
+  // 目标下拉需要最新的实例与成员信息（分组成员数用于滞留预判）
+  void fetchProviders();
+}
+
+/** 提交「修改执行实例」：仅改写调度归属，不立即提交 */
+async function handleReassignConfirm(): Promise<void> {
+  const taskId = reassignTaskId.value;
+  const providerId = reassignProviderId.value;
+  if (!taskId || !providerId) return;
+  reassignSubmitting.value = true;
   try {
-    await submitTask(taskId);
+    const result = await updateTaskProvider(taskId, providerId);
+    reassignWarning.value = result.warning ?? null;
+    // 后端返回滞留警告时保持弹窗打开，让用户确认后再关闭
+    if (!result.warning) reassignDialog.value = false;
     await fetchTasks();
   } catch {
     // ignore
+  } finally {
+    reassignSubmitting.value = false;
   }
+}
+
+/**
+ * 打开「立即提交（插队）」弹窗。
+ * 默认选中任务当前的目标实例（若为具体实例），分组目标下不预选（必须由用户选择具体实例）。
+ * @param task 待调度任务
+ */
+function openForceSubmit(task: TaskLog): void {
+  forceSubmitTaskId.value = task.id;
+  forceSubmitProviderId.value = task.actualProviderId ?? null;
+  forceSubmitError.value = null;
+  forceSubmitSubmitting.value = false;
+  forceSubmitDialog.value = true;
+  void fetchProviders();
+}
+
+/** 提交「立即提交（插队）」：无视并发上限提交到所选具体实例 */
+async function handleForceSubmitConfirm(): Promise<void> {
+  const taskId = forceSubmitTaskId.value;
+  const providerId = forceSubmitProviderId.value;
+  if (!taskId || !providerId) return;
+  forceSubmitSubmitting.value = true;
+  forceSubmitError.value = null;
+  try {
+    await submitTask(taskId, providerId);
+    forceSubmitDialog.value = false;
+    await fetchTasks();
+  } catch (err: unknown) {
+    // 实例不可达等失败：任务仍保持待调度，提示用户改选其他实例重试
+    forceSubmitError.value = resolveSubmitError(err);
+    await fetchTasks();
+  } finally {
+    forceSubmitSubmitting.value = false;
+  }
+}
+
+/**
+ * 从 axios 错误中提取可读的插队失败原因。
+ * @param err 捕获到的异常
+ * @returns 提示文案
+ */
+function resolveSubmitError(err: unknown): string {
+  const response = (err as { response?: { data?: { error?: unknown } } } | null)?.response;
+  const message = response?.data?.error;
+  if (typeof message === 'string' && message !== '') return message;
+  return '提交失败：目标实例不可达，任务仍处于待调度状态，可改选其他实例重试';
 }
 
 async function handleCancelTask(taskId: string) {
@@ -839,6 +1248,7 @@ async function handleCancelTask(taskId: string) {
 
 onMounted(() => {
   fetchTasks();
+  fetchProviders();
   pollTimer = setInterval(fetchTasks, 1000);
 });
 

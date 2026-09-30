@@ -6,11 +6,12 @@ import {
   parseHistoryOutputs,
   resolveHistoryOutcome,
   startExecutionService,
-  drainProviderQueue,
+  drainAllQueues,
   executionServiceConfig,
 } from './execution.service';
 import { TaskService } from './task.service';
 import { ProviderService } from './providers/provider.service';
+import { dispatcherConfig } from './dispatcher.service';
 
 /**
  * 构建 :memory: 数据库（providers / settings / task_logs / workflows 四表最小结构）。
@@ -353,7 +354,8 @@ describe('startExecutionService', () => {
 
 /**
  * 跟踪器行为测试：
- * 使用 :memory: 数据库 + 打桩 fetch，验证真实跟踪器的队列调度与重建逻辑。
+ * 使用 :memory: 数据库 + 打桩 fetch，验证跟踪器的状态跟踪与服务重建逻辑。
+ * 队列消费由统一调度器负责（见 dispatcher.service.test.ts），跟踪器不再提交任务。
  */
 describe('createProviderTracker behavior', () => {
   afterEach(() => {
@@ -361,7 +363,7 @@ describe('createProviderTracker behavior', () => {
     vi.unstubAllGlobals();
   });
 
-  it('drainQueue 只提交自身提供商的 queued 任务', async () => {
+  it('服务启动时调度器消费排队任务并写入 promptId', async () => {
     const db = createInMemoryDb();
     // 两个启用的 comfyui 提供商，并发均为 1
     insertProvider(db, 'p1', 'http://x');
@@ -376,20 +378,20 @@ describe('createProviderTracker behavior', () => {
     const svc = startExecutionService(db);
     try {
       const taskService = new TaskService(db);
-      // 启动后的初始 drain 应将 t1 提交为 pending 并带上 promptId
+      // 启动后的首轮调度应将 t1 提交为 pending 并带上 promptId
       await vi.waitFor(() => {
         const t = taskService.getById('t1');
         expect(t?.status).toBe('pending');
         expect(t?.promptId).toBe('pid-1');
       });
-      // 仅 p1 的跟踪器提交了任务（p2 无 queued 任务，不触发提交）
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // 只有一条排队任务：探测 + 提交
+      expect(fetchMock).toHaveBeenCalled();
     } finally {
       svc.stop();
     }
   });
 
-  it('rebuilds trackers on provider change notified from another ProviderService instance', async () => {
+  it('rebuilds trackers and drains the queue on provider change from another service instance', async () => {
     const db = createInMemoryDb();
     insertProvider(db, 'p1', 'http://a');
     const taskService = new TaskService(db);
@@ -411,7 +413,7 @@ describe('createProviderTracker behavior', () => {
       insertQueuedTask(db, 't2', p2.id);
       other.notifyChange(); // 必须能触发执行服务的重建
 
-      // 重建后新实例的跟踪器应启动并排空新任务
+      // 重建后调度器应消费新实例的排队任务
       await vi.waitFor(() => {
         const t = taskService.getById('t2');
         expect(t?.status).toBe('pending');
@@ -426,26 +428,31 @@ describe('createProviderTracker behavior', () => {
 
 /**
  * 队列调度触发点测试：
- * 覆盖外部显式触发（drainProviderQueue）、一次触发填满并发槽位、以及周期性兜底扫描的自愈能力。
+ * 覆盖外部显式触发（drainAllQueues）、一次触发填满并发槽位、以及周期性兜底扫描的自愈能力。
  */
 describe('queue drain triggers', () => {
   /** 用例前的兜底轮询间隔，用例结束后恢复 */
   const defaultFallbackIntervalMs = executionServiceConfig.fallbackIntervalMs;
+  /** 用例前的调度器兜底扫描间隔，用例结束后恢复 */
+  const defaultDispatcherFallbackMs = dispatcherConfig.fallbackIntervalMs;
 
   afterEach(() => {
     vi.unstubAllGlobals();
     executionServiceConfig.fallbackIntervalMs = defaultFallbackIntervalMs;
+    dispatcherConfig.fallbackIntervalMs = defaultDispatcherFallbackMs;
   });
 
-  it('drainProviderQueue submits queued tasks of the given provider only', async () => {
+  it('drainAllQueues submits queued tasks of every enabled instance', async () => {
     const db = createInMemoryDb();
     insertProvider(db, 'p1', 'http://a');
     insertProvider(db, 'p2', 'http://b');
     const taskService = new TaskService(db);
 
     // 打桩 fetch：/prompt 返回固定 prompt_id，其余端点返回空对象
+    const promptCalls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.endsWith('/prompt')) {
+        promptCalls.push(url);
         return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
       }
       return new Response('{}', { status: 200 });
@@ -453,25 +460,25 @@ describe('queue drain triggers', () => {
 
     const svc = startExecutionService(db);
     try {
-      // 服务启动后再插入排队任务：init drain 已执行完毕，不会被自动提交
+      // 服务启动后再插入排队任务（首轮调度已执行完毕，此处验证显式触发）
       insertQueuedTask(db, 't1', 'p1');
       insertQueuedTask(db, 't2', 'p2');
 
-      // 显式触发 p1 的调度
-      await drainProviderQueue('p1');
-      const submitted = taskService.getById('t1');
-      expect(submitted?.status).toBe('pending');
-      expect(submitted?.promptId).toBe('pid-1');
-      // 其他实例的排队任务不受影响
-      expect(taskService.getById('t2')?.status).toBe('queued');
-      // 未注册的实例静默返回，不抛异常
-      await expect(drainProviderQueue('missing')).resolves.toBeUndefined();
+      await drainAllQueues();
+
+      const t1 = taskService.getById('t1');
+      const t2 = taskService.getById('t2');
+      expect(t1?.status).toBe('pending');
+      expect(t1?.promptId).toBe('pid-1');
+      // 两个实例的排队任务都被消费（统一调度覆盖全部实例队列）
+      expect(t2?.status).toBe('pending');
+      expect(promptCalls).toHaveLength(2);
     } finally {
       svc.stop();
     }
   });
 
-  it('drainQueue fills all free concurrency slots in one trigger', async () => {
+  it('drains all free concurrency slots in one round', async () => {
     const db = createInMemoryDb();
     // 并发上限 2，队列中有 3 条任务
     insertProvider(db, 'p1', 'http://a', 2);
@@ -492,7 +499,7 @@ describe('queue drain triggers', () => {
 
     const svc = startExecutionService(db);
     try {
-      // init drain 应一次填满 2 个槽位
+      // 首轮调度应一次填满 2 个槽位
       await vi.waitFor(() => {
         expect(taskService.getById('t1')?.status).toBe('pending');
         expect(taskService.getById('t2')?.status).toBe('pending');
@@ -510,22 +517,12 @@ describe('queue drain triggers', () => {
     insertProvider(db, 'p1', 'http://a');
     const taskService = new TaskService(db);
 
-    // 占用唯一槽位的 pending 任务（模拟正在执行）
-    const running = taskService.create({
-      workflowId: 'wf-1',
-      workflowName: 'wf',
-      aliasValues: '{}',
-      comfyuiUrl: 'http://a',
-      comfyuiRequestBody: '{"prompt":{}}',
-      comfyuiResponse: null,
-      promptId: 'pid-running',
-      providerId: 'p1',
-      providerName: 'p1',
-    });
+    // 占用唯一槽位的 pending 任务（模拟正在执行；actual_provider_id 已回填，占用并发槽位）
+    insertPendingTask(db, 'running', 'p1', 'pid-running');
     insertQueuedTask(db, 't-queued', 'p1');
 
-    // 缩短兜底轮询间隔，避免用例真实等待 10s
-    executionServiceConfig.fallbackIntervalMs = 20;
+    // 缩短调度器兜底扫描间隔，避免用例真实等待 30s
+    dispatcherConfig.fallbackIntervalMs = 20;
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (url.endsWith('/prompt')) {
         return new Response(JSON.stringify({ prompt_id: 'pid-queued' }), { status: 200 });
@@ -535,11 +532,12 @@ describe('queue drain triggers', () => {
 
     const svc = startExecutionService(db);
     try {
-      // 槽位已被 running 占满：init drain 不应提交排队任务
+      // 槽位已被 running 占满：首轮调度不应提交排队任务
+      await new Promise(resolve => setTimeout(resolve, 30));
       expect(taskService.getById('t-queued')?.status).toBe('queued');
 
       // 模拟外部置终态（例如手动中断）：直接把执行中任务改为 failed，不经过跟踪器
-      taskService.updateStatus(running.id, { status: 'failed', errorMessage: 'Cancelled by user' });
+      taskService.updateStatus('running', { status: 'failed', errorMessage: 'Cancelled by user' });
 
       // 周期性兜底扫描应发现空闲槽位并提交排队任务
       await vi.waitFor(() => {
@@ -559,17 +557,20 @@ describe('queue drain triggers', () => {
 
     // 监听 console.error：断言失败原因与原始响应体都被打印
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    // 执行端（如 RunningHub）返回 400 与原始错误体
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(
-      JSON.stringify({ error: { type: 'prompt_outputs_failed_validation', message: 'bad workflow' } }),
-      { status: 400 },
-    )));
+    // 连通性探测通过（/system_stats 2xx），但提交被拒：执行端（如 RunningHub）返回 400 与原始错误体
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/system_stats')) return new Response('{}', { status: 200 });
+      return new Response(
+        JSON.stringify({ error: { type: 'prompt_outputs_failed_validation', message: 'bad workflow' } }),
+        { status: 400 },
+      );
+    }));
 
     const svc = startExecutionService(db);
     try {
       // 服务启动后再插入排队任务，触发一次显式调度
       insertQueuedTask(db, 't1', 'p1');
-      await drainProviderQueue('p1');
+      await drainAllQueues();
 
       // 任务落库为 failed 且保留原始错误信息（行为不变）
       const failed = taskService.getById('t1');
@@ -577,9 +578,9 @@ describe('queue drain triggers', () => {
       expect(failed?.errorMessage).toContain('400');
       expect(failed?.comfyuiResponse).toContain('prompt_outputs_failed_validation');
 
-      // 控制台输出包含实例上下文、原始错误与原始响应体
+      // 控制台输出包含调度上下文、原始错误与原始响应体
       const logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
-      expect(logged).toContain('[ExecutionService:p1]');
+      expect(logged).toContain('[Dispatcher:provider:p1]');
       expect(logged).toContain('t1');
       expect(logged).toContain('400');
       expect(logged).toContain('prompt_outputs_failed_validation');

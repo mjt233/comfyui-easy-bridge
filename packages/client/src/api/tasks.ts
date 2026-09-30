@@ -42,9 +42,49 @@ export async function clearCompletedTasks(): Promise<{ deleted: number }> {
   return res.data;
 }
 
-/** 立即提交 queued 任务 */
-export async function submitTask(taskId: string): Promise<{ task_id: string; status: string }> {
-  const res = await client.post<{ task_id: string; status: string }>(`/tasks/${taskId}/submit`);
+/** 修改执行目标的返回结果 */
+export interface UpdateTaskProviderResult {
+  task_id: string;
+  /** 改派并调度后的任务状态 */
+  status: string;
+  /** 生效的目标实例 ID */
+  provider_id: string;
+  /** 生效的目标实例名称 */
+  provider_name: string;
+  /** 滞留风险提示（如目标分组没有可用成员）；无风险时为 undefined */
+  warning?: string;
+}
+
+/**
+ * 修改待调度任务的执行目标（人工干预自动调度，仅影响后续调度，不会立即提交）。
+ * @param taskId 任务 ID（须处于待调度 queued 状态）
+ * @param providerId 目标执行提供商实例 ID（可为分组或具体实例）
+ * @returns 改派结果（含可选滞留警告）
+ */
+export async function updateTaskProvider(
+  taskId: string,
+  providerId: string,
+): Promise<UpdateTaskProviderResult> {
+  const res = await client.patch<UpdateTaskProviderResult>(`/tasks/${taskId}/provider`, { providerId });
+  return res.data;
+}
+
+/** 立即提交（插队）的返回结果 */
+export interface SubmitTaskResult {
+  task_id: string;
+  status: string;
+  error_message?: string;
+}
+
+/**
+ * 立即提交待调度任务（插队）：无视目标实例并发上限直接提交工作流，
+ * 并把任务归属一并改为该实例（插队即改道）。
+ * @param taskId 任务 ID（须处于待调度 queued 状态）
+ * @param providerId 目标具体实例 ID（分组无自有提交端点，后端会拒绝）
+ * @returns 提交结果
+ */
+export async function submitTask(taskId: string, providerId: string): Promise<SubmitTaskResult> {
+  const res = await client.post<SubmitTaskResult>(`/tasks/${taskId}/submit`, { providerId });
   return res.data;
 }
 

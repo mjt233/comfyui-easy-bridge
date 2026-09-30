@@ -1,5 +1,5 @@
 import type { RuntimeParam } from './param.types';
-import type { ExecutionProvider, ExecutionResult } from './providers/types';
+import type { ExecutionProvider } from './providers/types';
 // re-export 供既有引用方使用（COMFYUI_CLIENT_ID / ExecutionResult 定义已迁至 providers/types）
 export { COMFYUI_CLIENT_ID, type ExecutionResult } from './providers/types';
 
@@ -298,33 +298,4 @@ export function collectUploadedFilenames(
     }
   }
   return filenames;
-}
-
-/**
- * 提交工作流到执行端执行。
- * 不会抛出网络或 HTTP 异常，所有错误通过 ExecutionResult.errorMessage 返回。
- * @param rawJson 原始工作流 API JSON 字符串
- * @param params 参数配置列表
- * @param aliasValues 请求传入的别名值
- * @param provider 执行提供商（负责提交 prompt）
- * @returns 提交结果
- */
-export async function executeWorkflow(
-  rawJson: string,
-  params: RuntimeParam[],
-  aliasValues: Record<string, unknown>,
-  provider: ExecutionProvider,
-): Promise<ExecutionResult> {
-  try {
-    const modifiedJson = applyAliases(rawJson, params, aliasValues);
-    const body = JSON.stringify({ prompt: JSON.parse(modifiedJson) });
-    return provider.submitPrompt(body);
-  } catch (err: unknown) {
-    return {
-      success: false,
-      comfyuiResponse: null,
-      promptId: null,
-      errorMessage: err instanceof Error ? err.message : 'Unknown error',
-    };
-  }
 }

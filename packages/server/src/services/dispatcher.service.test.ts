@@ -38,7 +38,7 @@ function stubFetch(options?: { probeStatus?: number; promptStatus?: number; prob
   return { promptCalls };
 }
 
-describe('DispatcherService 分组调度', () => {
+describe('DispatcherService 统一队列调度', () => {
   let db: ReturnType<typeof buildTestDb>['db'];
   let providerService: ProviderService;
   let taskService: TaskService;
@@ -90,7 +90,7 @@ describe('DispatcherService 分组调度', () => {
   }
 
   /**
-   * 插入一条排队中的分组任务（providerId 指向分组）。
+   * 插入一条排队中的分组任务（providerId 指向分组，actual 为空）。
    * @param groupId 分组实例 ID
    * @param originalForm 原始表单 JSON（含 stagedFiles 时触发媒体上传）
    * @returns 任务行
@@ -109,6 +109,32 @@ describe('DispatcherService 分组调度', () => {
       providerName: 'G',
     });
     taskService.updateStatus(task.id, { status: 'queued' });
+    return taskService.getById(task.id)!;
+  }
+
+  /**
+   * 插入一条排队中的「指定实例」任务（actual 锁定为目标实例）。
+   * @param providerId 目标实例 ID
+   * @returns 任务行
+   */
+  function createQueuedTaskForProvider(providerId: string) {
+    const task = taskService.create({
+      workflowId: 'wf-1',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: `http://${providerId}:8188/prompt`,
+      comfyuiRequestBody: '{"prompt":{"1":{"inputs":{}}}}',
+      comfyuiResponse: null,
+      promptId: null,
+      providerId,
+      providerName: providerId,
+    });
+    taskService.updateStatus(task.id, { status: 'queued' });
+    taskService.setActualProvider(task.id, {
+      actualProviderId: providerId,
+      actualProviderName: providerId,
+      promptId: '',
+    });
     return taskService.getById(task.id)!;
   }
 
@@ -287,35 +313,122 @@ describe('DispatcherService 分组调度', () => {
     expect(healthService.isHealthy(a.id)).toBe(false);
   });
 
-  it('ignores queued tasks that are not owned by the group', async () => {
-    stubFetch();
-    const standalone = createMember('standalone');
+  it('drains the instance queue of a locked target independently from group queues', async () => {
+    const { promptCalls } = stubFetch();
+    const instance = createMember('solo', 2);
     const member = createMember('member');
-    // 分组存在（其成员队列由分组调度器消费），但普通实例的排队任务不归它管
-    createGroup([{ providerId: member.id, weight: 1 }]);
-    // 普通实例的排队任务：providerId 指向实例本身
-    const plain = taskService.create({
-      workflowId: 'wf-1',
-      workflowName: 'wf',
-      aliasValues: '{}',
-      comfyuiUrl: 'http://standalone/prompt',
-      comfyuiRequestBody: '{"prompt":{}}',
-      comfyuiResponse: null,
-      promptId: null,
-      providerId: standalone.id,
-      providerName: 'standalone',
-    });
-    taskService.updateStatus(plain.id, { status: 'queued' });
-    taskService.setActualProvider(plain.id, {
-      actualProviderId: standalone.id,
-      actualProviderName: 'standalone',
-      promptId: '',
-    });
+    const group = createGroup([{ providerId: member.id, weight: 1 }]);
+
+    // 一条锁定到实例的排队任务 + 一条分组排队任务
+    const locked = createQueuedTaskForProvider(instance.id);
+    const grouped = createQueuedTask(group.id);
+
+    // 只调度实例队列：分组任务不受影响
+    await dispatcher.drainProvider(instance.id);
+    expect(taskService.getById(locked.id)?.status).toBe('pending');
+    expect(taskService.getById(locked.id)?.actualProviderId).toBe(instance.id);
+    expect(taskService.getById(grouped.id)?.status).toBe('queued');
+    expect(promptCalls).toHaveLength(1);
+
+    // 再调度分组队列：分组任务被投递到成员
+    await dispatcher.drainGroup(group.id);
+    expect(taskService.getById(grouped.id)?.status).toBe('pending');
+  });
+
+  it('drainAll consumes both instance and group queues', async () => {
+    stubFetch();
+    const instance = createMember('solo');
+    const member = createMember('member');
+    const group = createGroup([{ providerId: member.id, weight: 1 }]);
+    const locked = createQueuedTaskForProvider(instance.id);
+    const grouped = createQueuedTask(group.id);
 
     await dispatcher.drainAll();
 
-    // 分组成员实例的并发槽位只按 actual_provider_id 统计，普通任务不归分组调度
-    expect(taskService.getById(plain.id)?.status).toBe('queued');
+    expect(taskService.getById(locked.id)?.status).toBe('pending');
+    expect(taskService.getById(grouped.id)?.status).toBe('pending');
+  });
+
+  it('leaves the instance queue untouched when the target instance has no free slot', async () => {
+    const { promptCalls } = stubFetch();
+    const instance = createMember('busy', 1);
+    // 占满唯一槽位
+    const occupying = createQueuedTaskForProvider(instance.id);
+    await dispatcher.drainProvider(instance.id);
+    expect(taskService.getById(occupying.id)?.status).toBe('pending');
+
+    const queued = createQueuedTaskForProvider(instance.id);
+    await dispatcher.drainProvider(instance.id);
+
+    // 槽位已满：任务保留在队列
+    expect(taskService.getById(queued.id)?.status).toBe('queued');
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('keeps the task queued when the locked target instance fails the probe', async () => {
+    stubFetch({ probeStatus: 503 });
+    const instance = createMember('dead');
+    const task = createQueuedTaskForProvider(instance.id);
+
+    await dispatcher.drainProvider(instance.id);
+
+    // 目标实例不可达：任务保留在队列等待恢复（不置失败，用户可改选实例）
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+    expect(healthService.isHealthy(instance.id)).toBe(false);
+  });
+
+  it('submitTaskNow bypasses the concurrency limit for a queue-jump submit', async () => {
+    const { promptCalls } = stubFetch();
+    const instance = createMember('jump', 1);
+    // 占满唯一槽位
+    const occupying = createQueuedTaskForProvider(instance.id);
+    await dispatcher.drainProvider(instance.id);
+    expect(taskService.getById(occupying.id)?.status).toBe('pending');
+
+    // 再入队一条：并发已满，自动调度不会提交
+    const queued = createQueuedTaskForProvider(instance.id);
+    await dispatcher.drainProvider(instance.id);
+    expect(taskService.getById(queued.id)?.status).toBe('queued');
+
+    // 立即提交（插队）：无视并发上限直接提交
+    const outcome = await dispatcher.submitTaskNow(queued.id, providerService.getEnabledProviderById(instance.id)!);
+    expect(outcome).toBe('submitted');
+    expect(taskService.getById(queued.id)?.status).toBe('pending');
+    expect(promptCalls).toHaveLength(2);
+  });
+
+  it('submitTaskNow reports unavailable (task stays queued) when the probe fails', async () => {
+    stubFetch({ probeStatus: 503 });
+    const instance = createMember('dead');
+    const task = createQueuedTaskForProvider(instance.id);
+
+    const outcome = await dispatcher.submitTaskNow(task.id, providerService.getEnabledProviderById(instance.id)!);
+
+    expect(outcome).toBe('unavailable');
+    // 保持 queued：用户可改选其他实例重试
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+  });
+
+  it('submitTaskNow fails a task whose request body is missing', async () => {
+    stubFetch();
+    const instance = createMember('inst');
+    const task = taskService.create({
+      workflowId: 'wf-1',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://inst:8188/prompt',
+      comfyuiRequestBody: null,
+      comfyuiResponse: null,
+      promptId: null,
+      providerId: instance.id,
+      providerName: 'inst',
+    });
+    taskService.updateStatus(task.id, { status: 'queued' });
+
+    const outcome = await dispatcher.submitTaskNow(task.id, providerService.getEnabledProviderById(instance.id)!);
+
+    expect(outcome).toBe('failed');
+    expect(taskService.getById(task.id)?.status).toBe('failed');
   });
 
   it('does not submit the same task twice when drain is triggered concurrently', async () => {
@@ -360,6 +473,18 @@ describe('DispatcherService 分组调度', () => {
     const group = createGroup([{ providerId: member.id, weight: 1 }]);
     const task = createQueuedTask(group.id);
     providerService.update(group.id, { enabled: false });
+
+    await dispatcher.drainAll();
+
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('ignores the instance queue of a disabled instance', async () => {
+    const { promptCalls } = stubFetch();
+    const instance = createMember('inst');
+    const task = createQueuedTaskForProvider(instance.id);
+    providerService.update(instance.id, { enabled: false });
 
     await dispatcher.drainAll();
 
@@ -436,6 +561,23 @@ describe('DispatcherService 分组媒体上传', () => {
    * @returns 排队中的任务行
    */
   async function createQueuedTaskWithStagedMedia(groupId: string, stagedName: string, originalname: string) {
+    return createQueuedTaskWithMedia(groupId, stagedName, originalname, false);
+  }
+
+  /**
+   * 建一个带暂存媒体的排队任务（分组或指定实例目标）。
+   * @param targetId 目标实例 ID（分组或具体实例）
+   * @param stagedName 本地暂存名（提交前请求体中引用的占位名）
+   * @param originalname 用户上传的原始文件名
+   * @param lockActual 是否锁定实际执行实例（具体实例目标为 true，分组目标为 false）
+   * @returns 排队中的任务行
+   */
+  async function createQueuedTaskWithMedia(
+    targetId: string,
+    stagedName: string,
+    originalname: string,
+    lockActual: boolean,
+  ) {
     const meta: StagedFileMeta = {
       alias: 'image',
       fieldName: 'image',
@@ -450,16 +592,23 @@ describe('DispatcherService 分组媒体上传', () => {
       workflowName: 'wf',
       aliasValues: JSON.stringify({ image: stagedName }),
       originalForm: JSON.stringify({ params: {}, files: [], stagedFiles: [meta] }),
-      comfyuiUrl: 'http://group/prompt',
+      comfyuiUrl: `http://${targetId}/prompt`,
       // 请求体引用的是暂存名（提交阶段写入的占位文件名）
       comfyuiRequestBody: JSON.stringify({ prompt: { '1': { inputs: { image: stagedName } } } }),
       comfyuiResponse: null,
       promptId: null,
-      providerId: groupId,
-      providerName: 'G',
+      providerId: targetId,
+      providerName: targetId,
       uploadedFiles: JSON.stringify([stagedName]),
     });
     taskService.updateStatus(task.id, { status: 'queued' });
+    if (lockActual) {
+      taskService.setActualProvider(task.id, {
+        actualProviderId: targetId,
+        actualProviderName: targetId,
+        promptId: '',
+      });
+    }
     await stageUploads(task.id, [{ meta, buffer: Buffer.from('png') }]);
     return taskService.getById(task.id)!;
   }
@@ -547,6 +696,63 @@ describe('DispatcherService 分组媒体上传', () => {
     expect(after.status).toBe('pending');
     expect(after.actualProviderId).toBe(good.id);
   });
+
+  it('uploads staged media to the locked instance target and rewrites the request body', async () => {
+    const promptBodies: string[] = [];
+    const uploadFilenames: string[] = [];
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/system_stats')) return new Response('{}', { status: 200 });
+      if (url.endsWith('/upload/image')) {
+        const form = init?.body as FormData;
+        uploadFilenames.push((form.get('image') as unknown as { name: string }).name);
+        return new Response(JSON.stringify({ name: 'instance-side_zzz999.png' }), { status: 200 });
+      }
+      if (url.endsWith('/prompt')) {
+        promptBodies.push(String(init?.body ?? ''));
+        return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch);
+
+    // 指定实例目标（非分组）：媒体不再在入队时上传，而是调度提交前统一上传
+    const instance = providerService.create({ name: 'solo', type: 'comfyui', config: { baseUrl: 'http://solo:8188' } });
+    const task = await createQueuedTaskWithMedia(instance.id, 'demo_bbb222.png', 'demo.png', true);
+
+    await dispatcher.drainProvider(instance.id);
+
+    // 入队期间媒体只在本地暂存（此时才上传到目标实例）
+    expect(uploadFilenames).toHaveLength(1);
+    expect(uploadFilenames[0]).toMatch(/^demo_[0-9a-f]{6}\.png$/);
+    // 提交的请求体引用实例侧返回的真实文件名
+    expect(promptBodies).toHaveLength(1);
+    const submitted = JSON.parse(promptBodies[0]) as { prompt: Record<string, { inputs: { image: string } }> };
+    expect(submitted.prompt['1'].inputs.image).toBe('instance-side_zzz999.png');
+    // 任务记录保留暂存名形态的请求体，并把实例侧真实文件名追加进清理名单
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(instance.id);
+    expect(JSON.parse(after.comfyuiRequestBody ?? '{}').prompt['1'].inputs.image).toBe('demo_bbb222.png');
+    expect(JSON.parse(after.uploadedFiles)).toEqual(['demo_bbb222.png', 'instance-side_zzz999.png']);
+  });
+
+  it('keeps the task queued with its staged media intact when the instance is unreachable', async () => {
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/system_stats')) return new Response('{}', { status: 503 });
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch);
+
+    const instance = providerService.create({ name: 'dead', type: 'comfyui', config: { baseUrl: 'http://dead:8188' } });
+    const task = await createQueuedTaskWithMedia(instance.id, 'demo_ccc333.png', 'demo.png', true);
+
+    await dispatcher.drainProvider(instance.id);
+
+    // 实例不可达：任务保持排队且暂存文件仍可用（改选实例后可继续投递）
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+    await expect(fs.promises.access(path.join(tempDataDir, 'task-staging', task.id, 'demo_ccc333.png')))
+      .resolves.toBeUndefined();
+  });
 });
 
 describe('isPermanentSubmitError', () => {
@@ -586,35 +792,40 @@ describe('分组任务并发统计口径', () => {
     expect(providerService.countPending(member.id)).toBe(1);
   });
 
-  it('listQueuedByGroups returns only queued tasks of the given groups', () => {
+  it('listQueuedByTarget routes tasks by locked instance or group ownership', () => {
     const { db } = buildTestDb();
     const providerService = new ProviderService(db);
     const taskService = new TaskService(db);
     const g1 = providerService.create({ name: 'G1', type: 'group', config: { dispatchPolicy: 'priority', members: [] } });
-    const g2 = providerService.create({ name: 'G2', type: 'group', config: { dispatchPolicy: 'priority', members: [] } });
     const other = providerService.create({ name: 'other', type: 'comfyui', config: { baseUrl: 'http://o:8188' } });
 
     /**
      * 插入一条排队任务。
      * @param providerId 归属实例 ID
+     * @param lockActual 是否锁定实际执行实例（具体实例目标为 true，分组目标为 false）
      * @returns 任务行
      */
-    function queued(providerId: string) {
+    function queued(providerId: string, lockActual: boolean) {
       const t = taskService.create({
         workflowId: 'wf', workflowName: 'wf', aliasValues: '{}',
         comfyuiUrl: 'u', comfyuiRequestBody: '{}', comfyuiResponse: null, promptId: null,
         providerId, providerName: providerId,
       });
       taskService.updateStatus(t.id, { status: 'queued' });
+      if (lockActual) {
+        taskService.setActualProvider(t.id, { actualProviderId: providerId, actualProviderName: providerId, promptId: '' });
+      }
       return taskService.getById(t.id)!;
     }
 
-    const t1 = queued(g1.id);
-    queued(g2.id);
-    queued(other.id);
+    // 分组任务（actual 为空，按 providerId 归属）+ 实例任务（actual 锁定）
+    const grouped = queued(g1.id, false);
+    const locked = queued(other.id, true);
 
-    expect(taskService.listQueuedByGroups([g1.id]).map((t) => t.id)).toEqual([t1.id]);
-    expect(taskService.listQueuedByGroups([])).toEqual([]);
+    expect(taskService.listQueuedByTarget(g1.id).map((t) => t.id)).toEqual([grouped.id]);
+    expect(taskService.listQueuedByTarget(other.id).map((t) => t.id)).toEqual([locked.id]);
+    // 无排队任务的目标返回空列表
+    expect(taskService.listQueuedByTarget('nothing')).toEqual([]);
   });
 });
 

@@ -1,4 +1,4 @@
-import { eq, desc, inArray, count, and } from 'drizzle-orm';
+import { eq, desc, inArray, count, and, or, isNull } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
@@ -40,6 +40,20 @@ export interface UpdateActualProviderInput {
   promptId: string;
   /** 成员实例的提交响应 JSON */
   comfyuiResponse?: string;
+}
+
+/** 修改排队任务执行目标的输入（人工干预自动调度） */
+export interface UpdateTaskTargetInput {
+  /** 目标提供商实例 ID（分组任务即为分组本身） */
+  providerId: string;
+  /** 目标提供商实例名称（冗余存储，实例改名/删除后日志仍可溯源） */
+  providerName: string;
+  /** 目标对应的实际执行实例 ID；目标为分组时传 null（由调度器选定成员后写入） */
+  actualProviderId: string | null;
+  /** 目标对应的实际执行实例名称；目标为分组时传 null */
+  actualProviderName: string | null;
+  /** 提交地址（分组无自有端点，存 '/prompt' 占位；具体实例为 `{baseUrl}/prompt`） */
+  comfyuiUrl: string;
 }
 
 /** 输出文件信息 */
@@ -194,6 +208,31 @@ export class TaskService {
   }
 
   /**
+   * 修改排队任务的执行目标（人工干预自动调度，不改变任务状态）。
+   *
+   * 两个归属字段对一并按新目标改写，使任务日志能体现「当前选择的提供商」：
+   * - 目标为具体实例：`providerId`/`providerName` 与 `actualProviderId`/`actualProviderName` 均写为目标实例；
+   * - 目标为分组：`providerId`/`providerName` 写为分组，`actualProviderId`/`actualProviderName` 清空，
+   *   待调度器选定成员后由 updateActualProvider 写入。
+   * @param id 任务 ID
+   * @param input 新目标信息（含提交地址）
+   * @returns 更新后的任务行
+   */
+  setTargetProvider(id: string, input: UpdateTaskTargetInput) {
+    this.db.update(schema.taskLogs)
+      .set({
+        providerId: input.providerId,
+        providerName: input.providerName,
+        actualProviderId: input.actualProviderId,
+        actualProviderName: input.actualProviderName,
+        comfyuiUrl: input.comfyuiUrl,
+      })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id)!;
+  }
+
+  /**
    * 记录分组任务实际执行所用的成员实例，并把任务推进为 pending。
    * providerId / providerName 保持不变（仍记录用户选择的分组），
    * 实际成员写入 actualProviderId / actualProviderName。
@@ -266,27 +305,7 @@ export class TaskService {
     return result.changes;
   }
 
-  /** 统计指定状态的任务数；可按提供商实例过滤 */
-  countByStatus(status: string, providerId?: string): number {
-    // 带提供商过滤时用 and() 组合条件，避免 where() 二次调用覆盖状态条件
-    const condition = providerId
-      ? and(eq(schema.taskLogs.status, status), eq(schema.taskLogs.providerId, providerId))
-      : eq(schema.taskLogs.status, status);
-    const row = this.db.select({ c: count() }).from(schema.taskLogs)
-      .where(condition).get();
-    return row?.c ?? 0;
-  }
-
-  /** 获取所有 queued 任务（按提交时间升序）；可按提供商实例过滤 */
-  listQueued(providerId?: string) {
-    // 带提供商过滤时用 and() 组合条件，避免 where() 二次调用覆盖状态条件
-    const condition = providerId
-      ? and(eq(schema.taskLogs.status, 'queued'), eq(schema.taskLogs.providerId, providerId))
-      : eq(schema.taskLogs.status, 'queued');
-    return this.db.select().from(schema.taskLogs)
-      .where(condition)
-      .orderBy(schema.taskLogs.createdAt).all();
-  }
+  /** 删除所有已完成和失败的任务，返回删除数量 */
 
   /** 更新任务进度百分比 */
   updateProgress(id: string, progress: number) {
@@ -330,17 +349,23 @@ export class TaskService {
   }
 
   /**
-   * 列出某成员实例排队中的任务（按实际执行实例过滤）。
-   * 普通任务的实际执行实例即其 providerId；分组任务入队时 providerId 为分组，
-   * actual_provider_id 为空，因此不会被成员实例的跟踪器消费。
-   * @param actualProviderId 实际执行任务的成员实例 ID
+   * 列出某执行目标（分组或具体实例）排队中的任务（按提交时间升序）。
+   *
+   * 统一队列消费口径（重构后所有 queued 任务由调度器消费）：
+   * - 分组任务：`provider_id` 记录分组、`actual_provider_id` 为空 → 按「actual 为空 且 provider 指向目标」匹配
+   * - 指定实例任务：`actual_provider_id` 已锁定为目标实例 → 直接按 actual 匹配
+   * - 极旧数据（actual 与 provider 都为空）：无法路由，不归任何目标消费（仅兜底扫描可发现）
+   * @param targetId 执行目标 ID（分组实例 ID 或具体执行实例 ID）
    * @returns queued 状态任务列表（按提交时间升序）
    */
-  listQueuedByActualProvider(actualProviderId: string) {
+  listQueuedByTarget(targetId: string) {
     return this.db.select().from(schema.taskLogs)
       .where(and(
         eq(schema.taskLogs.status, 'queued'),
-        eq(schema.taskLogs.actualProviderId, actualProviderId),
+        or(
+          eq(schema.taskLogs.actualProviderId, targetId),
+          and(isNull(schema.taskLogs.actualProviderId), eq(schema.taskLogs.providerId, targetId)),
+        ),
       ))
       .orderBy(schema.taskLogs.createdAt)
       .all();
@@ -359,22 +384,5 @@ export class TaskService {
       ))
       .get();
     return row?.c ?? 0;
-  }
-
-  /**
-   * 列出全部排队中的分组任务（按提交时间升序）。
-   * 分组任务在调度前不具备 promptId，调度器据此消费队列。
-   * @param groupIds 分组实例 ID 列表；为空数组时返回空列表
-   * @returns queued 状态任务列表
-   */
-  listQueuedByGroups(groupIds: string[]) {
-    if (groupIds.length === 0) return [];
-    return this.db.select().from(schema.taskLogs)
-      .where(and(
-        eq(schema.taskLogs.status, 'queued'),
-        inArray(schema.taskLogs.providerId, groupIds),
-      ))
-      .orderBy(schema.taskLogs.createdAt)
-      .all();
   }
 }

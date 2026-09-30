@@ -133,17 +133,12 @@ describe('TaskService provider support', () => {
     expect(task.providerName).toBeNull();
   });
 
-  it('filters queued and pending by providerId', () => {
+  it('filters pending by providerId', () => {
     // p1 有两个任务：一个 queued、一个 pending（用于验证状态与提供商联合过滤）
     const t1 = service.create({
       workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
       comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
       promptId: null, providerId: 'p1',
-    });
-    const t2 = service.create({
-      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
-      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
-      promptId: null, providerId: 'p2',
     });
     // promptId 非空 → 状态为 pending
     const t3 = service.create({
@@ -152,19 +147,78 @@ describe('TaskService provider support', () => {
       promptId: 'pt3', providerId: 'p1',
     });
     service.updateStatus(t1.id, { status: 'queued' });
-    service.updateStatus(t2.id, { status: 'queued' });
 
-    // 带 providerId 时只返回该提供商且状态为 queued 的任务（t3 是 pending，必须被排除）
-    expect(service.listQueued('p1').map((t) => t.id)).toEqual([t1.id]);
-    // 不带参数保持向后兼容：返回全部 queued 任务
-    expect(service.listQueued().map((t) => t.id)).toHaveLength(2);
-    // 带 providerId 的 pending 查询
+    // 带 providerId 的 pending 查询只返回该提供商的 pending 任务
     expect(service.listPending('p1').map((t) => t.id)).toEqual([t3.id]);
     expect(service.listPending().map((t) => t.id)).toHaveLength(1);
-    // countByStatus 同样支持按提供商过滤
-    expect(service.countByStatus('queued', 'p1')).toBe(1);
-    expect(service.countByStatus('queued')).toBe(2);
-    expect(service.countByStatus('pending', 'p1')).toBe(1);
+  });
+
+  it('listQueuedByTarget 同时按「锁定的实际执行实例」与「分组归属」匹配排队任务', () => {
+    // 具体实例目标：入队时已锁定 actual_provider_id（调度器据此消费实例队列）
+    const locked = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: null, providerId: 'inst-1', providerName: 'inst-1',
+    });
+    service.updateStatus(locked.id, { status: 'queued' });
+    service.setActualProvider(locked.id, { actualProviderId: 'inst-1', actualProviderName: 'inst-1', promptId: '' });
+
+    // 分组目标：provider_id 为分组、actual_provider_id 为空（由调度器挑选成员）
+    const grouped = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: null, providerId: 'group-1', providerName: 'group-1',
+    });
+    service.updateStatus(grouped.id, { status: 'queued' });
+
+    // 队列按 createdAt 升序：两条任务都归属各自目标，互不串台
+    expect(service.listQueuedByTarget('inst-1').map((t) => t.id)).toEqual([locked.id]);
+    expect(service.listQueuedByTarget('group-1').map((t) => t.id)).toEqual([grouped.id]);
+    // 无排队任务的目标返回空列表
+    expect(service.listQueuedByTarget('nothing')).toEqual([]);
+  });
+
+  it('setTargetProvider 改写归属：具体实例同时锁定实际执行实例，分组则清空', () => {
+    const task = service.create({
+      workflowId: 'w1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: 'u', comfyuiRequestBody: null, comfyuiResponse: null,
+      promptId: null, providerId: 'group-old', providerName: 'G',
+    });
+    service.updateStatus(task.id, { status: 'queued' });
+    // 先由分组调度到成员，验证改道前的状态
+    service.updateActualProvider(task.id, { actualProviderId: 'member-a', actualProviderName: 'A', promptId: 'pid' });
+    service.updateStatus(task.id, { status: 'queued' });
+
+    // 改到具体实例：两个字段对都指向新实例
+    service.setTargetProvider(task.id, {
+      providerId: 'inst-2',
+      providerName: 'Inst2',
+      actualProviderId: 'inst-2',
+      actualProviderName: 'Inst2',
+      comfyuiUrl: 'http://inst2:8188/prompt',
+    });
+    const toInstance = service.getById(task.id)!;
+    expect(toInstance.providerId).toBe('inst-2');
+    expect(toInstance.providerName).toBe('Inst2');
+    expect(toInstance.actualProviderId).toBe('inst-2');
+    expect(toInstance.actualProviderName).toBe('Inst2');
+    expect(toInstance.comfyuiUrl).toBe('http://inst2:8188/prompt');
+    // 改道不改变任务状态（仍为待调度）
+    expect(toInstance.status).toBe('queued');
+
+    // 改到分组：归属记为分组，实际执行实例清空待调度器回填
+    service.setTargetProvider(task.id, {
+      providerId: 'group-2',
+      providerName: 'G2',
+      actualProviderId: null,
+      actualProviderName: null,
+      comfyuiUrl: '/prompt',
+    });
+    const toGroup = service.getById(task.id)!;
+    expect(toGroup.providerId).toBe('group-2');
+    expect(toGroup.providerName).toBe('G2');
+    expect(toGroup.actualProviderId).toBeNull();
+    expect(toGroup.actualProviderName).toBeNull();
   });
 });
 

@@ -10,7 +10,6 @@ import { releaseStaged } from './task-staging.service';
 import { COMFYUI_CLIENT_ID } from './providers/types';
 import type { ExecutionProvider, ProviderOutputFile, ProviderTaskState } from './providers/types';
 import { guessFileType } from './providers/shared';
-
 /**
  * 执行服务可调参数。
  * 抽为对象供测试覆盖（缩短间隔），避免用例真实等待。
@@ -213,62 +212,35 @@ type TaskProbeOutcome =
   | { kind: 'completed'; files: OutputFile[]; raw: unknown }
   | { kind: 'failed'; errorMessage: string; raw: unknown };
 
-/** 单个提供商实例的跟踪器 */
+/** 单个提供商实例的跟踪器（仅状态跟踪：终态探测 / 进度 / 输出回填 / 终态清理） */
 interface ProviderTracker {
-  /** 启动初始队列调度（服务启动/重建后立即处理 queued 任务） */
-  init(): void;
-  /** 立即触发一次队列调度（外部释放并发槽位后调用，如手动中断任务） */
-  drain(): Promise<void>;
   /** 停止跟踪器：关闭 WebSocket 并清理定时器 */
   stop(): void;
 }
 
 /**
- * 活跃跟踪器的队列调度入口注册表（providerId → drain）。
- * 供跟踪器外部在释放并发槽位后主动触发调度（例如手动中断正在执行的任务）。
- * 进程内单例：随 startExecutionService 启动注册、停止或重建时清空。
- */
-const providerDrains = new Map<string, () => Promise<void>>();
-
-/**
- * 触发指定提供商实例的队列调度。
- * 实例未启用、不存在或执行服务未启动时静默返回，不抛异常。
- * @param providerId 提供商实例 ID
- */
-export async function drainProviderQueue(providerId: string): Promise<void> {
-  // 未注册该实例（未启用/已停止）时无事可做
-  const drain = providerDrains.get(providerId);
-  if (!drain) return;
-  await drain();
-}
-
-/**
- * 分组队列调度入口。
- * 由执行服务在启动时注册（内部委派 DispatcherService.drainAll），
- * 供任务控制器在「取消排队中的分组任务」等场景主动触发。
- */
-let groupQueueDrain: (() => Promise<void>) | null = null;
-
-/**
- * 当前活跃的分组调度器。
- * 供控制器解析「发起本次请求时」的调度器实例（每次调用时解析，避免捕获陈旧实例）。
+ * 当前活跃的统一队列调度器。
+ * 供控制器解析「发起本次请求时」的调度器实例（每次调用时解析，避免捕获陈旧实例）；
+ * 执行服务未启动（如单元测试）时为 null，调用方需容忍缺失。
  */
 let activeDispatcher: DispatcherService | null = null;
 
-/** 触发全部分组的队列调度；执行服务未启动时静默返回 */
-export async function drainGroupQueues(): Promise<void> {
-  if (!groupQueueDrain) return;
-  await groupQueueDrain();
-}
-
 /**
- * 分组队列调度器工厂。
- * 供任务/工作流控制器在请求处理期间按需获取「当前活跃」的调度器实例：
- * 每次调用时解析，避免控制器在模块加载阶段捕获到尚未创建的服务实例。
+ * 读取当前活跃的统一队列调度器。
  * @returns 调度器实例；执行服务未启动时返回 null
  */
 export function getActiveDispatcher(): DispatcherService | null {
   return activeDispatcher;
+}
+
+/**
+ * 触发全部队列（实例队列 + 分组队列）的一次调度。
+ * 供控制器在队列收缩（取消排队任务）/ 槽位释放（手动中断）后主动触发；
+ * 执行服务未启动时静默返回。
+ */
+export async function drainAllQueues(): Promise<void> {
+  if (!activeDispatcher) return;
+  await activeDispatcher.drainAll();
 }
 
 /**
@@ -287,10 +259,12 @@ export function getActiveHealthService(): HealthService | null {
 }
 
 /**
- * 为单个提供商实例创建跟踪器：队列调度 + （可选）WebSocket + 轮询。
+ * 为单个提供商实例创建跟踪器：（可选）WebSocket + 轮询终态探测。
+ * 队列消费职责已全部移交统一调度器（DispatcherService），
+ * 跟踪器只在任务进入终态后通过 onSlotReleased 通知调度器消费队列。
  * @param provider 实例化后的执行提供商
  * @param taskService 任务服务
- * @param onSlotReleased 槽位释放回调（任务进入终态后触发，供分组调度器立即消费队列）
+ * @param onSlotReleased 槽位释放回调（任务进入终态后触发，供调度器立即消费全部队列）
  */
 function createProviderTracker(
   provider: ExecutionProvider,
@@ -303,95 +277,14 @@ function createProviderTracker(
   let fallbackTimer: ReturnType<typeof setInterval> | null = null;
   let completionPollTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
-  /** 是否正在执行 drainQueue（防止并发重复提交同一任务） */
-  let draining = false;
   /** 连续状态探测失败计数（按任务 ID）；达到阈值后将该任务置为失败 */
   const statusErrorCounts = new Map<string, number>();
   /** 连续失败阈值：达到后不再重试，将任务标记为失败 */
   const MAX_CONSECUTIVE_STATUS_ERRORS = 5;
 
-  /**
-   * 统计本实例当前占用的并发槽位。
-   * 按 actual_provider_id 统计：普通任务该字段即 providerId，
-   * 分组任务则是实际执行任务的成员实例 ID（其 providerId 记录的是分组）。
-   */
-  function countPending(): number {
-    return taskService.countPendingByActualProvider(providerId);
-  }
-
-  /**
-   * 列出本实例排队中的任务。
-   * 按 actual_provider_id 过滤：分组任务入队时不带实际执行实例，不归本实例消费。
-   */
-  function listQueued() {
-    return taskService.listQueuedByActualProvider(providerId);
-  }
-
-  /** 槽位释放后的统一处理：触发本实例队列调度，并通知分组调度器消费分组队列 */
+  /** 槽位释放后的统一处理：通知调度器消费全部队列（实例队列 + 分组队列） */
   function afterSlotReleased(): void {
-    drainQueue();
     onSlotReleased?.();
-  }
-
-  /** 调度队列：当 running < concurrency 时取出最旧 queued 任务提交，循环填满并发槽位 */
-  async function drainQueue(): Promise<void> {
-    // 已停止的跟踪器不再提交任务（避免服务重建后旧实例继续写入）
-    if (stopped) return;
-    // 重入保护：并发触发时直接返回，避免同一任务被重复提交
-    if (draining) return;
-    draining = true;
-    try {
-      // 循环提交：一次触发尽可能填满空闲槽位（每轮至少消费一个 queued 任务，必然收敛）
-      for (;;) {
-        const running = countPending();
-        if (running >= provider.concurrency) return;
-
-        const queued = listQueued();
-        if (queued.length === 0) return;
-
-        const nextTask = queued[0];
-        if (!nextTask.comfyuiRequestBody) {
-          // 请求体缺失属于数据问题：置失败后继续处理后续排队任务
-          taskService.updateStatus(nextTask.id, {
-            status: 'failed',
-            errorMessage: 'Missing request body',
-          });
-          continue;
-        }
-
-        const result = await provider.submitPrompt(nextTask.comfyuiRequestBody);
-        if (result.success) {
-          taskService.updateStatus(nextTask.id, {
-            status: 'pending',
-            promptId: result.promptId ?? undefined,
-            comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-          });
-          // 继续尝试填满下一个槽位
-          continue;
-        }
-        // 提交失败：把原始错误与执行端原始响应体输出到控制台，便于定位排队任务失败原因
-        console.error(
-          `[ExecutionService:${providerId}] submit failed, task ${nextTask.id}: ${result.errorMessage ?? 'Submit failed'}`,
-        );
-        console.error(
-          `[ExecutionService:${providerId}] task ${nextTask.id} original response: `
-          + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`,
-        );
-        taskService.updateStatus(nextTask.id, {
-          status: 'failed',
-          errorMessage: result.errorMessage ?? 'Submit failed',
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        });
-        // 提交失败同样产生孤儿上传文件，触发自动清理
-        cleanupTaskUploads(provider, nextTask.uploadedFiles);
-        // 提交失败通常意味着提供商不可达等实例级故障：停止本轮，避免连续失败风暴
-        return;
-      }
-    } catch (err) {
-      console.error(`[ExecutionService:${providerId}] drainQueue error`, err);
-    } finally {
-      draining = false;
-    }
   }
 
   /**
@@ -570,7 +463,7 @@ function createProviderTracker(
       // 已停止的跟踪器不再产生任何副作用（clearInterval 无法取消已在途的回调）
       if (stopped) return;
       try {
-        const pending = taskService.listPending(providerId);
+        const pending = taskService.listPendingByActualProvider(providerId);
         const stuck = pending.filter(t => t.progress != null && t.progress >= 100);
         if (stuck.length === 0) return;
         for (const task of stuck) {
@@ -588,27 +481,12 @@ function createProviderTracker(
     }, executionServiceConfig.completionPollIntervalMs);
   }
 
-  /**
-   * 槽位空闲且存在排队任务时触发一次调度。
-   * 兜底任何绕过跟踪器终态路径的槽位释放（例如手动中断任务后 controller 直接置终态），
-   * 使队列在 ≤ 一个轮询周期内自愈。
-   */
-  async function drainIfSlotsAvailable(): Promise<void> {
-    // 槽位已满或队列为空时无需调度
-    if (countPending() >= provider.concurrency) return;
-    if (listQueued().length === 0) return;
-    await drainQueue();
-  }
-
-  /** 后备轮询任务状态补偿丢失消息（同时驱动队列兜底调度） */
+  /** 后备轮询任务状态补偿丢失消息 */
   function startFallback(): void {
     fallbackTimer = setInterval(async () => {
       // 已停止的跟踪器不再产生任何副作用（clearInterval 无法取消已在途的回调）
       if (stopped) return;
       try {
-        // 队列兜底：无论 pending 是否为空都要检查，否则槽位空闲时队列会永久停住
-        await drainIfSlotsAvailable();
-
         const pending = taskService.listPendingByActualProvider(providerId);
         if (pending.length === 0) return;
         for (const task of pending) {
@@ -646,11 +524,6 @@ function createProviderTracker(
   startCompletionPoll();
 
   return {
-    init: () => {
-      // 启动即触发一次队列调度，让 queued 任务尽快进入 pending（fire-and-forget）
-      drainQueue().catch(err => console.error(`[ExecutionService:${providerId}] init drain error`, err));
-    },
-    drain: () => drainQueue(),
     stop: () => {
       stopped = true;
       if (ws) { ws.close(); ws = null; }
@@ -663,8 +536,8 @@ function createProviderTracker(
 
 /**
  * 启动执行服务：
- * - 为每个启用的非分组实例启动独立跟踪器（分组实例不直接执行任务，不建跟踪器）；
- * - 启动健康巡检与分组队列调度器。
+ * - 为每个启用的非分组实例启动独立跟踪器（仅状态跟踪，队列消费统一在调度器）；
+ * - 启动统一队列调度器与健康巡检。
  * 实例变更（增删改/默认切换）时整体重建。
  * @param db 数据库实例
  */
@@ -678,17 +551,15 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
   function stopAll(): void {
     for (const t of trackers) t.stop();
     trackers = [];
-    // 同步注销调度入口，避免外部拿到已停止实例的 drain
-    providerDrains.clear();
   }
 
   /**
-   * 成员实例槽位释放后触发分组调度（fire-and-forget）。
-   * 分组任务由分组调度器统一消费，成员跟踪器只负责感知槽位释放。
+   * 槽位释放后触发统一调度（fire-and-forget）。
+   * 实例队列与分组队列都由调度器消费，跟踪器只负责感知槽位释放。
    */
-  function onMemberSlotReleased(): void {
+  function onSlotReleased(): void {
     void dispatcher.drainAll().catch((err: unknown) => {
-      console.error('[ExecutionService] group dispatch after slot release failed', err);
+      console.error('[ExecutionService] dispatch after slot release failed', err);
     });
   }
 
@@ -696,31 +567,22 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
     stopAll();
     const rows = providerService.listEnabled();
     trackers = rows
-      // 分组实例没有可执行端点，其队列由分组调度器消费
+      // 分组实例没有可执行端点，无状态可跟踪（其队列由调度器消费）
       .filter((row) => row.type !== 'group')
       .map((row) => providerService.instantiate(row))
       .filter((p): p is ExecutionProvider => p !== null)
-      .map((p) => {
-        const tracker = createProviderTracker(p, taskService, onMemberSlotReleased);
-        // 注册该实例的调度入口，供外部（如手动中断）释放槽位后主动触发
-        providerDrains.set(p.id, tracker.drain);
-        return tracker;
-      });
-    // 启动/重建后立即 drain 一次，让队列中已存在的任务尽快开始执行
-    for (const tracker of trackers) tracker.init();
+      .map((p) => createProviderTracker(p, taskService, onSlotReleased));
   }
 
   const unsubscribe = providerService.onChange(() => startAll());
   startAll();
 
-  // 健康巡检：探测参与自动分配的实例；巡检后立即尝试投递分组队列（实例恢复可用时尽快消费队列）
-  healthService.start(onMemberSlotReleased);
-  // 分组队列兜底扫描：补偿遗漏的槽位释放通知
+  // 健康巡检：探测参与自动分配的实例；巡检后立即尝试投递全部队列（实例恢复可用时尽快消费队列）
+  healthService.start(onSlotReleased);
+  // 队列兜底扫描：补偿遗漏的槽位释放通知
   dispatcher.start();
-  // 启动即尝试消费一次分组队列，让重启前排队的分组任务尽快执行
-  onMemberSlotReleased();
-  // 注册分组调度入口，供任务控制器在取消排队任务后主动触发
-  groupQueueDrain = () => dispatcher.drainAll().then(() => undefined);
+  // 启动即尝试消费一次全部队列，让重启前排队的任务尽快执行
+  onSlotReleased();
   // 暴露调度器与健康服务供控制器按请求解析
   activeDispatcher = dispatcher;
   activeHealthService = healthService;
@@ -729,7 +591,6 @@ export function startExecutionService(db: BetterSQLite3Database<typeof schema>):
     stop: () => {
       unsubscribe();
       stopAll();
-      groupQueueDrain = null;
       // 仅当仍指向本实例时才清空，避免后启动的服务被先停止的服务清掉引用
       if (activeDispatcher === dispatcher) activeDispatcher = null;
       if (activeHealthService === healthService) activeHealthService = null;

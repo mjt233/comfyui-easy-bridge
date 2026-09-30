@@ -57,25 +57,31 @@ pending 任务不再占用槽位，迁移把非分组任务的 pending 行回填
 
 ## 调度流程
 
+> **修订（2026-09-30 任务队列重构）**：所有任务（含指定具体实例的）现在一律先进入
+> 【待调度】队列，队列消费统一由 `DispatcherService` 承担，实例跟踪器不再消费队列。
+> 下方流程已按重构后的实现更新（分组路径的挑选规则、媒体暂存与回写语义保持不变）。
+
 ```
-POST /api/workflows/:id/execute  (providerId 解析到分组)
+POST /api/workflows/:id/execute  (providerId 解析到分组或具体实例)
   ├─ 动态构建（若启用）→ 失败按既有逻辑记 failed
   ├─ 媒体参数：生成存储名 → 落盘 <DATA_DIR>/task-staging/<taskId>/ → 注入本地存储名（占位）
-  ├─ 解析可分配成员（启用 + 非分组 + 可实例化）→ 为空则 400 provider_no_available_instance
-  ├─ 建任务记录（providerId = 分组）→ status = queued
-  └─ 立即触发一次该分组的调度（同步），据实返回 pending / queued
-后台调度（提交时 / 成员槽位释放后 / 巡检后 / 30s 兜底扫描 / 服务启动）
-  └─ 逐分组消费队列（FIFO）：
+  ├─ 分组目标：解析可分配成员（启用 + 非分组 + 可实例化）→ 为空则 400 provider_no_available_instance
+  ├─ 建任务记录（providerId = 用户选择）→ status = queued（待调度）
+  │    └─ 具体实例目标：同时写 actual_provider_id 锁定执行实例
+  └─ 立即触发一次全量调度（同步），据实返回 pending / queued
+后台调度（统一调度器；由提交/改派/取消入口、槽位释放、巡检、30s 兜底扫描、服务启动触发）
+  ├─ 逐实例消费实例队列（FIFO）：取 actual_provider_id 锁定到该实例的 queued 任务
+  │    └─ 槽位空闲 + 探测通过 → 上传暂存媒体 → 回写文件名 → 提交 → pending
+  └─ 逐分组消费分组队列（FIFO）：取 provider_id 为分组且 actual 为空的 queued 任务
        1. 挑候选：健康（未冷却）+ 有空闲槽位 + 本轮未失败过
           - priority：权重降序取首个（权重相同按成员配置顺序）
           - random：在候选中等概率随机
        2. 对候选即时探测 GET /system_stats
           - 失败 → 该成员进入冷却，改投下一个候选
-       3. 二次确认槽位仍空闲
-       4. 上传暂存媒体到该成员（各实例文件存储相互独立）
+       3. 上传暂存媒体到该成员（各实例文件存储相互独立）
           - 上传失败（网络/HTTP/平台拒绝）→ 按实例故障处理：成员进入冷却，任务改投其他候选
-       5. 用上传返回的文件名回写提交请求体（暂存名 → 实例侧真实文件名）
-       6. 提交 prompt → 成功则写 actual_provider_*，任务转 pending
+       4. 用上传返回的文件名回写提交请求体（暂存名 → 实例侧真实文件名）
+       5. 提交 prompt → 成功则写 actual_provider_*，任务转 pending
           - 4xx（工作流问题）→ 任务置 failed，继续处理下一个任务
           - 其他（实例故障）→ 成员进入冷却，任务留在队列改投其他候选
 ```
@@ -84,22 +90,25 @@ POST /api/workflows/:id/execute  (providerId 解析到分组)
 
 ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia` 返回的才是**该实例上的真实文件名**
 （原生 ComfyUI 上传时会重新生成唯一名、RunningHub 由平台分配）。
-分组任务在排队期间**尚无执行实例**，因此先把文件落到本地暂存目录并生成一个本地占位名，
-调度选定成员后再把暂存文件上传到该成员，并用返回的文件名回写提交请求体
+任务在入队期间**尚无（或尚未确认）执行实例**，因此先把文件落到本地暂存目录并生成一个本地占位名，
+调度提交前再把暂存文件上传到目标实例，并用返回的文件名回写提交请求体
 （`dispatcher.rewriteUploadedFilenames`，按值替换 prompt 子树中的文件名）。
 
 任务记录中的 `comfyui_request_body` 始终保留「暂存名」形态，不落库回写结果：
-改投其他成员重试时会得到该成员自己的文件名，以暂存名为基准重新回写即可；
+改投其他实例重试时会得到该实例自己的文件名，以暂存名为基准重新回写即可；
 实例侧真实文件名追加进 `uploaded_files`（`TaskService.addUploadedFiles`），供终态后的资产自动清理。
 
 暂存目录在任务成功提交、进入终态、提交失败时统一释放；进程启动时清理超过 24h 的残留目录。
 
 ## 并发与队列隔离
 
-- 分组任务入队时 `provider_id = 分组`、`actual_provider_id = NULL`，因此**不会被任何成员实例的
-  跟踪器消费**（成员跟踪器按 `actual_provider_id` 过滤）。
-- 分组自身不注册跟踪器（没有可执行端点），其队列只由分组调度器消费，天然隔离、无双重提交。
-- 所有并发统计统一按 `actual_provider_id`：普通任务该字段即其 `provider_id`，
+- 任务入队时按目标区分：具体实例目标写 `actual_provider_id = 实例`（实例队列），
+  分组目标 `provider_id = 分组`、`actual_provider_id = NULL`（分组队列）。
+  两类队列互不串台：调度器用 `TaskService.listQueuedByTarget(targetId)` 统一按目标取队列。
+- 实例跟踪器只负责**状态跟踪**（WebSocket / 轮询终态探测、进度、输出回填、终态清理），
+  不再消费队列，因此不存在「跟踪器与调度器双重提交」的问题；终态后通过槽位释放回调
+  触发调度器消费队列。
+- 所有并发统计统一按 `actual_provider_id`：具体实例任务该字段即其 `provider_id`，
   分组任务则是真正执行任务的成员实例。
 
 ## 可用性检测
@@ -125,7 +134,8 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia` 返回的才是
 | POST | `/api/providers` | 新建，`type: "group"` 时 `config = { dispatchPolicy, members }` |
 | PUT | `/api/providers/:id` | 更新（分组始终回传 config） |
 | POST | `/api/providers/:id/test` | 分组测试「是否至少有一个成员可用」 |
-| POST | `/api/tasks/:id/submit` | 分组排队任务等价于「立即触发一次自动分配」 |
+| PATCH | `/api/tasks/:id/provider` | 修改待调度任务的执行目标（分组/具体实例皆可；只影响自动调度，不插队） |
+| POST | `/api/tasks/:id/submit` | 立即提交（插队）：须显式指定具体实例，无视并发上限提交并改道归属 |
 
 ## 错误码
 
@@ -142,11 +152,11 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia` 返回的才是
 | `services/providers/group.provider.ts` | `GroupProvider`：承载分组配置与成员列表，执行类方法显式报错 |
 | `services/providers/provider.service.ts` | 分组校验、成员解析（过滤/去重/排除分组）、摘要与空闲槽位 |
 | `services/providers/health.service.ts` | 健康状态表、巡检定时器、冷却判定 |
-| `services/dispatcher.service.ts` | 分组队列调度、候选挑选、提交、暂存媒体上传与文件名回写 |
+| `services/dispatcher.service.ts` | 统一队列调度（实例队列 + 分组队列）、候选挑选、提交、暂存媒体上传与文件名回写、插队提交入口 |
 | `services/task-staging.service.ts` | 暂存文件的写入/读取/释放/过期清理 |
-| `services/execution.service.ts` | 启动巡检与调度器；跟踪器按 `actual_provider_id` 统计与消费 |
-| `services/executor.service.ts` | `processMediaParams` 上传媒体并注入上传接口返回的文件名 |
-| `services/task.service.ts` | `actualProvider*` 读写、按实际执行实例的查询、`addUploadedFiles` |
+| `services/execution.service.ts` | 启动巡检与统一调度器；跟踪器只做状态跟踪（不再消费队列） |
+| `services/executor.service.ts` | `processMediaParams` 上传媒体并注入上传接口返回的文件名（预览路径） |
+| `services/task.service.ts` | `actualProvider*` 读写、`setTargetProvider`（人工改派）、`listQueuedByTarget`、`addUploadedFiles` |
 
 ## 测试覆盖
 
@@ -154,7 +164,11 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia` 返回的才是
   巡检成员集合、摘要槽位、分组连通性、严格解析（停用/缺失/回退默认）
 - `services/dispatcher.service.test.ts`：权重优先与同权重次序、跳过满载成员、全满留队列、
   探测失败改投、冷却成员跳过、随机策略、单轮填满并发、4xx 永久失败、5xx 保留队列、
-  并发触发不重复提交、缺请求体失败、停用分组不消费队列；暂存媒体上传后用返回文件名回写请求体、
+  并发触发不重复提交、缺请求体失败、停用分组/停用实例不消费队列、实例队列独立调度、
+  插队提交（无视并发上限、探测失败保持排队）；暂存媒体上传后用返回文件名回写请求体、
   `rewriteUploadedFilenames` 替换语义；健康阈值/冷却/恢复/巡检范围
-- `routes/workflow-group.routes.test.ts`：分组直接执行、无成员 400、满载入队后手动触发投递、
-  列表与健康接口、显式指定停用实例 400、显式覆盖为分组、媒体暂存到成员上传、分组任务中断
+- `routes/workflow-group.routes.test.ts`：分组直接执行、无成员 400、满载入队后投递、
+  按指定成员插队提交、插队到分组被拒、列表与健康接口、显式指定停用实例 400、
+  显式覆盖为分组、媒体暂存到成员上传、分组任务中断
+- `routes/task.routes.test.ts`：改派到具体实例/分组（含空分组警告、槽位满仍排队）、
+  改派参数与状态校验、插队提交（改道归属、不可达保持排队）、取消触发的队列自愈

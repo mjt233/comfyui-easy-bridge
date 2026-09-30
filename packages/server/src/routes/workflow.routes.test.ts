@@ -16,6 +16,7 @@ import { createTaskRoutes } from './task.routes';
 import { nodeInfoServiceConfig, clearNodeInfoCache } from '../services/node-info.service';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService, type ProviderRow } from '../services/providers/provider.service';
+import { startExecutionService } from '../services/execution.service';
 
 // 使用临时目录作为 DATA_DIR，避免附件写入真实数据目录
 const tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-routes-'));
@@ -24,6 +25,8 @@ process.env.DATA_DIR = tempDataDir;
 describe('Workflow API', () => {
   let app: express.Express;
   let db: BetterSQLite3Database<typeof schema>;
+  /** 执行服务句柄（统一调度器 + 跟踪器；用例结束后停止） */
+  let execution: { stop: () => void };
 
   beforeAll(() => {
     const sqlite = new Database(':memory:');
@@ -99,6 +102,9 @@ describe('Workflow API', () => {
     app.use('/api/workflows', createWorkflowRoutes(db));
     app.use('/api/settings', createSettingsRoutes(db));
     app.use('/api/tasks', createTaskRoutes(db));
+    // 启动执行服务：重构后所有任务统一先入【待调度】队列，由调度器投递，
+    // 因此执行相关用例需要真实的调度器在运行（生产环境由服务启动流程保证）
+    execution = startExecutionService(db);
   });
 
   beforeEach(() => {
@@ -147,6 +153,8 @@ describe('Workflow API', () => {
   }
 
   afterAll(() => {
+    // 停止执行服务（调度器兜底扫描与跟踪器定时器）
+    execution.stop();
     // 清理临时数据目录
     fs.rmSync(tempDataDir, { recursive: true, force: true });
   });
@@ -1275,8 +1283,12 @@ describe('Workflow API', () => {
       .get(`/api/tasks/${res.body.task_id}`)
       .set('Authorization', `Bearer ${token}`);
     expect(task.status).toBe(200);
-    // 任务记录本次上传到 ComfyUI 的文件名（供终态后自动清理）
-    expect(JSON.parse(task.body.uploadedFiles as string)).toEqual(['uploaded-ref.png']);
+    // 统一暂存后，清理名单 = 本地暂存名（入队时的占位名）+ 调度提交时实例侧返回的真实文件名，
+    // 使终态后的资产自动清理能命中实例上真实存在的文件
+    const uploaded = JSON.parse(task.body.uploadedFiles as string) as string[];
+    expect(uploaded).toHaveLength(2);
+    expect(uploaded[0]).toMatch(/^photo_[0-9a-f]{6}\.png$/);
+    expect(uploaded[1]).toBe('uploaded-ref.png');
   });
 
   it('execute applies per-execution type override: text param overridden to image uploads file and injects filename', async () => {
@@ -1331,11 +1343,13 @@ describe('Workflow API', () => {
       .get(`/api/tasks/${res.body.task_id}`)
       .set('Authorization', `Bearer ${token}`);
     expect(task.status).toBe(200);
-    // 上传返回的文件名已注入到节点 inputs
+    // 任务记录的请求体保留「本地暂存名」形态：调度器改投其他实例时据此重新回写实例侧真实文件名
     const body = JSON.parse(task.body.comfyuiRequestBody as string) as { prompt: { '1': { inputs: { image: string } } } };
-    expect(body.prompt['1'].inputs.image).toBe('uploaded-ref.png');
-    // 任务记录本次上传文件名（供自动清理）
-    expect(JSON.parse(task.body.uploadedFiles as string)).toEqual(['uploaded-ref.png']);
+    expect(body.prompt['1'].inputs.image).toMatch(/^photo_[0-9a-f]{6}\.png$/);
+    // 任务记录清理名单（暂存名 + 实例侧上传返回的文件名，供自动清理）
+    const uploaded = JSON.parse(task.body.uploadedFiles as string) as string[];
+    expect(uploaded).toHaveLength(2);
+    expect(uploaded[1]).toBe('uploaded-ref.png');
 
     // 覆盖仅本次执行有效：持久化参数类型保持不变
     const wfDetail = await supertest(app)

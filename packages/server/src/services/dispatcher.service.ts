@@ -78,20 +78,29 @@ export function isPermanentSubmitError(message: string | null): boolean {
 }
 
 /**
- * 分组队列调度器。
+ * 统一队列调度器。
  *
- * 职责：消费「提交到分组」的任务队列。每个分组独立排队，调度时：
- * 1. 取该分组最早的 queued 任务；
- * 2. 在可分配成员中按策略挑选一个有空闲槽位、且通过可用性检测的成员；
- * 3. 把暂存的媒体上传到该成员，提交任务，并把实际执行实例写入任务记录。
+ * 重构后所有 queued 任务（无论目标为分组还是具体实例）都由本调度器消费，
+ * 不再有「空闲直接提交」的旁路，也不再有实例跟踪器内的第二套队列消费逻辑：
  *
- * 并发保护：同一任务不会同时被两轮调度处理（in-flight 集合 + 每分组串行 drain）。
+ * 1. 分组队列（drainGroup）：取该分组最早的 queued 任务，
+ *    在可分配成员中按策略挑选一个有空闲槽位、且通过可用性检测的成员提交；
+ * 2. 实例队列（drainProvider）：取锁定到该实例的最早的 queued 任务，
+ *    实例有空闲槽位且探测通过时提交。
+ *
+ * 提交动作统一走 submitTask：探测目标实例 → 上传暂存媒体 → 回写文件名 →
+ * 提交 prompt → 写入实际执行实例。任务记录中的请求体始终保留暂存名形态，
+ * 改投其他实例重试时据此重新回写。
+ *
+ * 并发保护：同一任务不会同时被两轮调度处理（taskInFlight 集合 + 每队列串行 drain）。
  */
 export class DispatcherService {
   private readonly taskService: TaskService;
   private readonly providerService: ProviderService;
   /** 正在调度中的分组 ID（每分组串行，避免同一任务重复提交） */
   private readonly groupInFlight = new Set<string>();
+  /** 正在调度中的实例 ID（每实例串行，避免同一任务重复提交） */
+  private readonly providerInFlight = new Set<string>();
   /** 正在处理中的任务 ID */
   private readonly taskInFlight = new Set<string>();
   /**
@@ -107,10 +116,6 @@ export class DispatcherService {
    * @param db Drizzle 数据库实例
    * @param healthService 健康检测服务（挑选成员时据此跳过不可用实例）
    */
-  /**
-   * @param db Drizzle 数据库实例
-   * @param healthService 健康检测服务（挑选成员时据此跳过不可用实例）
-   */
   constructor(
     db: BetterSQLite3Database<typeof schema>,
     private readonly healthService: HealthService,
@@ -120,34 +125,33 @@ export class DispatcherService {
   }
 
   /**
-   * 调度全部分组队列。
-   * @returns 本轮发生提交的成员实例 ID 列表（供调用方按需刷新跟踪）
+   * 调度全部队列：每个启用中的分组 + 每个启用中的非分组实例各一轮。
+   * 供槽位释放通知、兜底扫描与外部入口统一调用。
    */
-  async drainAll(): Promise<string[]> {
-    const groups = this.listEnabledGroups();
-    const touched: string[] = [];
-    for (const group of groups) {
-      const submitted = await this.drainGroup(group.id);
-      touched.push(...submitted);
+  async drainAll(): Promise<void> {
+    // 先消费实例队列（目标已锁定的任务优先投递），再消费分组队列
+    for (const row of this.providerService.listEnabled()) {
+      if (row.type === 'group') continue;
+      await this.drainProvider(row.id);
     }
-    return touched;
+    for (const group of this.listEnabledGroups()) {
+      await this.drainGroup(group.id);
+    }
   }
 
   /**
    * 调度单个分组的队列，直到没有可提交的任务。
    * @param groupId 分组实例 ID
-   * @returns 本轮发生提交的成员实例 ID 列表
    */
-  async drainGroup(groupId: string): Promise<string[]> {
+  async drainGroup(groupId: string): Promise<void> {
     // 重入保护：同一分组同时只跑一轮调度
-    if (this.groupInFlight.has(groupId)) return [];
+    if (this.groupInFlight.has(groupId)) return;
     this.groupInFlight.add(groupId);
-    const submittedMembers: string[] = [];
     try {
       const group = this.providerService.resolveGroupById(groupId);
-      if (!group) return [];
+      if (!group) return;
       for (let round = 0; round < dispatcherConfig.maxSubmitsPerRound; round++) {
-        const queued = this.taskService.listQueuedByGroups([groupId]);
+        const queued = this.taskService.listQueuedByTarget(groupId);
         if (queued.length === 0) break;
         const task = queued[0];
         // 该任务已被其他路径处理中，避免重复提交
@@ -161,9 +165,8 @@ export class DispatcherService {
           this.attemptedMembers.delete(task.id);
           break;
         }
-        const outcome = await this.submitTask(group, member, task.id);
+        const outcome = await this.submitTask(task.id, member.provider, `group:${group.id}`);
         if (outcome === 'submitted') {
-          submittedMembers.push(member.providerId);
           this.attemptedMembers.delete(task.id);
           // 提交成功后继续尝试填满其余空闲槽位
           continue;
@@ -176,12 +179,79 @@ export class DispatcherService {
         // 任务永久失败：清理记录，继续处理队列中的下一个任务
         this.attemptedMembers.delete(task.id);
       }
-      return submittedMembers;
     } catch (err: unknown) {
       console.error(`[Dispatcher:${groupId}] drainGroup error`, err);
-      return submittedMembers;
     } finally {
       this.groupInFlight.delete(groupId);
+    }
+  }
+
+  /**
+   * 调度单个实例的队列，直到没有可提交的任务。
+   * 目标已锁定为该实例的排队任务（actualProviderId = 实例 ID），
+   * 实例有空闲并发槽位且探测通过时按提交顺序投递。
+   * @param providerId 实例 ID
+   */
+  async drainProvider(providerId: string): Promise<void> {
+    // 重入保护：同一实例同时只跑一轮调度
+    if (this.providerInFlight.has(providerId)) return;
+    this.providerInFlight.add(providerId);
+    try {
+      // 实例已停用/删除/配置非法时队列不再消费（resolver 返回 null）
+      const provider = this.providerService.getEnabledProviderById(providerId);
+      if (!provider || provider.type === 'group') return;
+      for (let round = 0; round < dispatcherConfig.maxSubmitsPerRound; round++) {
+        // 槽位已满：本轮结束，任务留在队列等待槽位释放
+        if (this.slotsOf(provider) <= 0) break;
+        const queued = this.taskService.listQueuedByTarget(providerId);
+        if (queued.length === 0) break;
+        const task = queued[0];
+        // 该任务已被其他路径处理中，避免重复提交
+        if (this.taskInFlight.has(task.id)) break;
+        const outcome = await this.submitTask(task.id, provider, `provider:${provider.id}`);
+        if (outcome === 'submitted') {
+          // 提交成功后继续尝试填满其余空闲槽位
+          continue;
+        }
+        // 指定实例场景：探测失败/提交瞬时故障已冷却该实例，本轮结束等待恢复；
+        // 任务永久失败已置终态，队列继续消费由下一轮兜底扫描驱动
+        break;
+      }
+    } catch (err: unknown) {
+      console.error(`[Dispatcher:${providerId}] drainProvider error`, err);
+    } finally {
+      this.providerInFlight.delete(providerId);
+    }
+  }
+
+  /**
+   * 提交单个排队任务到指定目标实例（插队入口，无视并发上限）。
+   * 供任务控制器「立即提交」使用：调用前需自行探测目标实例连通性。
+   * @param taskId 任务 ID（须为 queued 状态）
+   * @param provider 目标实例（非分组）
+   * @returns 处理结果：submitted=提交成功；failed=任务永久失败；unavailable=实例不可用/状态已变
+   */
+  async submitTaskNow(
+    taskId: string,
+    provider: ExecutionProvider,
+  ): Promise<'submitted' | 'failed' | 'unavailable'> {
+    // 任务已被其他路径改状态（如手动取消）时无需提交
+    const task = this.taskService.getById(taskId);
+    if (!task || task.status !== 'queued') return 'failed';
+    if (!task.comfyuiRequestBody) {
+      // 请求体缺失属于数据问题，重试无意义
+      this.taskService.updateStatus(taskId, { status: 'failed', errorMessage: 'Missing request body' });
+      void releaseStaged(taskId);
+      return 'failed';
+    }
+    this.taskInFlight.add(taskId);
+    try {
+      const outcome = await this.submitToProvider(taskId, provider, `manual:${provider.id}`);
+      // 归一化：member-failed 在手动入口语义上即「实例不可用」；task-failed 即任务永久失败
+      if (outcome === 'member-failed') return 'unavailable';
+      return outcome === 'submitted' ? 'submitted' : 'failed';
+    } finally {
+      this.taskInFlight.delete(taskId);
     }
   }
 
@@ -200,7 +270,7 @@ export class DispatcherService {
     const candidates = group.listMembers().filter((member) => {
       if (attempted.has(member.providerId)) return false;
       if (!this.healthService.isHealthy(member.providerId)) return false;
-      return this.slotsOf(member) > 0;
+      return this.slotsOf(member.provider) > 0;
     });
     if (candidates.length === 0) return null;
 
@@ -216,48 +286,33 @@ export class DispatcherService {
   }
 
   /**
-   * 计算成员实例当前空闲的并发槽位。
-   * 分组任务的 provider_id 为分组 ID，因此必须按 actual_provider_id 统计。
-   * @param member 成员
+   * 计算实例当前空闲的并发槽位。
+   * 统一按 actual_provider_id 统计 pending 任务（分组任务调度后 actual 即成员实例）。
+   * @param provider 实例
    * @returns 空闲槽位数
    */
-  private slotsOf(member: ResolvedGroupMember): number {
-    const pending = this.taskService.countPendingByActualProvider(member.providerId);
-    return Math.max(member.provider.concurrency - pending, 0);
+  private slotsOf(provider: ExecutionProvider): number {
+    const pending = this.taskService.countPendingByActualProvider(provider.id);
+    return Math.max(provider.concurrency - pending, 0);
   }
 
   /**
-   * 把队列中的任务提交到指定成员实例。
-   * @param group 分组 provider（用于日志定位）
-   * @param member 目标成员
-   * @param taskId 任务 ID
-   * @returns 处理结果：submitted=提交成功；member-failed=成员故障（已冷却）；task-failed=任务永久失败
+   * 把队列中的任务提交到指定实例（探测 → 上传媒体 → 回写文件名 → 提交）。
+   * 自动调度路径的统一入口（分组选定的成员 / 锁定的目标实例共用）。
+   * @param taskId 任务 ID（须为 queued 状态）
+   * @param provider 目标实例
+   * @param context 日志定位用的调度来源（如 group:<id> / provider:<id>）
+   * @returns 处理结果：submitted=提交成功；member-failed=实例故障（已冷却）；task-failed=任务永久失败
    */
   private async submitTask(
-    group: GroupProvider,
-    member: ResolvedGroupMember,
     taskId: string,
+    provider: ExecutionProvider,
+    context: string,
   ): Promise<'submitted' | 'member-failed' | 'task-failed'> {
-    const task = this.taskService.getById(taskId);
     // 任务已被其他路径改状态（如手动取消）时无需提交
+    const task = this.taskService.getById(taskId);
     if (!task || task.status !== 'queued') return 'task-failed';
-
-    // 提交前即时探测候选实例，避免向刚宕机的实例提交
-    const probe = await member.provider.testConnection();
-    if (!probe.ok) {
-      this.healthService.markFailedNow(member.providerId, probe.message);
-      console.warn(`[Dispatcher:${group.id}] member ${member.providerName} unavailable: ${probe.message}`);
-      return 'member-failed';
-    }
-    this.healthService.markHealthy(member.providerId);
-
-    // 探测期间可能已有其他任务占满槽位，二次确认
-    if (this.slotsOf(member) <= 0) return 'task-failed';
-
-    // 提交前再次确认任务仍处于排队状态，避免与外部状态变更竞争
-    const fresh = this.taskService.getById(taskId);
-    if (!fresh || fresh.status !== 'queued') return 'task-failed';
-    if (!fresh.comfyuiRequestBody) {
+    if (!task.comfyuiRequestBody) {
       // 请求体缺失属于数据问题，重试无意义
       this.taskService.updateStatus(taskId, { status: 'failed', errorMessage: 'Missing request body' });
       void releaseStaged(taskId);
@@ -266,74 +321,102 @@ export class DispatcherService {
 
     this.taskInFlight.add(taskId);
     try {
-      // 1) 把暂存媒体上传到最终选定的成员实例（各实例文件存储相互独立）
-      let renames: Map<string, string>;
-      try {
-        renames = await this.uploadStagedMedia(fresh.id, fresh.originalForm, member.provider);
-      } catch (err: unknown) {
-        // 上传失败（网络/HTTP/平台拒绝）属实例级故障：标记冷却并改投其他候选。
-        // 不在此处收敛会让任务每轮兜底扫描都重试同一个故障成员，长期滞留在队列中
-        const message = err instanceof Error ? err.message : String(err);
-        this.healthService.markFailedNow(member.providerId, message);
-        console.error(`[Dispatcher:${group.id}] upload media failed on ${member.providerName} `
-          + `(task ${taskId}): ${message}`);
-        return 'member-failed';
-      }
-      // 2) 用实例侧实际文件名回写请求体：暂存名只在本地有效，提交时必须引用成员实例上的真实文件名。
-      //    请求体仍以「暂存名」形态留在任务记录中，使改投其他成员重试时能基于同一份暂存信息重新回写
-      const requestBody = rewriteUploadedFilenames(fresh.comfyuiRequestBody, renames);
-      if (renames.size > 0) {
-        // 记录实例侧真实文件名：终态后的资产自动清理按该名单删除（暂存名在成员实例上并不存在）
-        this.taskService.addUploadedFiles(fresh.id, [...renames.values()]);
-      }
-      // 3) 提交到成员实例
-      const result = await member.provider.submitPrompt(requestBody);
-      if (result.success) {
-        const input: UpdateActualProviderInput = {
-          actualProviderId: member.providerId,
-          actualProviderName: member.providerName,
-          promptId: result.promptId ?? '',
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        };
-        this.taskService.updateActualProvider(taskId, input);
-        // 任务已由该成员执行，暂存文件不再需要
-        void releaseStaged(taskId);
-        return 'submitted';
-      }
-
-      // 提交失败：区分永久性失败（工作流问题）与瞬时故障（实例问题）
-      const failureDetail = `[Dispatcher:${group.id}] submit failed on ${member.providerName} `
-        + `(task ${taskId}): ${result.errorMessage ?? 'Submit failed'}`;
-      const failureResponse = `[Dispatcher:${group.id}] task ${taskId} original response: `
-        + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`;
-      if (isPermanentSubmitError(result.errorMessage)) {
-        // 永久性失败不会重试：必须打印原始错误，否则问题只留在任务记录里无人可见
-        console.error(failureDetail);
-        console.error(failureResponse);
-        this.taskService.updateStatus(taskId, {
-          status: 'failed',
-          errorMessage: result.errorMessage ?? 'Submit failed',
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        });
-        void releaseStaged(taskId);
-        return 'task-failed';
-      }
-      // 瞬时故障：标记成员不可用并停止本轮，任务保留在队列中改投其他成员（打印原始错误便于排查）
-      this.healthService.markFailedNow(member.providerId, result.errorMessage ?? 'Submit failed');
-      console.error(failureDetail);
-      console.error(failureResponse);
-      return 'member-failed';
+      return await this.submitToProvider(taskId, provider, context);
     } finally {
       this.taskInFlight.delete(taskId);
     }
   }
 
   /**
-   * 把任务暂存的媒体上传到选定成员实例。
-   * 普通（未暂存）任务无暂存文件，直接返回空映射，不影响既有逻辑。
+   * 提交核心流程：探测目标实例 → 上传暂存媒体 → 回写文件名 → 提交 prompt。
+   * 调用方保证任务处于 queued 状态且有请求体。
+   * @param taskId 任务 ID
+   * @param provider 目标实例
+   * @param context 日志定位用的调度来源
+   * @returns 处理结果：submitted=提交成功；member-failed=实例故障（已冷却）；task-failed=任务永久失败
+   */
+  private async submitToProvider(
+    taskId: string,
+    provider: ExecutionProvider,
+    context: string,
+  ): Promise<'submitted' | 'member-failed' | 'task-failed'> {
+    const task = this.taskService.getById(taskId)!;
+    const requestBodyJson = task.comfyuiRequestBody!;
+
+    // 提交前即时探测目标实例，避免向刚宕机的实例提交
+    const probe = await provider.testConnection();
+    if (!probe.ok) {
+      this.healthService.markFailedNow(provider.id, probe.message);
+      console.warn(`[Dispatcher:${context}] target ${provider.name} unavailable: ${probe.message}`);
+      return 'member-failed';
+    }
+    this.healthService.markHealthy(provider.id);
+
+    // 1) 把暂存媒体上传到最终选定的实例（各实例文件存储相互独立）
+    let renames: Map<string, string>;
+    try {
+      renames = await this.uploadStagedMedia(task.id, task.originalForm, provider);
+    } catch (err: unknown) {
+      // 上传失败（网络/HTTP/平台拒绝）属实例级故障：标记冷却并改投其他候选。
+      // 不在此处收敛会让任务每轮兜底扫描都重试同一个故障实例，长期滞留在队列中
+      const message = err instanceof Error ? err.message : String(err);
+      this.healthService.markFailedNow(provider.id, message);
+      console.error(`[Dispatcher:${context}] upload media failed on ${provider.name} `
+        + `(task ${taskId}): ${message}`);
+      return 'member-failed';
+    }
+    // 2) 用实例侧实际文件名回写请求体：暂存名只在本地有效，提交时必须引用实例上的真实文件名。
+    //    请求体仍以「暂存名」形态留在任务记录中，使改投其他实例重试时能基于同一份暂存信息重新回写
+    const requestBody = rewriteUploadedFilenames(requestBodyJson, renames);
+    if (renames.size > 0) {
+      // 记录实例侧真实文件名：终态后的资产自动清理按该名单删除（暂存名在实例上并不存在）
+      this.taskService.addUploadedFiles(task.id, [...renames.values()]);
+    }
+    // 3) 提交到实例
+    const result = await provider.submitPrompt(requestBody);
+    if (result.success) {
+      const input: UpdateActualProviderInput = {
+        actualProviderId: provider.id,
+        actualProviderName: provider.name,
+        promptId: result.promptId ?? '',
+        comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
+      };
+      this.taskService.updateActualProvider(taskId, input);
+      // 任务已由该实例执行，暂存文件不再需要
+      void releaseStaged(taskId);
+      return 'submitted';
+    }
+
+    // 提交失败：区分永久性失败（工作流问题）与瞬时故障（实例问题）
+    const failureDetail = `[Dispatcher:${context}] submit failed on ${provider.name} `
+      + `(task ${taskId}): ${result.errorMessage ?? 'Submit failed'}`;
+    const failureResponse = `[Dispatcher:${context}] task ${taskId} original response: `
+      + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`;
+    if (isPermanentSubmitError(result.errorMessage)) {
+      // 永久性失败不会重试：必须打印原始错误，否则问题只留在任务记录里无人可见
+      console.error(failureDetail);
+      console.error(failureResponse);
+      this.taskService.updateStatus(taskId, {
+        status: 'failed',
+        errorMessage: result.errorMessage ?? 'Submit failed',
+        comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
+      });
+      void releaseStaged(taskId);
+      return 'task-failed';
+    }
+    // 瞬时故障：标记实例不可用并停止本轮，任务保留在队列中改投其他实例（打印原始错误便于排查）
+    this.healthService.markFailedNow(provider.id, result.errorMessage ?? 'Submit failed');
+    console.error(failureDetail);
+    console.error(failureResponse);
+    return 'member-failed';
+  }
+
+  /**
+   * 把任务暂存的媒体上传到选定实例。
+   * 无暂存文件的任务直接返回空映射，不影响提交流程。
    * @param taskId 任务 ID
    * @param originalFormJson 任务原始表单 JSON（携带 stagedFiles）
-   * @param provider 目标成员实例
+   * @param provider 目标实例
    * @returns 暂存名 → 实例侧实际文件名的映射（仅包含发生改名的文件，未改名/无文件时为空）
    */
   private async uploadStagedMedia(
@@ -345,10 +428,10 @@ export class DispatcherService {
     const stagedFiles = this.parseStagedFiles(originalFormJson);
     if (stagedFiles.length === 0) return renames;
 
-    // 读取暂存文件（保留与元数据的配对），逐个上传到选定的成员实例
+    // 读取暂存文件（保留与元数据的配对），逐个上传到选定的实例
     const entries = await readStagedFilesWithMeta(taskId, stagedFiles);
     for (const { meta, file } of entries) {
-      // 实际文件名由成员实例决定（ComfyUI 上传时重新生成唯一名，RunningHub 由平台分配），
+      // 实际文件名由实例决定（ComfyUI 上传时重新生成唯一名，RunningHub 由平台分配），
       // 与暂存名不同时必须回写请求体，否则节点会引用该实例上不存在的文件
       const uploaded = await provider.uploadMedia(file, meta.paramType as MediaType);
       if (uploaded && uploaded !== meta.stagedName) {
@@ -399,7 +482,7 @@ export class DispatcherService {
 
   /**
    * 启动队列兜底扫描：周期性触发一次全量调度，
-   * 补偿遗漏的槽位释放通知（例如成员实例被外部恢复可用）。
+   * 补偿遗漏的槽位释放通知（例如实例被外部恢复可用）。
    */
   start(): void {
     if (this.fallbackTimer) return;
@@ -417,6 +500,7 @@ export class DispatcherService {
       this.fallbackTimer = null;
     }
     this.groupInFlight.clear();
+    this.providerInFlight.clear();
     this.taskInFlight.clear();
     this.attemptedMembers.clear();
   }

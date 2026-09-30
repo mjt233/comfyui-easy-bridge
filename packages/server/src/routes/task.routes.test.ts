@@ -8,7 +8,7 @@ import * as schema from '../models/schema';
 import { createTaskRoutes } from './task.routes';
 import { outputHistoryBackfillConfig } from '../controllers/task.controller';
 import { SettingsService } from '../services/settings.service';
-import { ProviderService } from '../services/providers/provider.service';
+import { ProviderService, type ProviderRow } from '../services/providers/provider.service';
 import { TaskService } from '../services/task.service';
 import { startExecutionService } from '../services/execution.service';
 
@@ -795,6 +795,392 @@ describe('Task cancel triggers queue drain', () => {
       // 任务保持 pending，交由跟踪器收敛；槽位未释放，排队任务也不应被提交
       expect(env.taskService.getById(env.running.id)?.status).toBe('pending');
       expect(env.taskService.getById(env.queued.id)?.status).toBe('queued');
+    } finally {
+      svc.stop();
+    }
+  });
+});
+
+/** 待调度任务人工干预（改派执行目标 / 插队提交）的测试环境 */
+interface ReassignEnv {
+  /** Express 子应用 */
+  app: express.Express;
+  /** drizzle 数据库实例（供启动执行服务） */
+  db: BetterSQLite3Database<typeof schema>;
+  /** 任务服务 */
+  taskService: TaskService;
+  /** 提供商服务 */
+  providerService: ProviderService;
+  /** 具体实例（comfyui，并发 1） */
+  instance: ProviderRow;
+  /** 分组实例（成员为 instance 之外的独立成员） */
+  group: ProviderRow;
+  /** 分组的成员实例（comfyui，并发 1） */
+  member: ProviderRow;
+  /** 空分组（无任何可分配成员） */
+  emptyGroup: ProviderRow;
+  /** 已停用实例 */
+  disabled: ProviderRow;
+}
+
+/**
+ * 待调度任务人工干预测试：
+ * 覆盖「修改执行实例」（PATCH /api/tasks/:id/provider，仅影响自动调度）
+ * 与「立即提交」（POST /api/tasks/:id/submit，插队提交到指定具体实例）。
+ */
+describe('Task provider reassignment endpoints', () => {
+  /** 保存原始 fetch，用例结束后恢复 */
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * 构造测试环境：两个 comfyui 实例 + 一个有成员分组 + 一个空分组 + 一个停用实例。
+   * @returns 测试环境
+   */
+  function createEnv(): ReassignEnv {
+    const sqlite = new Database(':memory:');
+    sqlite.exec(`
+      CREATE TABLE workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, raw_json TEXT NOT NULL, build_script TEXT NOT NULL DEFAULT '', build_script_enabled INTEGER NOT NULL DEFAULT 0, declared_params TEXT NOT NULL DEFAULT '[]', description TEXT NOT NULL DEFAULT '', provider_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE task_logs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_name TEXT NOT NULL, provider_id TEXT, provider_name TEXT, prompt_id TEXT, alias_values TEXT NOT NULL, original_form TEXT, comfyui_url TEXT NOT NULL, comfyui_request_body TEXT, comfyui_response TEXT, output_files TEXT, uploaded_files TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', error_message TEXT, progress INTEGER, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, actual_provider_id TEXT, actual_provider_name TEXT);
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, config TEXT NOT NULL, concurrency INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
+    const db = drizzle(sqlite, { schema });
+    const taskService = new TaskService(db);
+    const settings = new SettingsService(db);
+    const providerService = new ProviderService(db);
+    settings.set('auth_enabled', '0');
+
+    const instance = providerService.create({
+      name: 'inst', type: 'comfyui', config: { baseUrl: 'http://inst:8188' },
+    });
+    const member = providerService.create({
+      name: 'member', type: 'comfyui', config: { baseUrl: 'http://member:8188' },
+    });
+    const group = providerService.create({
+      name: 'G', type: 'group',
+      config: { dispatchPolicy: 'priority', members: [{ providerId: member.id, weight: 1 }] },
+    });
+    const emptyGroup = providerService.create({
+      name: 'EmptyG', type: 'group',
+      config: { dispatchPolicy: 'priority', members: [] },
+    });
+    const disabled = providerService.create({
+      name: 'disabled', type: 'comfyui', config: { baseUrl: 'http://disabled:8188' },
+    });
+    providerService.update(disabled.id, { enabled: false });
+
+    const routeApp = express();
+    routeApp.use(express.json());
+    routeApp.use('/api/tasks', createTaskRoutes(db));
+    return { app: routeApp, db, taskService, providerService, instance, group, member, emptyGroup, disabled };
+  }
+
+  /**
+   * 打桩 fetch，模拟可用的 ComfyUI 执行端。
+   * @param options promptStatus 提交返回的状态码（非 200 用于模拟提交被拒）
+   * @param options unreachableHost 该主机名的连通性探测失败（模拟实例不可达）
+   * @returns 提交调用记录
+   */
+  function stubFetch(options?: { promptStatus?: number; unreachableHost?: string }): { promptCalls: string[] } {
+    const promptCalls: string[] = [];
+    const promptStatus = options?.promptStatus ?? 200;
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/system_stats')) {
+        const unreachable = options?.unreachableHost ? url.includes(options.unreachableHost) : false;
+        return new Response('{}', { status: unreachable ? 503 : 200 });
+      }
+      if (url.endsWith('/prompt')) {
+        promptCalls.push(url);
+        if (promptStatus !== 200) return new Response('rejected', { status: promptStatus });
+        return new Response(JSON.stringify({ prompt_id: `pid-${promptCalls.length}` }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch);
+    return { promptCalls };
+  }
+
+  /**
+   * 建一条排队中的任务。
+   * @param env 测试环境
+   * @param providerId 归属实例 ID
+   * @param lockActual 是否锁定实际执行实例（具体实例目标为 true，分组为 false）
+   * @returns 任务行
+   */
+  function createQueuedTask(env: ReassignEnv, providerId: string, lockActual: boolean) {
+    const task = env.taskService.create({
+      workflowId: 'wf-1', workflowName: 'wf', aliasValues: '{}',
+      comfyuiUrl: '/prompt', comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null, promptId: null,
+      providerId, providerName: providerId,
+    });
+    env.taskService.updateStatus(task.id, { status: 'queued' });
+    if (lockActual) {
+      env.taskService.setActualProvider(task.id, {
+        actualProviderId: providerId, actualProviderName: providerId, promptId: '',
+      });
+    }
+    return env.taskService.getById(task.id)!;
+  }
+
+  it('PATCH /provider 改派到具体实例：锁定归属并投递（自动调度，非插队）', async () => {
+    const { promptCalls } = stubFetch();
+    const env = createEnv();
+    // 初始目标为无成员空分组：任务不会被任何调度投递
+    const task = createQueuedTask(env, env.emptyGroup.id, false);
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: env.instance.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.provider_id).toBe(env.instance.id);
+      // 实例空闲：改派后立即被调度投递
+      expect(res.body.status).toBe('pending');
+      expect(promptCalls).toHaveLength(1);
+
+      const after = env.taskService.getById(task.id)!;
+      expect(after.providerId).toBe(env.instance.id);
+      expect(after.providerName).toBe('inst');
+      expect(after.actualProviderId).toBe(env.instance.id);
+      // 提交地址随目标实例更新
+      expect(after.comfyuiUrl).toBe('http://inst:8188/prompt');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('PATCH /provider 改派到分组：归属记为分组，实际执行实例由调度器选定', async () => {
+    const { promptCalls } = stubFetch();
+    const env = createEnv();
+    const task = createQueuedTask(env, env.emptyGroup.id, false);
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: env.group.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.provider_id).toBe(env.group.id);
+      // 分组有可用成员：改派后由分组调度投递到成员
+      expect(res.body.status).toBe('pending');
+      expect(promptCalls).toHaveLength(1);
+
+      const after = env.taskService.getById(task.id)!;
+      expect(after.providerId).toBe(env.group.id);
+      expect(after.providerName).toBe('G');
+      expect(after.actualProviderId).toBe(env.member.id);
+      expect(after.actualProviderName).toBe('member');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('PATCH /provider 到无成员分组：允许保存但附带滞留警告', async () => {
+    const { promptCalls } = stubFetch();
+    const env = createEnv();
+    const task = createQueuedTask(env, env.emptyGroup.id, false);
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: env.emptyGroup.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('queued');
+      // 明确告知任务会滞留队列（不静默接受）
+      expect(String(res.body.warning)).toContain('没有可参与自动分配的成员');
+      expect(promptCalls).toHaveLength(0);
+
+      const after = env.taskService.getById(task.id)!;
+      expect(after.providerId).toBe(env.emptyGroup.id);
+      // 分组目标下实际执行实例清空，待调度器选定成员后回填
+      expect(after.actualProviderId).toBeNull();
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('PATCH /provider 到具体实例但槽位已满：任务保持排队（改派不等于插队）', async () => {
+    const { promptCalls } = stubFetch();
+    const env = createEnv();
+    const svc = startExecutionService(env.db);
+    try {
+      // 先用一条 pending 任务占满实例唯一槽位
+      const occupying = env.taskService.create({
+        workflowId: 'wf-1', workflowName: 'wf', aliasValues: '{}',
+        comfyuiUrl: 'http://inst:8188/prompt', comfyuiRequestBody: '{"prompt":{}}',
+        comfyuiResponse: null, promptId: 'pid-running',
+        providerId: env.instance.id, providerName: 'inst',
+      });
+      env.taskService.setActualProvider(occupying.id, {
+        actualProviderId: env.instance.id, actualProviderName: 'inst', promptId: 'pid-running',
+      });
+      const task = createQueuedTask(env, env.emptyGroup.id, false);
+
+      const res = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: env.instance.id });
+
+      // 改派只改变调度归属：槽位满时仍留在队列等待，不立即提交
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('queued');
+      expect(promptCalls).toHaveLength(0);
+      expect(env.taskService.getById(task.id)?.actualProviderId).toBe(env.instance.id);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('PATCH /provider 校验：缺少参数 / 目标不可用 / 状态不符 / 任务不存在', async () => {
+    stubFetch();
+    const env = createEnv();
+    const svc = startExecutionService(env.db);
+    try {
+      const task = createQueuedTask(env, env.emptyGroup.id, false);
+
+      // 缺少 providerId
+      const missing = await supertest(env.app).patch(`/api/tasks/${task.id}/provider`).send({});
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBe('missing_parameter');
+
+      // 目标实例不存在
+      const notFound = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: 'no-such-provider' });
+      expect(notFound.status).toBe(400);
+      expect(notFound.body.code).toBe('provider_not_configured');
+
+      // 目标实例已停用
+      const disabled = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: env.disabled.id });
+      expect(disabled.status).toBe(400);
+      expect(disabled.body.code).toBe('provider_not_configured');
+
+      // 任务不存在
+      const ghost = await supertest(env.app)
+        .patch('/api/tasks/nonexistent/provider')
+        .send({ providerId: env.instance.id });
+      expect(ghost.status).toBe(404);
+      expect(ghost.body.code).toBe('task_not_found');
+
+      // 已提交（pending）的任务不可改派
+      const pendingTask = env.taskService.create({
+        workflowId: 'wf-1', workflowName: 'wf', aliasValues: '{}',
+        comfyuiUrl: 'http://inst:8188/prompt', comfyuiRequestBody: '{"prompt":{}}',
+        comfyuiResponse: null, promptId: 'pid-x',
+        providerId: env.instance.id, providerName: 'inst',
+      });
+      const wrongStatus = await supertest(env.app)
+        .patch(`/api/tasks/${pendingTask.id}/provider`)
+        .send({ providerId: env.instance.id });
+      expect(wrongStatus.status).toBe(400);
+      expect(wrongStatus.body.code).toBe('invalid_status');
+
+      // 校验失败均不改写原有归属
+      expect(env.taskService.getById(task.id)?.providerId).toBe(env.emptyGroup.id);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('POST /submit 插队：无视并发上限提交到指定具体实例并改写归属', async () => {
+    const { promptCalls } = stubFetch();
+    const env = createEnv();
+    const svc = startExecutionService(env.db);
+    try {
+      // 占满实例唯一并发槽位，证明插队不受并发限制
+      const occupying = env.taskService.create({
+        workflowId: 'wf-1', workflowName: 'wf', aliasValues: '{}',
+        comfyuiUrl: 'http://inst:8188/prompt', comfyuiRequestBody: '{"prompt":{}}',
+        comfyuiResponse: null, promptId: 'pid-running',
+        providerId: env.instance.id, providerName: 'inst',
+      });
+      env.taskService.setActualProvider(occupying.id, {
+        actualProviderId: env.instance.id, actualProviderName: 'inst', promptId: 'pid-running',
+      });
+      const task = createQueuedTask(env, env.emptyGroup.id, false);
+
+      const res = await supertest(env.app)
+        .post(`/api/tasks/${task.id}/submit`)
+        .send({ providerId: env.instance.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('pending');
+      expect(promptCalls).toHaveLength(1);
+
+      // 插队即改道：归属与实际执行实例都改为选定实例
+      const after = env.taskService.getById(task.id)!;
+      expect(after.providerId).toBe(env.instance.id);
+      expect(after.actualProviderId).toBe(env.instance.id);
+      expect(after.promptId).toBe('pid-1');
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('POST /submit 目标实例不可达：保持排队并返回 502（可改选实例重试）', async () => {
+    const { promptCalls } = stubFetch({ unreachableHost: 'inst:8188' });
+    const env = createEnv();
+    const svc = startExecutionService(env.db);
+    try {
+      const task = createQueuedTask(env, env.emptyGroup.id, false);
+
+      const res = await supertest(env.app)
+        .post(`/api/tasks/${task.id}/submit`)
+        .send({ providerId: env.instance.id });
+
+      expect(res.status).toBe(502);
+      expect(res.body.code).toBe('comfyui_unreachable');
+      expect(promptCalls).toHaveLength(0);
+
+      // 任务保持待调度（不置失败），用户可改选其他实例
+      const after = env.taskService.getById(task.id)!;
+      expect(after.status).toBe('queued');
+      expect(after.providerId).toBe(env.instance.id);
+    } finally {
+      svc.stop();
+    }
+  });
+
+  it('POST /submit 参数校验：必须显式选择具体实例（分组不可直接提交）', async () => {
+    stubFetch();
+    const env = createEnv();
+    const svc = startExecutionService(env.db);
+    try {
+      const task = createQueuedTask(env, env.emptyGroup.id, false);
+
+      // 缺少 providerId：必须显式选择目标实例
+      const missing = await supertest(env.app).post(`/api/tasks/${task.id}/submit`).send({});
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBe('missing_parameter');
+
+      // 分组无自有提交端点：拒绝插队到分组
+      const toGroup = await supertest(env.app)
+        .post(`/api/tasks/${task.id}/submit`)
+        .send({ providerId: env.group.id });
+      expect(toGroup.status).toBe(400);
+      expect(toGroup.body.code).toBe('provider_not_configured');
+
+      // 已提交的任务不能重复插队
+      const pendingTask = env.taskService.create({
+        workflowId: 'wf-1', workflowName: 'wf', aliasValues: '{}',
+        comfyuiUrl: 'http://inst:8188/prompt', comfyuiRequestBody: '{"prompt":{}}',
+        comfyuiResponse: null, promptId: 'pid-x',
+        providerId: env.instance.id, providerName: 'inst',
+      });
+      const wrongStatus = await supertest(env.app)
+        .post(`/api/tasks/${pendingTask.id}/submit`)
+        .send({ providerId: env.instance.id });
+      expect(wrongStatus.status).toBe(400);
+      expect(wrongStatus.body.code).toBe('invalid_status');
     } finally {
       svc.stop();
     }

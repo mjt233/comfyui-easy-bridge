@@ -2,11 +2,11 @@ import { Request, Response } from 'express';
 import { Readable } from 'stream';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
-import { TaskService, type OutputFile } from '../services/task.service';
+import { TaskService, type OutputFile, type UpdateTaskTargetInput } from '../services/task.service';
 import { SettingsService } from '../services/settings.service';
 import { ProviderService } from '../services/providers/provider.service';
 import type { ExecutionProvider } from '../services/providers/types';
-import { parseHistoryOutputs, toOutputFiles, drainProviderQueue, drainGroupQueues, getActiveDispatcher } from '../services/execution.service';
+import { parseHistoryOutputs, toOutputFiles, getActiveDispatcher } from '../services/execution.service';
 
 /**
  * completed 任务本地 outputFiles 为空时，向 ComfyUI /history 回源的重试配置。
@@ -90,17 +90,70 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
   const providerService = new ProviderService(db);
 
   /**
-   * 触发分组队列调度（fire-and-forget）。
+   * 触发一次队列调度（fire-and-forget）。
    * 每次调用解析当前活跃的调度器实例，避免捕获陈旧引用；
-   * 执行服务未启动时退回全局入口（其在无调度器时静默返回）。
+   * 执行服务未启动时静默返回（队列将在服务启动后的首轮调度中被消费）。
    * @param reason 日志用的触发原因
    */
-  function drainDispatcherSafely(reason: string): void {
+  function drainQueuesSafely(reason: string): void {
     const dispatcher = getActiveDispatcher();
-    const drain = dispatcher ? dispatcher.drainAll() : drainGroupQueues();
-    void drain.catch(err => {
-      console.error(`[TaskController] group drain after ${reason} error`, err);
+    if (!dispatcher) return;
+    void dispatcher.drainAll().catch(err => {
+      console.error(`[TaskController] queue drain after ${reason} error`, err);
     });
+  }
+
+  /**
+   * 触发一次队列调度并等待完成（用于需要据实返回任务状态的场景）。
+   * 执行服务未启动时静默返回（任务保持待调度，由服务启动后的首轮调度消费）。
+   * @param reason 日志用的触发原因
+   */
+  async function drainQueuesAndWait(reason: string): Promise<void> {
+    const dispatcher = getActiveDispatcher();
+    if (!dispatcher) return;
+    try {
+      await dispatcher.drainAll();
+    } catch (err: unknown) {
+      console.error(`[TaskController] queue drain after ${reason} error`, err);
+    }
+  }
+
+  /**
+   * 解析任务当前执行目标对应的「提交地址」。
+   * 分组无自有端点（提交由调度器转投成员），沿用 '/prompt' 占位；
+   * 具体实例为 `{baseUrl}/prompt`。
+   * @param provider 目标实例（可为分组）
+   * @returns 提交地址
+   */
+  function resolveSubmitUrl(provider: ExecutionProvider): string {
+    return `${provider.getBaseUrl()}/prompt`;
+  }
+
+  /**
+   * 构建「修改执行目标」的入库字段。
+   * 目标为具体实例时同时锁定实际执行实例；目标为分组时清空实际执行实例，
+   * 交由调度器在选定成员后写入（使任务日志能体现实际提交到哪个实例）。
+   * @param provider 目标实例（可为分组）
+   * @returns 目标更新入参
+   */
+  function buildTargetInput(provider: ExecutionProvider): UpdateTaskTargetInput {
+    if (provider.type === 'group') {
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        // 分组不直接执行任务：清空实际执行实例，待调度器选定成员后回填
+        actualProviderId: null,
+        actualProviderName: null,
+        comfyuiUrl: resolveSubmitUrl(provider),
+      };
+    }
+    return {
+      providerId: provider.id,
+      providerName: provider.name,
+      actualProviderId: provider.id,
+      actualProviderName: provider.name,
+      comfyuiUrl: resolveSubmitUrl(provider),
+    };
   }
 
   /**
@@ -256,7 +309,80 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
       }
     },
 
-    /** 立即提交 queued 任务（普通实例无视并发限制直接提交；分组任务触发一次自动分配） */
+    /**
+     * 修改排队任务的执行目标（人工干预自动调度）。
+     *
+     * 仅 queued（待调度）任务可改。目标可以是任意**启用中**的实例：
+     * - 具体实例：任务锁定到该实例，实例出现空闲槽位时按队列顺序提交（不插队）；
+     * - 分组：任务重新交由该分组的自动分配逻辑，调度器选定成员后提交。
+     *
+     * 本操作只改写调度归属，不会立即提交；目标分组当前没有可用成员时允许保存，
+     * 但响应附带 warning 提示任务将持续排队直到分组配置成员或再次调整。
+     * @param req 路径参数 taskId；请求体 { providerId }
+     * @param res 任务当前状态与（可选的）警告文案
+     */
+    async updateProvider(req: Request, res: Response): Promise<void> {
+      const task = taskService.getById(req.params.taskId as string);
+      if (!task) {
+        res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
+        return;
+      }
+      // 只有待调度（queued）的任务可以调整执行目标；已提交的任务在实例上执行中
+      if (task.status !== 'queued') {
+        res.status(400).json({ error: 'Only queued tasks can change provider', code: 'invalid_status' });
+        return;
+      }
+      const rawProviderId = (req.body as { providerId?: unknown } | undefined)?.providerId;
+      const providerId = typeof rawProviderId === 'string' ? rawProviderId.trim() : '';
+      if (providerId === '') {
+        res.status(400).json({ error: 'providerId is required', code: 'missing_parameter' });
+        return;
+      }
+      // 目标必须是启用中的实例（分组或具体实例皆可）；停用/不存在/配置非法一律拒绝
+      const provider = providerService.getEnabledProviderById(providerId);
+      if (!provider) {
+        res.status(400).json({
+          error: 'Specified execution provider is not available',
+          code: 'provider_not_configured',
+        });
+        return;
+      }
+      // 目标分组暂无可用成员时允许保存，但明确告知任务会滞留队列（不静默接受）
+      let warning: string | undefined;
+      if (provider.type === 'group') {
+        const members = providerService.resolveGroupById(provider.id)?.listMembers() ?? [];
+        if (members.length === 0) {
+          warning = '该分组当前没有可参与自动分配的成员实例，任务将持续排队等待，直到分组配置成员或再次调整执行实例';
+        }
+      }
+
+      // 改写调度归属：具体实例同时锁定实际执行实例，分组则清空待调度器回填
+      taskService.setTargetProvider(task.id, buildTargetInput(provider));
+      // 改道后立即调度一轮并等待完成：新目标空闲时任务会提交成功，返回状态即真实结果
+      await drainQueuesAndWait('provider change');
+
+      // 据实返回（调度可能已把任务提交为 pending）
+      const after = taskService.getById(task.id);
+      res.json({
+        task_id: task.id,
+        status: after?.status ?? 'queued',
+        provider_id: provider.id,
+        provider_name: provider.name,
+        warning,
+      });
+    },
+
+    /**
+     * 立即提交（插队）：把待调度任务直接投递到指定的具体实例。
+     *
+     * 语义为「插队提交」——无视目标实例的并发上限，只要该实例连通即提交工作流；
+     * 同时把任务的执行目标一并改为该实例（插队即改道），使任务日志体现实际提交到的实例。
+     * 分组不是可提交端点（无自有端点），因此请求必须显式选择具体实例（comfyui / runninghub）。
+     *
+     * 目标实例探测不通过时任务保持 queued（不置 failed），用户可改选其他实例重试。
+     * @param req 路径参数 taskId；请求体 { providerId }
+     * @param res 提交后的任务状态
+     */
     async submit(req: Request, res: Response): Promise<void> {
       const task = taskService.getById(req.params.taskId as string);
       if (!task) {
@@ -267,65 +393,58 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(400).json({ error: 'Task is not in queued status', code: 'invalid_status' });
         return;
       }
-      // 分组任务由调度器挑选成员实例，手动「立即提交」等价于立即触发一次自动分配
-      if (task.providerId) {
-        const owner = providerService.getById(task.providerId);
-        if (owner?.type === 'group') {
-          const dispatcher = getActiveDispatcher();
-          if (!dispatcher) {
-            res.status(503).json({ error: 'Dispatch service is not running', code: 'provider_not_configured' });
-            return;
-          }
-          await dispatcher.drainGroup(owner.id);
-          // 调度可能未成功（成员并发已满或均不可用）：据实返回任务当前状态
-          const after = taskService.getById(task.id);
-          res.json({
-            task_id: task.id,
-            status: after?.status ?? 'queued',
-            error_message: after?.errorMessage ?? undefined,
-          });
-          return;
-        }
+      const rawProviderId = (req.body as { providerId?: unknown } | undefined)?.providerId;
+      const providerId = typeof rawProviderId === 'string' ? rawProviderId.trim() : '';
+      if (providerId === '') {
+        res.status(400).json({ error: 'providerId is required', code: 'missing_parameter' });
+        return;
       }
-      const provider = resolveProviderForTask(task);
+      const provider = providerService.getEnabledProviderById(providerId);
       if (!provider) {
-        res.status(400).json({ error: 'No execution provider configured', code: 'provider_not_configured' });
+        res.status(400).json({
+          error: 'Specified execution provider is not available',
+          code: 'provider_not_configured',
+        });
+        return;
+      }
+      // 分组无自有提交端点：插队必须选择具体实例（前端弹窗据此只列非分组实例）
+      if (provider.type === 'group') {
+        res.status(400).json({
+          error: 'A group cannot be submitted to directly; choose a member instance',
+          code: 'provider_not_configured',
+        });
         return;
       }
       if (!task.comfyuiRequestBody) {
         res.status(400).json({ error: 'Task has no request body', code: 'missing_parameter' });
         return;
       }
-      const result = await provider.submitPrompt(task.comfyuiRequestBody);
-      if (result.success) {
-        taskService.updateStatus(task.id, {
-          status: 'pending',
-          promptId: result.promptId ?? undefined,
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        });
-        // 记录实际执行实例，保证跟踪器与并发统计口径一致
-        taskService.setActualProvider(task.id, {
-          actualProviderId: provider.id,
-          actualProviderName: provider.name,
-          promptId: result.promptId ?? '',
-        });
-        res.json({ task_id: task.id, status: 'pending', comfyui_response: result.comfyuiResponse });
-      } else {
-        // 手动提交失败：把原始错误与执行端原始响应体输出到控制台，便于定位失败原因
-        console.error(
-          `[TaskController] manual submit failed, task ${task.id}: ${result.errorMessage ?? 'Submit failed'}`,
-        );
-        console.error(
-          `[TaskController] task ${task.id} original response: `
-          + `${result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : '<none>'}`,
-        );
-        taskService.updateStatus(task.id, {
-          status: 'failed',
-          errorMessage: result.errorMessage ?? 'Submit failed',
-          comfyuiResponse: result.comfyuiResponse ? JSON.stringify(result.comfyuiResponse) : undefined,
-        });
-        res.json({ task_id: task.id, status: 'failed', error_message: result.errorMessage });
+      // 插队即改道：先把归属改写为选定实例，使日志与后续重试都以该实例为准
+      taskService.setTargetProvider(task.id, buildTargetInput(provider));
+
+      const dispatcher = getActiveDispatcher();
+      if (!dispatcher) {
+        // 执行服务未启动（如未调用 startExecutionService）：无提交能力，保持 queued
+        res.status(503).json({ error: 'Dispatch service is not running', code: 'provider_not_configured' });
+        return;
       }
+      const outcome = await dispatcher.submitTaskNow(task.id, provider);
+      // 探测/上传失败属实例级故障：保持 queued 交由自动调度后续重试，用户也可改选实例
+      if (outcome === 'unavailable') {
+        res.status(502).json({
+          error: `执行提供商实例不可达或提交失败：${provider.name}`,
+          code: 'comfyui_unreachable',
+          task_id: task.id,
+          status: 'queued',
+        });
+        return;
+      }
+      const after = taskService.getById(task.id);
+      res.json({
+        task_id: task.id,
+        status: after?.status ?? 'queued',
+        error_message: after?.errorMessage ?? undefined,
+      });
     },
 
     /** 中断任务执行 */
@@ -335,14 +454,14 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         res.status(404).json({ error: 'Task not found', code: 'task_not_found' });
         return;
       }
-      // queued 任务直接标记为失败，无需通知 ComfyUI
+      // queued 任务直接标记为失败，无需通知执行端
       if (task.status === 'queued') {
         taskService.updateStatus(task.id, {
           status: 'failed',
           errorMessage: 'Cancelled by user',
         });
-        // 队列少了一个任务：立即触发一次分发，让后续排队任务尽快投递
-        drainDispatcherSafely('queue cancel');
+        // 队列少了一个任务：立即触发一次调度，让后续排队任务尽快投递
+        drainQueuesSafely('queue cancel');
         res.json({ task_id: task.id, status: 'failed' });
         return;
       }
@@ -372,14 +491,8 @@ export function createTaskController(db: BetterSQLite3Database<typeof schema>) {
         status: 'failed',
         errorMessage: 'Cancelled by user',
       });
-      // 槽位已释放：主动触发该实例的队列调度，让排队中的任务立即提交（不阻塞响应）
-      if (provider) {
-        void drainProviderQueue(provider.id).catch(err => {
-          console.error('[TaskController] drain after cancel error', err);
-        });
-        // 该实例可能是分组成员：同时触发分组调度，让分组队列中的任务尽快投递
-        drainDispatcherSafely('cancel');
-      }
+      // 槽位已释放：主动触发一次统一调度，让排队中的任务立即提交（不阻塞响应）
+      drainQueuesSafely('cancel');
       res.json({ task_id: task.id, status: 'failed' });
     },
   };

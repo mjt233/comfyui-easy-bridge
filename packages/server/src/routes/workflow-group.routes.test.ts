@@ -14,7 +14,7 @@ import { createTaskRoutes } from './task.routes';
 import { createProvidersRoutes } from './providers.routes';
 import { ProviderService, type ProviderRow } from '../services/providers/provider.service';
 import { TaskService } from '../services/task.service';
-import { startExecutionService } from '../services/execution.service';
+import { startExecutionService, drainAllQueues } from '../services/execution.service';
 import { healthCheckConfig } from '../services/providers/health.service';
 import { dispatcherConfig } from '../services/dispatcher.service';
 
@@ -225,16 +225,99 @@ describe('分组（自动分配）执行路由', () => {
     expect(res.body.status).toBe('queued');
     expect(promptCalls).toHaveLength(0);
 
-    // 释放槽位后触发调度：排队任务被分配到该成员
+    // 占用槽位的任务进入终态（等价于跟踪器感知到槽位释放），随后触发一轮调度
     taskService.updateStatus(occupying.id, { status: 'completed' });
-    await supertest(app)
-      .post(`/api/tasks/${res.body.task_id}/submit`)
-      .set('Authorization', `Bearer ${token}`);
+    await drainAllQueues();
 
     const after = taskService.getById(res.body.task_id as string)!;
     expect(after.status).toBe('pending');
     expect(after.actualProviderId).toBe(member.id);
     expect(promptCalls).toHaveLength(1);
+  });
+
+  it('queue-jumps a queued task to a chosen member instance via POST /submit', async () => {
+    const { promptCalls } = stubFetch();
+    const member = setupMember('busy', 1);
+    const group = setupGroup([{ providerId: member.id, weight: 1 }]);
+    await setupWorkflow('wf-jump', group.id);
+
+    // 占满成员唯一并发槽位，使任务只能排队
+    const occupying = taskService.create({
+      workflowId: 'wf-jump',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://busy:8188/prompt',
+      comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null,
+      promptId: 'pid-busy',
+      providerId: member.id,
+      providerName: 'busy',
+    });
+    taskService.setActualProvider(occupying.id, {
+      actualProviderId: member.id,
+      actualProviderName: 'busy',
+      promptId: 'pid-busy',
+    });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-jump/execute')
+      .send({ prompt: 'cat' });
+    expect(res.body.status).toBe('queued');
+
+    // 插队提交：无视并发上限直接投递到指定成员实例，并把归属一并改为该实例
+    const jump = await supertest(app)
+      .post(`/api/tasks/${res.body.task_id as string}/submit`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ providerId: member.id });
+
+    expect(jump.status).toBe(200);
+    expect(jump.body.status).toBe('pending');
+    const after = taskService.getById(res.body.task_id as string)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(member.id);
+    // 插队即改道：归属也改为实际提交的实例（不再保留分组）
+    expect(after.providerId).toBe(member.id);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('rejects queue-jump submit to a group (must pick a concrete instance)', async () => {
+    stubFetch();
+    const member = setupMember('m-jump');
+    const group = setupGroup([{ providerId: member.id, weight: 1 }]);
+    await setupWorkflow('wf-jump-group', group.id);
+
+    // 让任务停留在队列：成员并发为 1，先用 pending 任务占满
+    const occupying = taskService.create({
+      workflowId: 'wf-jump-group',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://m-jump:8188/prompt',
+      comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null,
+      promptId: 'pid-busy',
+      providerId: member.id,
+      providerName: 'm-jump',
+    });
+    taskService.setActualProvider(occupying.id, {
+      actualProviderId: member.id,
+      actualProviderName: 'm-jump',
+      promptId: 'pid-busy',
+    });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-jump-group/execute')
+      .send({ prompt: 'cat' });
+    expect(res.body.status).toBe('queued');
+
+    // 分组无自有提交端点：插队必须选择具体实例
+    const jump = await supertest(app)
+      .post(`/api/tasks/${res.body.task_id as string}/submit`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ providerId: group.id });
+
+    expect(jump.status).toBe(400);
+    expect(jump.body.code).toBe('provider_not_configured');
+    expect(taskService.getById(res.body.task_id as string)?.status).toBe('queued');
   });
 
   it('serves group member slots through the providers list and health endpoint', async () => {
