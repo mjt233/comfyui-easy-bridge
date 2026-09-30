@@ -19,6 +19,52 @@ export const dispatcherConfig = {
 };
 
 /**
+ * 递归替换 JSON 结构中的文件名：字符串值与映射键匹配时替换为实例侧的真实文件名。
+ * 同一暂存名可能出现在多个节点字段（同别名被多个参数引用），因此按值全量匹配，
+ * 数组（多文件注入）与嵌套对象一并处理。
+ * @param node 待处理的 JSON 节点
+ * @param renames 暂存名 → 实例侧实际文件名
+ * @returns 替换后的新节点（不修改入参）
+ */
+function replaceFilenames(node: unknown, renames: Map<string, string>): unknown {
+  if (typeof node === 'string') return renames.get(node) ?? node;
+  if (Array.isArray(node)) return node.map((item) => replaceFilenames(item, renames));
+  if (node !== null && typeof node === 'object') {
+    const replaced: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      replaced[key] = replaceFilenames(value, renames);
+    }
+    return replaced;
+  }
+  return node;
+}
+
+/**
+ * 用「实例侧实际文件名」回写提交请求体中的「本地暂存名」。
+ *
+ * 暂存名只在本地有效：上传接口返回的才是成员实例上的真实文件名
+ * （原生 ComfyUI 会在上传时重新生成唯一名，RunningHub 由平台分配文件名）。
+ * 若不回写，工作流节点会引用成员实例上并不存在的文件，执行端将直接拒绝该 prompt。
+ * 请求体解析失败或无可替换项时原样返回，交由提交流程处理。
+ * @param requestBodyJson 提交请求体 JSON 字符串（形如 `{ prompt: {...} }`）
+ * @param renames 暂存名 → 实例侧实际文件名；为空时直接返回原请求体
+ * @returns 回写后的请求体 JSON 字符串
+ */
+export function rewriteUploadedFilenames(requestBodyJson: string, renames: Map<string, string>): string {
+  if (renames.size === 0) return requestBodyJson;
+  try {
+    const parsed = JSON.parse(requestBodyJson) as { prompt?: unknown };
+    if (parsed === null || typeof parsed !== 'object') return requestBodyJson;
+    // 仅回写工作流 prompt 子树；其余字段（client_id 等）与文件名无关
+    parsed.prompt = replaceFilenames(parsed.prompt, renames);
+    return JSON.stringify(parsed);
+  } catch {
+    // 请求体损坏时原样返回：由提交阶段报错，避免此处吞掉问题
+    return requestBodyJson;
+  }
+}
+
+/**
  * 判断提交失败是否属于「永久性失败」。
  * 永久性失败（工作流本身有问题，如 payload 非法）不应改投其他成员，直接置任务失败；
  * 其余（网络异常、超时、5xx、实例级故障）视为瞬时故障，保留任务在队列中等待重试。
@@ -221,9 +267,27 @@ export class DispatcherService {
     this.taskInFlight.add(taskId);
     try {
       // 1) 把暂存媒体上传到最终选定的成员实例（各实例文件存储相互独立）
-      await this.uploadStagedMedia(fresh.id, fresh.originalForm, member.provider);
-      // 2) 提交到成员实例：请求体已包含暂存阶段生成的存储名，无需改写
-      const result = await member.provider.submitPrompt(fresh.comfyuiRequestBody);
+      let renames: Map<string, string>;
+      try {
+        renames = await this.uploadStagedMedia(fresh.id, fresh.originalForm, member.provider);
+      } catch (err: unknown) {
+        // 上传失败（网络/HTTP/平台拒绝）属实例级故障：标记冷却并改投其他候选。
+        // 不在此处收敛会让任务每轮兜底扫描都重试同一个故障成员，长期滞留在队列中
+        const message = err instanceof Error ? err.message : String(err);
+        this.healthService.markFailedNow(member.providerId, message);
+        console.error(`[Dispatcher:${group.id}] upload media failed on ${member.providerName} `
+          + `(task ${taskId}): ${message}`);
+        return 'member-failed';
+      }
+      // 2) 用实例侧实际文件名回写请求体：暂存名只在本地有效，提交时必须引用成员实例上的真实文件名。
+      //    请求体仍以「暂存名」形态留在任务记录中，使改投其他成员重试时能基于同一份暂存信息重新回写
+      const requestBody = rewriteUploadedFilenames(fresh.comfyuiRequestBody, renames);
+      if (renames.size > 0) {
+        // 记录实例侧真实文件名：终态后的资产自动清理按该名单删除（暂存名在成员实例上并不存在）
+        this.taskService.addUploadedFiles(fresh.id, [...renames.values()]);
+      }
+      // 3) 提交到成员实例
+      const result = await member.provider.submitPrompt(requestBody);
       if (result.success) {
         const input: UpdateActualProviderInput = {
           actualProviderId: member.providerId,
@@ -266,26 +330,32 @@ export class DispatcherService {
 
   /**
    * 把任务暂存的媒体上传到选定成员实例。
-   * 普通（未暂存）任务无暂存文件，直接返回，不影响既有逻辑。
+   * 普通（未暂存）任务无暂存文件，直接返回空映射，不影响既有逻辑。
    * @param taskId 任务 ID
    * @param originalFormJson 任务原始表单 JSON（携带 stagedFiles）
    * @param provider 目标成员实例
+   * @returns 暂存名 → 实例侧实际文件名的映射（仅包含发生改名的文件，未改名/无文件时为空）
    */
   private async uploadStagedMedia(
     taskId: string,
     originalFormJson: string | null,
     provider: ExecutionProvider,
-  ): Promise<void> {
+  ): Promise<Map<string, string>> {
+    const renames = new Map<string, string>();
     const stagedFiles = this.parseStagedFiles(originalFormJson);
-    if (stagedFiles.length === 0) return;
+    if (stagedFiles.length === 0) return renames;
 
     // 读取暂存文件（保留与元数据的配对），逐个上传到选定的成员实例
     const entries = await readStagedFilesWithMeta(taskId, stagedFiles);
     for (const { meta, file } of entries) {
-      // 按元数据记录的参数类型投递到对应上传端点（图片/视频/音频）；
-      // 返回的文件名不使用：注入工作流的值在暂存阶段已确定
-      await provider.uploadMedia(file, meta.paramType as MediaType);
+      // 实际文件名由成员实例决定（ComfyUI 上传时重新生成唯一名，RunningHub 由平台分配），
+      // 与暂存名不同时必须回写请求体，否则节点会引用该实例上不存在的文件
+      const uploaded = await provider.uploadMedia(file, meta.paramType as MediaType);
+      if (uploaded && uploaded !== meta.stagedName) {
+        renames.set(meta.stagedName, uploaded);
+      }
     }
+    return renames;
   }
 
   /**

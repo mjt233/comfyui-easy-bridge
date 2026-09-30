@@ -2,6 +2,7 @@ import { eq, desc, inArray, count, and } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from '../models/schema';
 import { randomUUID } from 'crypto';
+import { parseUploadedFiles } from './cleanup.service';
 
 /** 创建任务日志的输入参数 */
 export interface CreateTaskInput {
@@ -220,7 +221,33 @@ export class TaskService {
     return this.getById(id)!;
   }
 
-  /** 查询所有 pending 状态的任务（供 PollingService 轮询使用）；可按提供商实例过滤 */
+  /**
+   * 追加本次实际上传到执行端的资产文件名（去重后与既有名单合并）。
+   *
+   * 普通实例在任务创建时即写入最终文件名；分组任务在调度阶段才拿到成员实例侧的真实文件名
+   * （上传接口返回的名字与本地暂存名不一致），因此以追加方式补齐，保证终态后的自动清理
+   * 能命中实例上真实存在的文件。
+   * @param id 任务 ID
+   * @param filenames 本次上传成功后由执行端/平台返回的文件名
+   * @returns 更新后的任务行
+   */
+  addUploadedFiles(id: string, filenames: string[]) {
+    const existing = this.getById(id);
+    if (!existing) return null;
+    // 过滤空值后与既有名单求并集，避免重复（改投其他成员时会再次上传同一批文件）
+    const incoming = filenames.filter((name) => name !== '');
+    if (incoming.length === 0) return existing;
+    const merged = [...new Set([...parseUploadedFiles(existing.uploadedFiles), ...incoming])];
+    this.db.update(schema.taskLogs)
+      .set({ uploadedFiles: JSON.stringify(merged) })
+      .where(eq(schema.taskLogs.id, id))
+      .run();
+    return this.getById(id);
+  }
+
+  /**
+   * 查询所有 pending 状态的任务（供 PollingService 轮询使用）；可按提供商实例过滤
+   */
   listPending(providerId?: string) {
     // drizzle 的 where() 二次调用会覆盖前一次条件，因此带提供商过滤时用 and() 组合状态与提供商条件
     const condition = providerId

@@ -338,12 +338,15 @@ describe('分组（自动分配）执行路由', () => {
     // 媒体上传到最终选定的成员实例（而非分组）
     expect(uploadCalls).toEqual(['http://media-member:8188/upload/image']);
 
-    // 提交请求体中注入的应是暂存阶段生成的存储名，且上传完成后暂存目录被清理
+    // 提交请求体必须引用执行端返回的文件名（暂存名只在本地有效），
+    // 否则成员实例上不存在该文件、执行端会直接拒绝 prompt
     const body = JSON.parse(task.comfyuiRequestBody ?? '{}') as { prompt: Record<string, { inputs: { image: string } }> };
     const injected = body.prompt['1'].inputs.image;
+    // 任务记录保留暂存名形态，回写只发生在提交那一刻
     expect(injected).toMatch(/\.png$/);
     expect(injected).not.toBe('placeholder.png');
     expect(injected).not.toBe('uploaded-by-member.png');
+    expect(JSON.parse(task.uploadedFiles)).toEqual([injected, 'uploaded-by-member.png']);
     // 提交成功后异步清理暂存目录（fire-and-forget），等待其完成
     await vi.waitFor(() => {
       expect(fs.existsSync(path.join(tempDataDir, 'task-staging', task.id))).toBe(false);

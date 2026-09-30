@@ -60,7 +60,7 @@ pending 任务不再占用槽位，迁移把非分组任务的 pending 行回填
 ```
 POST /api/workflows/:id/execute  (providerId 解析到分组)
   ├─ 动态构建（若启用）→ 失败按既有逻辑记 failed
-  ├─ 媒体参数：生成存储名 → 落盘 <DATA_DIR>/task-staging/<taskId>/ → 注入本地存储名
+  ├─ 媒体参数：生成存储名 → 落盘 <DATA_DIR>/task-staging/<taskId>/ → 注入本地存储名（占位）
   ├─ 解析可分配成员（启用 + 非分组 + 可实例化）→ 为空则 400 provider_no_available_instance
   ├─ 建任务记录（providerId = 分组）→ status = queued
   └─ 立即触发一次该分组的调度（同步），据实返回 pending / queued
@@ -73,17 +73,24 @@ POST /api/workflows/:id/execute  (providerId 解析到分组)
           - 失败 → 该成员进入冷却，改投下一个候选
        3. 二次确认槽位仍空闲
        4. 上传暂存媒体到该成员（各实例文件存储相互独立）
-       5. 提交 prompt → 成功则写 actual_provider_*，任务转 pending
+          - 上传失败（网络/HTTP/平台拒绝）→ 按实例故障处理：成员进入冷却，任务改投其他候选
+       5. 用上传返回的文件名回写提交请求体（暂存名 → 实例侧真实文件名）
+       6. 提交 prompt → 成功则写 actual_provider_*，任务转 pending
           - 4xx（工作流问题）→ 任务置 failed，继续处理下一个任务
           - 其他（实例故障）→ 成员进入冷却，任务留在队列改投其他候选
 ```
 
 ### 为什么媒体要在调度阶段上传
 
-ComfyUI / RunningHub 的文件存储各自独立（`uploadMedia` 返回的是该实例上的文件名）。
-分组任务在排队期间**尚无执行实例**，因此先把文件落到本地暂存目录并提前确定存储名，
-调度选定成员后再把暂存文件上传到该成员；注入工作流的值与暂存阶段一致，
-因此无需在调度阶段改写请求体。
+ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia` 返回的才是**该实例上的真实文件名**
+（原生 ComfyUI 上传时会重新生成唯一名、RunningHub 由平台分配）。
+分组任务在排队期间**尚无执行实例**，因此先把文件落到本地暂存目录并生成一个本地占位名，
+调度选定成员后再把暂存文件上传到该成员，并用返回的文件名回写提交请求体
+（`dispatcher.rewriteUploadedFilenames`，按值替换 prompt 子树中的文件名）。
+
+任务记录中的 `comfyui_request_body` 始终保留「暂存名」形态，不落库回写结果：
+改投其他成员重试时会得到该成员自己的文件名，以暂存名为基准重新回写即可；
+实例侧真实文件名追加进 `uploaded_files`（`TaskService.addUploadedFiles`），供终态后的资产自动清理。
 
 暂存目录在任务成功提交、进入终态、提交失败时统一释放；进程启动时清理超过 24h 的残留目录。
 
@@ -135,11 +142,11 @@ ComfyUI / RunningHub 的文件存储各自独立（`uploadMedia` 返回的是该
 | `services/providers/group.provider.ts` | `GroupProvider`：承载分组配置与成员列表，执行类方法显式报错 |
 | `services/providers/provider.service.ts` | 分组校验、成员解析（过滤/去重/排除分组）、摘要与空闲槽位 |
 | `services/providers/health.service.ts` | 健康状态表、巡检定时器、冷却判定 |
-| `services/dispatcher.service.ts` | 分组队列调度、候选挑选、提交与暂存媒体上传 |
+| `services/dispatcher.service.ts` | 分组队列调度、候选挑选、提交、暂存媒体上传与文件名回写 |
 | `services/task-staging.service.ts` | 暂存文件的写入/读取/释放/过期清理 |
 | `services/execution.service.ts` | 启动巡检与调度器；跟踪器按 `actual_provider_id` 统计与消费 |
-| `services/executor.service.ts` | `processMediaParams` 支持预置上传文件名 |
-| `services/task.service.ts` | `actualProvider*` 读写与按实际执行实例的查询 |
+| `services/executor.service.ts` | `processMediaParams` 上传媒体并注入上传接口返回的文件名 |
+| `services/task.service.ts` | `actualProvider*` 读写、按实际执行实例的查询、`addUploadedFiles` |
 
 ## 测试覆盖
 
@@ -147,6 +154,7 @@ ComfyUI / RunningHub 的文件存储各自独立（`uploadMedia` 返回的是该
   巡检成员集合、摘要槽位、分组连通性、严格解析（停用/缺失/回退默认）
 - `services/dispatcher.service.test.ts`：权重优先与同权重次序、跳过满载成员、全满留队列、
   探测失败改投、冷却成员跳过、随机策略、单轮填满并发、4xx 永久失败、5xx 保留队列、
-  并发触发不重复提交、缺请求体失败、停用分组不消费队列；健康阈值/冷却/恢复/巡检范围
+  并发触发不重复提交、缺请求体失败、停用分组不消费队列；暂存媒体上传后用返回文件名回写请求体、
+  `rewriteUploadedFilenames` 替换语义；健康阈值/冷却/恢复/巡检范围
 - `routes/workflow-group.routes.test.ts`：分组直接执行、无成员 400、满载入队后手动触发投递、
   列表与健康接口、显式指定停用实例 400、显式覆盖为分组、媒体暂存到成员上传、分组任务中断

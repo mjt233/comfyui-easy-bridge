@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ProviderService } from './providers/provider.service';
 import { HealthService, healthCheckConfig } from './providers/health.service';
-import { DispatcherService, isPermanentSubmitError } from './dispatcher.service';
+import { DispatcherService, isPermanentSubmitError, rewriteUploadedFilenames } from './dispatcher.service';
 import { TaskService } from './task.service';
 import { buildTestDb } from './providers/test-db.helper';
+import { stageUploads, type StagedFileMeta } from './task-staging.service';
 
 /**
  * 打桩全局 fetch：
@@ -361,6 +365,187 @@ describe('DispatcherService 分组调度', () => {
 
     expect(taskService.getById(task.id)?.status).toBe('queued');
     expect(promptCalls).toHaveLength(0);
+  });
+});
+
+describe('rewriteUploadedFilenames', () => {
+  it('replaces staged names with the member-side filenames across nested nodes', () => {
+    const body = JSON.stringify({
+      prompt: {
+        '1': { inputs: { image: 'demo_aaa111.png' }, class_type: 'LoadImage' },
+        '2': { inputs: { images: ['demo_aaa111.png', 'other.png'] } },
+        '3': { inputs: { seed: 12, flag: true, none: null } },
+      },
+    });
+    const rewritten = JSON.parse(rewriteUploadedFilenames(body, new Map([['demo_aaa111.png', 'openapi/xyz.png']]))) as {
+      prompt: Record<string, { inputs: Record<string, unknown> }>;
+    };
+    // 单值与数组元素同时替换，未命中的值与类型保持不变
+    expect(rewritten.prompt['1'].inputs.image).toBe('openapi/xyz.png');
+    expect(rewritten.prompt['2'].inputs.images).toEqual(['openapi/xyz.png', 'other.png']);
+    expect(rewritten.prompt['3'].inputs).toEqual({ seed: 12, flag: true, none: null });
+  });
+
+  it('returns the original body when there is nothing to rewrite', () => {
+    const body = '{"prompt":{"1":{"inputs":{"image":"a.png"}}}}';
+    expect(rewriteUploadedFilenames(body, new Map())).toBe(body);
+    // 映射存在但请求体中无匹配项时内容等价（不抛错）
+    expect(JSON.parse(rewriteUploadedFilenames(body, new Map([['x.png', 'y.png']])))).toEqual(JSON.parse(body));
+  });
+
+  it('returns the original body when it is not valid JSON', () => {
+    const broken = 'not-json';
+    expect(rewriteUploadedFilenames(broken, new Map([['a', 'b']]))).toBe(broken);
+  });
+});
+
+describe('DispatcherService 分组媒体上传', () => {
+  let db: ReturnType<typeof buildTestDb>['db'];
+  let providerService: ProviderService;
+  let taskService: TaskService;
+  let healthService: HealthService;
+  let dispatcher: DispatcherService;
+  /** 临时 DATA_DIR（暂存文件隔离用），用例结束后恢复 */
+  let previousDataDir: string | undefined;
+  let tempDataDir = '';
+
+  beforeEach(() => {
+    db = buildTestDb().db;
+    providerService = new ProviderService(db);
+    taskService = new TaskService(db);
+    healthService = new HealthService(db);
+    dispatcher = new DispatcherService(db, healthService);
+    // 暂存目录按 DATA_DIR 解析，指向临时目录避免污染仓库 data 目录
+    previousDataDir = process.env.DATA_DIR;
+    tempDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dispatcher-media-test-'));
+    process.env.DATA_DIR = tempDataDir;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    fs.rmSync(tempDataDir, { recursive: true, force: true });
+    if (previousDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = previousDataDir;
+  });
+
+  /**
+   * 建一个分组任务：原始表单携带暂存元数据，暂存文件已落盘。
+   * @param groupId 分组实例 ID
+   * @param stagedName 本地暂存名（提交前请求体中引用的占位名）
+   * @param originalname 用户上传的原始文件名
+   * @returns 排队中的任务行
+   */
+  async function createQueuedTaskWithStagedMedia(groupId: string, stagedName: string, originalname: string) {
+    const meta: StagedFileMeta = {
+      alias: 'image',
+      fieldName: 'image',
+      stagedName,
+      originalname,
+      mimetype: 'image/png',
+      size: 3,
+      paramType: 'image',
+    };
+    const task = taskService.create({
+      workflowId: 'wf-1',
+      workflowName: 'wf',
+      aliasValues: JSON.stringify({ image: stagedName }),
+      originalForm: JSON.stringify({ params: {}, files: [], stagedFiles: [meta] }),
+      comfyuiUrl: 'http://group/prompt',
+      // 请求体引用的是暂存名（提交阶段写入的占位文件名）
+      comfyuiRequestBody: JSON.stringify({ prompt: { '1': { inputs: { image: stagedName } } } }),
+      comfyuiResponse: null,
+      promptId: null,
+      providerId: groupId,
+      providerName: 'G',
+      uploadedFiles: JSON.stringify([stagedName]),
+    });
+    taskService.updateStatus(task.id, { status: 'queued' });
+    await stageUploads(task.id, [{ meta, buffer: Buffer.from('png') }]);
+    return taskService.getById(task.id)!;
+  }
+
+  it('submits the member-side filename returned by the upload instead of the staged name', async () => {
+    const promptBodies: string[] = [];
+    const uploadFilenames: string[] = [];
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/system_stats')) return new Response('{}', { status: 200 });
+      if (url.endsWith('/upload/image')) {
+        // 记录 multipart 中实际发送的文件名（保留原始主体名 + 唯一后缀）
+        const form = init?.body as FormData;
+        uploadFilenames.push((form.get('image') as unknown as { name: string }).name);
+        // 执行端返回自己生成的文件名（与本地暂存名不同）
+        return new Response(JSON.stringify({ name: 'member-side_zzz999.png' }), { status: 200 });
+      }
+      if (url.endsWith('/prompt')) {
+        promptBodies.push(String(init?.body ?? ''));
+        return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch);
+
+    const member = providerService.create({ name: 'm', type: 'comfyui', config: { baseUrl: 'http://m:8188' } });
+    const group = providerService.create({
+      name: 'G',
+      type: 'group',
+      config: { dispatchPolicy: 'priority', members: [{ providerId: member.id, weight: 1 }] },
+    });
+    const task = await createQueuedTaskWithStagedMedia(group.id, 'demo_aaa111.png', 'demo.png');
+
+    await dispatcher.drainGroup(group.id);
+
+    // 上传的是暂存文件内容，文件名由执行提供商按原始名重新生成
+    expect(uploadFilenames).toHaveLength(1);
+    expect(uploadFilenames[0]).toMatch(/^demo_[0-9a-f]{6}\.png$/);
+    // 提交的请求体必须引用执行端返回的文件名，否则执行端会报文件不存在
+    expect(promptBodies).toHaveLength(1);
+    const submitted = JSON.parse(promptBodies[0]) as { prompt: Record<string, { inputs: { image: string } }> };
+    expect(submitted.prompt['1'].inputs.image).toBe('member-side_zzz999.png');
+    // 任务记录保留暂存名形态的请求体（便于改投其他成员时重新回写）
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(member.id);
+    expect(JSON.parse(after.comfyuiRequestBody ?? '{}').prompt['1'].inputs.image).toBe('demo_aaa111.png');
+    // 实例侧真实文件名追加进 uploaded_files，供终态后的资产自动清理
+    expect(JSON.parse(after.uploadedFiles)).toEqual(['demo_aaa111.png', 'member-side_zzz999.png']);
+  });
+
+  it('cools down a member whose upload fails and submits to the next candidate', async () => {
+    const promptBodies: string[] = [];
+    vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/system_stats')) return new Response('{}', { status: 200 });
+      if (url.endsWith('/upload/image')) {
+        // 高权重成员的媒体上传失败（实例级故障）
+        if (url.includes('bad:8188')) return new Response('upload exploded', { status: 500 });
+        return new Response(JSON.stringify({ name: 'good-side.png' }), { status: 200 });
+      }
+      if (url.endsWith('/prompt')) {
+        promptBodies.push(String(init?.body ?? ''));
+        return new Response(JSON.stringify({ prompt_id: 'pid-1' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch);
+
+    const bad = providerService.create({ name: 'bad', type: 'comfyui', config: { baseUrl: 'http://bad:8188' } });
+    const good = providerService.create({ name: 'good', type: 'comfyui', config: { baseUrl: 'http://good:8188' } });
+    const group = providerService.create({
+      name: 'G',
+      type: 'group',
+      // bad 权重更高 → 优先选中，其上传失败后应冷却并改投 good
+      config: { dispatchPolicy: 'priority', members: [{ providerId: bad.id, weight: 5 }, { providerId: good.id, weight: 1 }] },
+    });
+    const task = await createQueuedTaskWithStagedMedia(group.id, 'demo_aaa111.png', 'demo.png');
+
+    await dispatcher.drainGroup(group.id);
+
+    // 失败成员进入冷却，任务改投下一个候选并改用该成员返回的文件名
+    expect(healthService.getSnapshot(bad.id).inCooldown).toBe(true);
+    expect(promptBodies).toHaveLength(1);
+    expect(JSON.parse(promptBodies[0]).prompt['1'].inputs.image).toBe('good-side.png');
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(good.id);
   });
 });
 

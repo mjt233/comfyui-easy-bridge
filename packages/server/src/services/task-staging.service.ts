@@ -57,6 +57,8 @@ export function getTaskStagingDir(taskId: string): string {
  * 将待上传媒体写入任务暂存目录。
  * 分组任务在排队期间尚未确定执行实例（各实例的文件存储相互独立），
  * 因此先把文件落到本地暂存目录，调度选定成员后再上传到该成员。
+ * 注意：这里的 stagedName 只是本地暂存名（也作为提交前请求体中的占位文件名），
+ * 上传后由调度器用实例侧实际返回的文件名回写请求体。
  * @param taskId 任务 ID
  * @param jobs 待写入的文件（已确定存储名与归属别名）
  */
