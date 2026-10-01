@@ -5,10 +5,13 @@ export type ProviderType = 'comfyui' | 'runninghub' | 'group';
 
 /**
  * 分组调度策略。
- * - priority: 按算力性能权重降序挑选（权重最大者优先，缺省值）
+ * - priority: 按算力性能权重降序挑选（权重最大者优先，缺省值）；
+ *   最高权重成员满载时**降级**到下一个有空闲槽位的低权重成员
  * - random: 在有空闲槽位的候选中随机挑选
+ * - failover: 灾备模式；只使用权重最大的**在线**成员，该成员满载时原地等待其释放槽位，
+ *   仅在该成员离线时顺延到下一个权重最大的在线成员（不因满载而降级）
  */
-export type GroupDispatchPolicy = 'priority' | 'random';
+export type GroupDispatchPolicy = 'priority' | 'random' | 'failover';
 
 /**
  * 分组的一个成员实例。

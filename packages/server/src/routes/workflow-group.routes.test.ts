@@ -16,6 +16,7 @@ import { ProviderService, type ProviderRow } from '../services/providers/provide
 import { TaskService } from '../services/task.service';
 import { startExecutionService, drainAllQueues } from '../services/execution.service';
 import { healthCheckConfig } from '../services/providers/health.service';
+import type { GroupDispatchPolicy } from '../services/providers/types';
 import { dispatcherConfig } from '../services/dispatcher.service';
 
 /** 临时数据目录（暂存文件与数据库隔离用） */
@@ -131,13 +132,17 @@ describe('分组（自动分配）执行路由', () => {
   /**
    * 建一个分组实例。
    * @param members 成员与权重
+   * @param dispatchPolicy 调度策略（缺省按权重优先）
    * @returns 分组实例行
    */
-  function setupGroup(members: Array<{ providerId: string; weight: number }>): ProviderRow {
+  function setupGroup(
+    members: Array<{ providerId: string; weight: number }>,
+    dispatchPolicy: GroupDispatchPolicy = 'priority',
+  ): ProviderRow {
     return providerService.create({
       name: 'G',
       type: 'group',
-      config: { dispatchPolicy: 'priority', members },
+      config: { dispatchPolicy, members },
     });
   }
 
@@ -233,6 +238,54 @@ describe('分组（自动分配）执行路由', () => {
     expect(after.status).toBe('pending');
     expect(after.actualProviderId).toBe(member.id);
     expect(promptCalls).toHaveLength(1);
+  });
+
+  it('failover group waits for the top member instead of using an idle lower-weight member', async () => {
+    const { promptCalls } = stubFetch();
+    const top = setupMember('top', 1);
+    const idle = setupMember('idle', 5);
+    const group = setupGroup(
+      [{ providerId: top.id, weight: 10 }, { providerId: idle.id, weight: 1 }],
+      'failover',
+    );
+    await setupWorkflow('wf-failover', group.id);
+
+    // 占满最高权重成员的唯一并发槽位
+    const occupying = taskService.create({
+      workflowId: 'wf-failover',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://top:8188/prompt',
+      comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null,
+      promptId: 'pid-busy',
+      providerId: top.id,
+      providerName: 'top',
+    });
+    taskService.setActualProvider(occupying.id, {
+      actualProviderId: top.id,
+      actualProviderName: 'top',
+      promptId: 'pid-busy',
+    });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-failover/execute')
+      .send({ prompt: 'cat' });
+
+    // 灾备模式：最高权重成员满载 → 任务排队等待；完全空闲的低权重成员不被使用
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('queued');
+    expect(promptCalls).toHaveLength(0);
+
+    // 槽位释放后由最高权重成员执行（而非低权重成员）
+    taskService.updateStatus(occupying.id, { status: 'completed' });
+    await drainAllQueues();
+
+    const after = taskService.getById(res.body.task_id as string)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(top.id);
+    expect(promptCalls).toHaveLength(1);
+    expect(promptCalls[0]).toContain('top');
   });
 
   it('queue-jumps a queued task to a chosen member instance via POST /submit', async () => {

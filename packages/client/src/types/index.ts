@@ -1,8 +1,13 @@
 /** 执行提供商类型 */
 export type ProviderType = 'comfyui' | 'runninghub' | 'group';
 
-/** 分组调度策略：priority=按权重优先（缺省）；random=随机分配 */
-export type GroupDispatchPolicy = 'priority' | 'random';
+/**
+ * 分组调度策略。
+ * - priority: 按权重优先（缺省）；最高权重成员满载时降级到下一个有空闲槽位的成员
+ * - random: 在有空闲并发数的成员中随机挑选
+ * - failover: 灾备模式；固定使用权重最大的在线成员，满载则等待，仅在其离线时顺延
+ */
+export type GroupDispatchPolicy = 'priority' | 'random' | 'failover';
 
 /**
  * 分组成员配置。

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProviderService } from './providers/provider.service';
 import { HealthService, healthCheckConfig } from './providers/health.service';
+import type { GroupDispatchPolicy } from './providers/types';
 import { DispatcherService, isPermanentSubmitError, rewriteUploadedFilenames } from './dispatcher.service';
 import { TaskService } from './task.service';
 import { buildTestDb } from './providers/test-db.helper';
@@ -80,7 +81,7 @@ describe('DispatcherService 统一队列调度', () => {
    */
   function createGroup(
     members: Array<{ providerId: string; weight: number }>,
-    dispatchPolicy: 'priority' | 'random' = 'priority',
+    dispatchPolicy: GroupDispatchPolicy = 'priority',
   ) {
     return providerService.create({
       name: 'G',
@@ -184,6 +185,176 @@ describe('DispatcherService 统一队列调度', () => {
 
     // 权重更高者已满 → 分配给次高权重且有空闲槽位的成员
     expect(taskService.getById(task.id)?.actualProviderId).toBe(low.id);
+  });
+
+  it('failover policy waits instead of falling back to a lower-weight member with free slots', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high', 1);
+    const low = createMember('low', 5);
+    const group = createGroup(
+      [{ providerId: high.id, weight: 10 }, { providerId: low.id, weight: 1 }],
+      'failover',
+    );
+    // 最高权重成员的唯一槽位已被别的任务占用
+    const occupying = createQueuedTask(group.id);
+    taskService.updateActualProvider(occupying.id, {
+      actualProviderId: high.id,
+      actualProviderName: 'high',
+      promptId: 'pid-occupied',
+    });
+
+    const task = createQueuedTask(group.id);
+    await dispatcher.drainGroup(group.id);
+
+    // 灾备模式的核心差异：不因满载而降级，任务原地等待最高权重成员的槽位
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('queued');
+    expect(after.actualProviderId).toBeNull();
+    // 低权重成员完全空闲也不被使用
+    expect(taskService.countPendingByActualProvider(low.id)).toBe(0);
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('failover policy submits to the top member once a slot is released', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high', 1);
+    const low = createMember('low', 5);
+    const group = createGroup(
+      [{ providerId: high.id, weight: 10 }, { providerId: low.id, weight: 1 }],
+      'failover',
+    );
+    const occupying = createQueuedTask(group.id);
+    taskService.updateActualProvider(occupying.id, {
+      actualProviderId: high.id,
+      actualProviderName: 'high',
+      promptId: 'pid-occupied',
+    });
+    const task = createQueuedTask(group.id);
+
+    // 第一轮：槽位被占满，任务留在队列等待
+    await dispatcher.drainGroup(group.id);
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+
+    // 占用槽位的任务进入终态（槽位释放回调会触发调度）→ 任务投递到最高权重成员
+    taskService.updateStatus(occupying.id, { status: 'completed' });
+    await dispatcher.drainGroup(group.id);
+
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(high.id);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('failover policy fills the top member slots and leaves the rest waiting', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high', 2);
+    const low = createMember('low', 5);
+    const group = createGroup(
+      [{ providerId: high.id, weight: 9 }, { providerId: low.id, weight: 1 }],
+      'failover',
+    );
+    const t1 = createQueuedTask(group.id);
+    const t2 = createQueuedTask(group.id);
+    const t3 = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    const tasks = [t1, t2, t3].map((t) => taskService.getById(t.id)!);
+    // 最高权重成员并发为 2：两条提交、第三条等待（而非流向低权重成员）
+    expect(tasks.filter((t) => t.status === 'pending')).toHaveLength(2);
+    expect(tasks.filter((t) => t.actualProviderId === high.id)).toHaveLength(2);
+    expect(tasks.filter((t) => t.status === 'queued')).toHaveLength(1);
+    expect(taskService.countPendingByActualProvider(low.id)).toBe(0);
+    expect(promptCalls).toHaveLength(2);
+  });
+
+  it('failover policy falls back to the next highest-weight member when the top one is offline', async () => {
+    const { promptCalls } = stubFetch();
+    const top = createMember('top');
+    const second = createMember('second');
+    const third = createMember('third');
+    const group = createGroup(
+      [
+        { providerId: top.id, weight: 9 },
+        { providerId: second.id, weight: 5 },
+        { providerId: third.id, weight: 1 },
+      ],
+      'failover',
+    );
+    // 最高权重成员离线（处于冷却期）
+    healthService.markFailedNow(top.id, 'probe failed');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 顺延到「下一个权重最大且在线」的成员，而不是权重最低的 third
+    expect(taskService.getById(task.id)?.actualProviderId).toBe(second.id);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('failover policy treats same-weight members as one tier and uses the one with a free slot', async () => {
+    stubFetch();
+    const busy = createMember('busy', 1);
+    const spare = createMember('spare', 1);
+    const low = createMember('low', 5);
+    const group = createGroup(
+      [
+        { providerId: busy.id, weight: 7 },
+        { providerId: spare.id, weight: 7 },
+        { providerId: low.id, weight: 1 },
+      ],
+      'failover',
+    );
+    // 梯队中排在前面的成员满载
+    const occupying = createQueuedTask(group.id);
+    taskService.updateActualProvider(occupying.id, {
+      actualProviderId: busy.id,
+      actualProviderName: 'busy',
+      promptId: 'pid-occupied',
+    });
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 同权重视为同一梯队：使用梯队内有空闲槽位的成员，无需等待 busy
+    expect(taskService.getById(task.id)?.actualProviderId).toBe(spare.id);
+  });
+
+  it('failover policy falls back to the next tier when the top member fails the pre-submit probe', async () => {
+    const { promptCalls } = stubFetch({ probeFailFor: 'flaky' });
+    const flaky = createMember('flaky');
+    const backup = createMember('backup');
+    const group = createGroup(
+      [{ providerId: flaky.id, weight: 9 }, { providerId: backup.id, weight: 1 }],
+      'failover',
+    );
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 最高权重成员探测失败并进入冷却 → 本轮内顺延到下一个在线成员
+    expect(taskService.getById(task.id)?.actualProviderId).toBe(backup.id);
+    expect(healthService.isHealthy(flaky.id)).toBe(false);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('failover policy keeps the task queued when every member is offline', async () => {
+    const { promptCalls } = stubFetch();
+    const a = createMember('a');
+    const b = createMember('b');
+    const group = createGroup(
+      [{ providerId: a.id, weight: 5 }, { providerId: b.id, weight: 1 }],
+      'failover',
+    );
+    healthService.markFailedNow(a.id, 'down');
+    healthService.markFailedNow(b.id, 'down');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 全部离线：任务留在队列等待成员恢复（不失败、不丢失）
+    expect(taskService.getById(task.id)?.status).toBe('queued');
+    expect(promptCalls).toHaveLength(0);
   });
 
   it('leaves the task queued when every member has no free slot', async () => {

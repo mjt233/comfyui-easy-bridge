@@ -80,6 +80,28 @@ describe('ProviderService 分组（group）支持', () => {
     expect(service.validateInput({ name: 'G', type: 'group', config: { members: 'x' } }).ok).toBe(false);
   });
 
+  it('validateInput accepts the failover dispatch policy and it survives instantiation and summary', () => {
+    const a = createMember('a', 2);
+    // 灾备模式是合法策略：校验通过并原样保留
+    const result = service.validateInput({
+      name: 'G',
+      type: 'group',
+      config: { dispatchPolicy: 'failover', members: [{ providerId: a.id, weight: 2 }] },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.config).toEqual({ dispatchPolicy: 'failover', members: [{ providerId: a.id, weight: 2 }] });
+
+    const group = service.create({
+      name: 'G',
+      type: 'group',
+      config: { dispatchPolicy: 'failover', members: [{ providerId: a.id, weight: 2 }] },
+    });
+    // 实例化与对外摘要都要回显灾备模式（调度器据此挑选成员，前端据此回显）
+    expect((service.instantiate(group) as GroupProvider).getDispatchPolicy()).toBe('failover');
+    expect(service.toSummary(group).dispatchPolicy).toBe('failover');
+  });
+
   it('validateInput normalizes member weights: missing/zero/negative/NaN fall back to 1', () => {
     const a = createMember('a');
     const b = createMember('b');

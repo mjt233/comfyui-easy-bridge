@@ -84,7 +84,7 @@ export function isPermanentSubmitError(message: string | null): boolean {
  * 不再有「空闲直接提交」的旁路，也不再有实例跟踪器内的第二套队列消费逻辑：
  *
  * 1. 分组队列（drainGroup）：取该分组最早的 queued 任务，
- *    在可分配成员中按策略挑选一个有空闲槽位、且通过可用性检测的成员提交；
+ *    在可分配成员中按策略（priority / random / failover 灾备模式）挑选成员提交；
  * 2. 实例队列（drainProvider）：取锁定到该实例的最早的 queued 任务，
  *    实例有空闲槽位且探测通过时提交。
  *
@@ -109,6 +109,12 @@ export class DispatcherService {
    * 而不是让整个队列停摆。
    */
   private readonly attemptedMembers = new Map<string, Set<string>>();
+  /**
+   * 灾备模式等待日志的去重记录：任务 ID → 上次记录的「等待梯队成员签名」。
+   * 灾备模式下最高权重梯队满载时任务会持续等待，而兜底扫描每 30s 就会重新触发一轮调度；
+   * 若不去重，同一等待状态会在日志中反复刷屏。仅当等待对象（梯队成员集合）变化时才重新记录。
+   */
+  private readonly failoverWaitLogged = new Map<string, string>();
   /** 队列兜底扫描定时器 */
   private fallbackTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -159,15 +165,16 @@ export class DispatcherService {
         // 本轮已经尝试过并失败的成员（探测失败/提交瞬时故障），避免重复尝试同一个
         const attempted = this.attemptedMembers.get(task.id) ?? new Set<string>();
         this.attemptedMembers.set(task.id, attempted);
-        const member = this.pickMember(group, attempted);
-        // 无可用候选（槽位全满或全部已在冷却/本轮已失败）：本轮结束，任务留在队列等待
+        const member = this.pickMember(group, attempted, task.id);
+        // 无可用候选（槽位全满或全部已在冷却/本轮已失败）：本轮结束，任务留在队列等待。
+        // 灾备模式下「最高权重梯队满载」也走此分支：任务原地等待槽位释放，不降级到低权重成员
         if (!member) {
           this.attemptedMembers.delete(task.id);
           break;
         }
         const outcome = await this.submitTask(task.id, member.provider, `group:${group.id}`);
         if (outcome === 'submitted') {
-          this.attemptedMembers.delete(task.id);
+          this.forgetTaskAttempts(task.id);
           // 提交成功后继续尝试填满其余空闲槽位
           continue;
         }
@@ -177,7 +184,7 @@ export class DispatcherService {
           continue;
         }
         // 任务永久失败：清理记录，继续处理队列中的下一个任务
-        this.attemptedMembers.delete(task.id);
+        this.forgetTaskAttempts(task.id);
       }
     } catch (err: unknown) {
       console.error(`[Dispatcher:${groupId}] drainGroup error`, err);
@@ -257,32 +264,95 @@ export class DispatcherService {
 
   /**
    * 在分组成员中挑选一个可提交任务的成员。
-   * 候选条件：健康（未处于冷却期）、有空闲并发槽位、且本轮尚未尝试失败过。
+   * 通用候选条件：在线（未处于健康冷却期）且本轮尚未尝试失败过。
    * 策略：
-   * - priority：按算力性能权重降序，取第一个满足条件的候选；权重相同时按分组成员配置顺序
-   * - random：在满足条件的候选中随机挑选
+   * - priority：在「有空闲槽位」的候选中按算力性能权重降序取第一个；权重相同时按分组成员配置顺序
+   * - random：在「有空闲槽位」的候选中等概率随机挑选
+   * - failover（灾备模式）：只认权重最大的在线梯队；梯队内任一成员有空闲槽位即提交，
+   *   整个梯队满载时**原地等待**（返回 null，由调用方结束本轮），绝不降级到低权重成员；
+   *   仅当该梯队离线（冷却中或本轮已失败）时才顺延到下一个权重梯队
    * @param group 分组 provider
    * @param attempted 本轮已尝试失败的成员 ID 集合
-   * @returns 选中的成员；无可用候选时返回 null
+   * @param taskId 队头任务 ID（仅供灾备模式的等待日志去重使用）
+   * @returns 选中的成员；无可用候选或灾备模式需等待槽位释放时返回 null
    */
-  private pickMember(group: GroupProvider, attempted: Set<string>): ResolvedGroupMember | null {
-    // 过滤出健康、有空闲槽位且本轮未失败过的候选
-    const candidates = group.listMembers().filter((member) => {
-      if (attempted.has(member.providerId)) return false;
-      if (!this.healthService.isHealthy(member.providerId)) return false;
-      return this.slotsOf(member.provider) > 0;
-    });
-    if (candidates.length === 0) return null;
+  private pickMember(group: GroupProvider, attempted: Set<string>, taskId: string): ResolvedGroupMember | null {
+    // 在线且本轮未失败过的成员，按权重降序稳定排序（同权重保持分组成员配置顺序）
+    const online = group.listMembers()
+      .filter((member) => !attempted.has(member.providerId) && this.healthService.isHealthy(member.providerId))
+      .sort((a, b) => b.weight - a.weight);
+    if (online.length === 0) return null;
+
+    // 灾备模式：候选集合必须包含满载成员（否则会误判为「无候选」而静默降级），故单独挑选
+    if (group.getDispatchPolicy() === 'failover') {
+      return this.pickFailoverMember(online, taskId);
+    }
+
+    // priority / random：仅在有空闲槽位的在线成员中挑选
+    const available = online.filter((member) => this.slotsOf(member.provider) > 0);
+    if (available.length === 0) return null;
 
     if (group.getDispatchPolicy() === 'random') {
       // 随机策略：等概率挑选一个可用候选
-      const index = Math.floor(Math.random() * candidates.length);
-      return candidates[index];
+      const index = Math.floor(Math.random() * available.length);
+      return available[index];
     }
 
-    // 按权重优先：权重降序；权重相同时保持分组成员配置顺序（稳定排序）
-    const sorted = [...candidates].sort((a, b) => b.weight - a.weight);
-    return sorted[0];
+    // 按权重优先：已按权重降序排序，取第一个（权重相同时即配置顺序最靠前者）
+    return available[0];
+  }
+
+  /**
+   * 灾备模式的成员挑选：固定使用权重最大的在线梯队。
+   *
+   * 权重相同的成员构成同一优先级梯队，梯队内优先使用有空闲槽位的成员（同权重按配置顺序取第一个空闲者）；
+   * 整个梯队都满载时返回 null，让任务留在队列**等待槽位释放**——这正是灾备模式与 priority 的核心差异：
+   * 不会因为满载而降级使用低权重成员。只有当梯队内成员全部离线（冷却中或本轮已失败）时，
+   * 调用方的下一轮挑选才会顺延到下一个权重梯队。
+   * @param online 在线且本轮未失败过的成员（已按权重降序排序，首项即最高权重）
+   * @param taskId 队头任务 ID（等待日志去重用）
+   * @returns 选中的成员；最高权重梯队满载需等待时返回 null
+   */
+  private pickFailoverMember(online: ResolvedGroupMember[], taskId: string): ResolvedGroupMember | null {
+    // 排序后首项的权重即最高权重，同权重成员构成一个梯队
+    const topWeight = online[0].weight;
+    const tier = online.filter((member) => member.weight === topWeight);
+
+    // 梯队内任有空闲槽位即可提交（同权重时按配置顺序取第一个空闲者）
+    const free = tier.find((member) => this.slotsOf(member.provider) > 0);
+    if (free) {
+      // 任务已脱离等待状态：清理去重记录，便于它下次因满载而等待时重新提示
+      this.failoverWaitLogged.delete(taskId);
+      return free;
+    }
+
+    // 梯队整体满载：不降级到低权重成员，任务留在队列等待槽位释放，
+    // 由槽位释放回调 / 健康巡检回调 / 兜底扫描唤醒后重试
+    this.logFailoverWait(taskId, tier);
+    return null;
+  }
+
+  /**
+   * 记录一次灾备模式「最高权重梯队满载而等待」的日志（按任务去重，避免反复刷屏）。
+   * @param taskId 队头任务 ID
+   * @param tier 正在等待的最高权重梯队成员
+   */
+  private logFailoverWait(taskId: string, tier: ResolvedGroupMember[]): void {
+    // 等待对象未变化时不重复记录（兜底扫描每 30s 就会触发一轮调度）
+    const signature = tier.map((member) => member.providerId).join(',');
+    if (this.failoverWaitLogged.get(taskId) === signature) return;
+    this.failoverWaitLogged.set(taskId, signature);
+    const names = tier.map((member) => member.providerName).join('、');
+    console.info(`[Dispatcher] failover: task ${taskId} waits for a free slot on ${names}`);
+  }
+
+  /**
+   * 清理某个任务的调度中间态记录（已提交 / 永久失败后调用），避免内存长期累积。
+   * @param taskId 任务 ID
+   */
+  private forgetTaskAttempts(taskId: string): void {
+    this.attemptedMembers.delete(taskId);
+    this.failoverWaitLogged.delete(taskId);
   }
 
   /**
@@ -503,5 +573,6 @@ export class DispatcherService {
     this.providerInFlight.clear();
     this.taskInFlight.clear();
     this.attemptedMembers.clear();
+    this.failoverWaitLogged.clear();
   }
 }

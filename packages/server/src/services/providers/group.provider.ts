@@ -42,7 +42,7 @@ export class GroupProvider implements ExecutionProvider {
    * @param id 实例 ID
    * @param name 展示名
    * @param concurrency 并发上限字段（分组不使用，固定为 1）
-   * @param dispatchPolicy 调度策略
+   * @param dispatchPolicy 调度策略：priority（按权重优先）/ random（随机）/ failover（灾备模式）
    * @param members 已解析的成员列表
    */
   constructor(
@@ -78,7 +78,12 @@ export class GroupProvider implements ExecutionProvider {
     };
   }
 
-  /** 当前调度策略 */
+  /**
+   * 当前调度策略。
+   * failover（灾备模式）的挑选与等待语义由调度器实现（见 dispatcher.pickFailoverMember）：
+   * 分组自身只负责携带策略与成员列表。
+   * @returns 调度策略
+   */
   getDispatchPolicy(): GroupDispatchPolicy {
     return this.dispatchPolicy;
   }

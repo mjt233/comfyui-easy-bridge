@@ -238,6 +238,10 @@
                 label="随机分配（在有空闲并发数的成员中随机挑选）"
                 value="random"
               />
+              <v-radio
+                label="灾备模式（固定使用权重最大的在线成员；满载则等待，仅在其离线时顺延）"
+                value="failover"
+              />
             </v-radio-group>
 
             <v-divider class="my-4" />
@@ -246,7 +250,8 @@
               成员实例
             </div>
             <div class="text-caption text-medium-emphasis mb-3">
-              只有加入本分组的成员实例才会被自动分配；权重越大越优先（缺省 1）
+              只有加入本分组的成员实例才会被自动分配；权重越大越优先（缺省 1）。
+              灾备模式下权重即优先级顺序：固定使用权重最大的在线成员，满载时等待其释放并发。
             </div>
 
             <v-select
@@ -865,7 +870,7 @@ function openEditDialog(p: ProviderSummary) {
   const inputDir = 'inputDir' in config && typeof config.inputDir === 'string' ? config.inputDir : '';
   const gpuSize = 'gpuSize' in config && (config.gpuSize === '24G' || config.gpuSize === '48G') ? config.gpuSize : '24G';
   // 分组配置：调度策略与成员（成员权重缺省 1）
-  const dispatchPolicy = 'dispatchPolicy' in config && config.dispatchPolicy === 'random' ? 'random' as const : 'priority' as const;
+  const dispatchPolicy = resolveDispatchPolicy(config);
   const members: GroupMemberConfig[] = 'members' in config && Array.isArray(config.members)
     ? config.members
       .filter((m) => m && typeof m.providerId === 'string' && m.providerId !== '')
@@ -890,6 +895,29 @@ function openEditDialog(p: ProviderSummary) {
 }
 
 /**
+ * 分组调度策略的展示文案。
+ * @param policy 调度策略；null（非分组实例或分组配置非法）按缺省策略展示
+ * @returns 中文展示名
+ */
+function dispatchPolicyLabel(policy: GroupDispatchPolicy | null): string {
+  if (policy === 'random') return '随机分配';
+  if (policy === 'failover') return '灾备模式';
+  // null 与 priority 都落到「按权重优先」：后端对缺失/非法策略同样回退缺省值
+  return '按权重优先';
+}
+
+/**
+ * 解析分组配置中的调度策略，非法或缺失值回退缺省值 priority。
+ * @param config 提供商配置（判别联合，仅 group 配置携带 dispatchPolicy）
+ * @returns 合法的调度策略
+ */
+function resolveDispatchPolicy(config: ProviderConfigInput): GroupDispatchPolicy {
+  // config 为判别联合：用 in 收窄；服务端 config 损坏时字段可能缺失或为任意值
+  const raw = 'dispatchPolicy' in config ? config.dispatchPolicy : undefined;
+  return raw === 'random' || raw === 'failover' ? raw : 'priority';
+}
+
+/**
  * 生成实例列表子标题：
  * - 分组：调度策略 + 成员数 + 空闲并发槽位 + 启用状态
  * - 普通实例：类型 + 解析地址/GPU 档位 + 并发 + 启用状态（含自动清理标记与健康冷却提示）
@@ -899,8 +927,7 @@ function openEditDialog(p: ProviderSummary) {
 function providerSubtitle(p: ProviderSummary): string {
   const status = p.enabled ? '已启用' : '已停用';
   if (p.type === 'group') {
-    const policyLabel = p.dispatchPolicy === 'random' ? '随机分配' : '按权重优先';
-    return `分组 · ${policyLabel} · ${p.memberCount} 个成员 · 空闲并发 ${p.availableSlots} · ${status}`;
+    return `分组 · ${dispatchPolicyLabel(p.dispatchPolicy)} · ${p.memberCount} 个成员 · 空闲并发 ${p.availableSlots} · ${status}`;
   }
   const typeLabel = p.type === 'runninghub' ? 'RunningHub' : 'ComfyUI 原生';
   const config = p.config;

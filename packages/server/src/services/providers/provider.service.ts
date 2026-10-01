@@ -111,7 +111,7 @@ export interface ProviderSummary {
 const TYPES: readonly ProviderType[] = ['comfyui', 'runninghub', 'group'];
 
 /** 调度策略白名单 */
-const DISPATCH_POLICIES: readonly GroupDispatchPolicy[] = ['priority', 'random'];
+const DISPATCH_POLICIES: readonly GroupDispatchPolicy[] = ['priority', 'random', 'failover'];
 
 /** 默认调度策略：按权重优先 */
 const DEFAULT_DISPATCH_POLICY: GroupDispatchPolicy = 'priority';
@@ -679,7 +679,8 @@ export class ProviderService {
 
   /**
    * 校验 group（分组）类型输入。
-   * dispatchPolicy 缺省为 priority；members 缺省空数组，逐项规范化：
+   * dispatchPolicy 缺省为 priority，取值为 priority / random / failover（灾备模式）；
+   * members 缺省空数组，逐项规范化：
    * - 丢弃非对象条目与缺失 providerId 的条目
    * - 同一 providerId 重复出现时保留首次出现的权重
    * - 权重非正数/非有限数时回退默认值 1
@@ -694,7 +695,7 @@ export class ProviderService {
     // dispatchPolicy 缺省 priority；显式提供非法值则拒绝
     const rawPolicy = cfg?.dispatchPolicy;
     if (rawPolicy !== undefined && !DISPATCH_POLICIES.includes(rawPolicy as GroupDispatchPolicy)) {
-      return { ok: false, error: 'dispatchPolicy must be priority or random' };
+      return { ok: false, error: 'dispatchPolicy must be priority, random or failover' };
     }
     const dispatchPolicy = (rawPolicy as GroupDispatchPolicy | undefined) ?? DEFAULT_DISPATCH_POLICY;
     // members 缺省空数组；显式提供非数组则拒绝
