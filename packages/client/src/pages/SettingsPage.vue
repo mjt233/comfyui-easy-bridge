@@ -68,13 +68,28 @@
           @update:model-value="handleDefaultChange"
         />
 
-        <v-btn
-          color="primary"
-          prepend-icon="mdi-plus"
-          @click="openCreateDialog"
-        >
-          新建提供商
-        </v-btn>
+        <div class="d-flex flex-wrap align-center ga-2">
+          <v-btn
+            color="primary"
+            prepend-icon="mdi-plus"
+            @click="openCreateDialog"
+          >
+            新建提供商
+          </v-btn>
+          <!-- 一键测试：并发探测全部「已启用且非分组」的实例，逐个刷新左侧状态图标 -->
+          <v-btn
+            variant="tonal"
+            prepend-icon="mdi-lan-connect"
+            :loading="testingAll"
+            :disabled="!canTestAll"
+            @click="handleTestAll"
+          >
+            一键测试
+          </v-btn>
+          <span class="text-caption text-medium-emphasis">
+            {{ testingAll ? `测试中 ${testAllProgress.done}/${testAllProgress.total}` : '仅测试已启用的非分组实例' }}
+          </span>
+        </div>
 
         <v-list v-if="providers.length > 0" class="mt-4">
           <v-list-item
@@ -82,13 +97,27 @@
             :key="p.id"
             :title="p.name"
             :subtitle="providerSubtitle(p)"
-            :prepend-icon="providerIcon(p)"
           >
+            <!-- prepend 槽自定义：最前为测试状态图标，其后保留原有的类型图标 -->
+            <template #prepend>
+              <v-tooltip :text="providerTestTooltip(p)" location="top">
+                <template #activator="{ props: tooltipProps }">
+                  <v-icon
+                    v-bind="tooltipProps"
+                    :icon="providerTestIcon(p)"
+                    :color="providerTestColor(p)"
+                    :class="providerTestIconClass(p)"
+                    class="mr-3"
+                  />
+                </template>
+              </v-tooltip>
+              <v-icon :icon="providerIcon(p)" />
+            </template>
             <template #append>
               <v-btn
                 size="small"
                 variant="text"
-                :loading="testingId === p.id"
+                :loading="isProviderTesting(p)"
                 @click="handleTest(p)"
               >
                 测试
@@ -394,6 +423,7 @@ import type {
   ProviderSummary,
   ProviderType,
 } from '@/types';
+import { runWithConcurrency } from '@/utils/concurrency';
 
 /** 输出文件下载方式 */
 const downloadMode = ref('proxy');
@@ -554,10 +584,177 @@ function handleRemoveMember(providerId: string) {
 const providerTestResult = ref<TestConnectionResult | null>(null);
 /** 弹窗内是否测试中 */
 const testing = ref(false);
-/** 列表中正在测试的实例 ID */
-const testingId = ref('');
 /** 提供商是否保存中 */
 const savingProvider = ref(false);
+
+/**
+ * 单个实例的连通性测试状态（仅存在于前端内存，页面刷新后重置为「未测试」）。
+ */
+interface ProviderTestState {
+  /** 测试阶段：testing 测试中 / ok 通过 / failed 不通过 */
+  status: 'testing' | 'ok' | 'failed';
+  /** 结果文案：通过时为成功文案，不通过时为失败原因 */
+  message: string;
+  /** 最近一次测试完成时间（ISO 字符串）；testing 阶段为 null */
+  checkedAt: string | null;
+}
+
+/** 一键测试的并发上限：避免同时向执行端发起过多探测请求 */
+const TEST_ALL_CONCURRENCY = 3;
+
+/**
+ * 实例 ID → 最近一次测试状态。
+ * 未测试的实例不出现在表中（列表项显示灰色问号占位）。
+ */
+const providerTestStates = ref<Record<string, ProviderTestState>>({});
+/** 是否正在执行一键测试 */
+const testingAll = ref(false);
+/** 一键测试进度（已结束实例数 / 本次待测总数），非测试期间 done 为 0 */
+const testAllProgress = ref({ done: 0, total: 0 });
+
+/**
+ * 可参与「一键测试」的实例：已启用且非分组。
+ * 分组自身没有可探测端点（其连通性由成员体现），已停用实例不参与调度，故一并跳过。
+ */
+const testableProviders = computed(() => providers.value.filter((p) => p.enabled && p.type !== 'group'));
+
+/** 一键测试按钮是否可用：存在可测实例（测试进行中由按钮 loading 态阻止重复点击） */
+const canTestAll = computed(() => testableProviders.value.length > 0);
+
+/**
+ * 写入某个实例的测试状态（整体替换对象，保证列表项响应式刷新）。
+ * @param id 实例 ID
+ * @param state 新的测试状态
+ */
+function setProviderTestState(id: string, state: ProviderTestState): void {
+  providerTestStates.value = { ...providerTestStates.value, [id]: state };
+}
+
+/**
+ * 清除某个实例的测试状态（实例被删除或配置变更后，旧测试结果不再可信）。
+ * @param id 实例 ID
+ */
+function clearProviderTestState(id: string): void {
+  if (!(id in providerTestStates.value)) return;
+  const next = { ...providerTestStates.value };
+  delete next[id];
+  providerTestStates.value = next;
+}
+
+/**
+ * 查询实例当前是否处于测试中（用于行内「测试」按钮的 loading 态）。
+ * @param p 实例摘要
+ * @returns 是否测试中
+ */
+function isProviderTesting(p: ProviderSummary): boolean {
+  return providerTestStates.value[p.id]?.status === 'testing';
+}
+
+/**
+ * 列表项前置状态图标：未测试为灰色问号、测试中为旋转的 loading、通过为绿勾、不通过为红色断线。
+ * @param p 实例摘要
+ * @returns mdi 图标名
+ */
+function providerTestIcon(p: ProviderSummary): string {
+  const state = providerTestStates.value[p.id];
+  if (!state) return 'mdi-help-circle-outline';
+  if (state.status === 'testing') return 'mdi-loading';
+  return state.status === 'ok' ? 'mdi-check-circle' : 'mdi-lan-disconnect';
+}
+
+/**
+ * 状态图标颜色：未测试灰、测试中主色、通过绿（success）、不通过红（error）。
+ * @param p 实例摘要
+ * @returns Vuetify 颜色名
+ */
+function providerTestColor(p: ProviderSummary): string {
+  const state = providerTestStates.value[p.id];
+  if (!state) return 'grey';
+  if (state.status === 'testing') return 'primary';
+  return state.status === 'ok' ? 'success' : 'error';
+}
+
+/**
+ * 状态图标的附加样式类：测试中时让 loading 图标旋转。
+ * @param p 实例摘要
+ * @returns 样式类对象
+ */
+function providerTestIconClass(p: ProviderSummary): Record<string, boolean> {
+  return { 'mdi-spin': isProviderTesting(p) };
+}
+
+/**
+ * 状态图标的悬停提示：显示最近一次测试的结论与时间。
+ * @param p 实例摘要
+ * @returns 提示文案
+ */
+function providerTestTooltip(p: ProviderSummary): string {
+  const state = providerTestStates.value[p.id];
+  if (!state) return '尚未测试';
+  if (state.status === 'testing') return '正在测试…';
+  // 时间仅用于辅助判断结果的新鲜度，取本地时分秒即可
+  const time = state.checkedAt
+    ? new Date(state.checkedAt).toLocaleTimeString('zh-CN', { hour12: false })
+    : '';
+  return time ? `${state.message} · ${time}` : state.message;
+}
+
+/**
+ * 测试单个实例并把结果写入状态表。
+ * 仅做连通性诊断：不写入后端健康状态，也不影响自动分配与调度。
+ * @param p 实例摘要
+ * @returns 是否连通
+ */
+async function runProviderTest(p: ProviderSummary): Promise<boolean> {
+  // 先置为测试中，使图标立即进入 loading 态
+  setProviderTestState(p.id, { status: 'testing', message: '正在测试…', checkedAt: null });
+  try {
+    const result = await testProviderById(p.id);
+    setProviderTestState(p.id, {
+      status: result.ok ? 'ok' : 'failed',
+      message: result.message,
+      checkedAt: new Date().toISOString(),
+    });
+    return result.ok;
+  } catch {
+    // 网络异常 / 鉴权失效等：统一按「不通过」处理并给出兜底文案
+    setProviderTestState(p.id, {
+      status: 'failed',
+      message: '测试请求失败',
+      checkedAt: new Date().toISOString(),
+    });
+    return false;
+  }
+}
+
+/**
+ * 一键测试：并发（上限 TEST_ALL_CONCURRENCY）探测全部「已启用且非分组」的实例。
+ * 每个实例完成后立即刷新其状态图标，最后用提示条汇总结果。
+ */
+async function handleTestAll() {
+  // 快照当前待测实例：测试过程中列表若被刷新，仍以本次快照为准
+  const targets = [...testableProviders.value];
+  if (targets.length === 0) return;
+  testingAll.value = true;
+  testAllProgress.value = { done: 0, total: targets.length };
+  let passed = 0;
+  let failed = 0;
+  try {
+    await runWithConcurrency(targets, TEST_ALL_CONCURRENCY, async (p) => {
+      const ok = await runProviderTest(p);
+      if (ok) passed += 1;
+      else failed += 1;
+      testAllProgress.value = { done: testAllProgress.value.done + 1, total: targets.length };
+    });
+  } finally {
+    testingAll.value = false;
+  }
+  snackbar.value = {
+    show: true,
+    text: `一键测试完成：${passed} 通过 / ${failed} 失败（共 ${targets.length} 个）`,
+    color: failed === 0 ? 'success' : 'error',
+  };
+}
 
 /**
  * 保存常规设置（输出下载方式）。
@@ -875,6 +1072,8 @@ async function handleSaveProvider() {
         payload.config = buildConfigPayload();
       }
       await updateProvider(id, payload);
+      // 配置可能已变更，旧的测试结果不再可信：清除状态，让图标回到「未测试」
+      clearProviderTestState(id);
       snackbar.value = { show: true, text: '提供商已更新', color: 'success' };
     } else {
       const created = await createProvider({
@@ -920,19 +1119,17 @@ async function handleDefaultChange(val: string | null) {
 }
 
 /**
- * 测试列表中的已保存实例连通性。
+ * 测试列表中的单个已保存实例连通性（分组与已停用实例也可用此入口测试）。
+ * 结果同时写入状态表，驱动列表项前置状态图标。
  * @param p 实例摘要
  */
 async function handleTest(p: ProviderSummary) {
-  testingId.value = p.id;
-  try {
-    const result = await testProviderById(p.id);
-    snackbar.value = { show: true, text: result.message, color: result.ok ? 'success' : 'error' };
-  } catch {
-    snackbar.value = { show: true, text: '测试连接失败', color: 'error' };
-  } finally {
-    testingId.value = '';
-  }
+  const ok = await runProviderTest(p);
+  snackbar.value = {
+    show: true,
+    text: providerTestStates.value[p.id]?.message ?? '测试完成',
+    color: ok ? 'success' : 'error',
+  };
 }
 
 /**
@@ -943,6 +1140,8 @@ async function handleDelete(p: ProviderSummary) {
   if (!window.confirm(`确定删除提供商「${p.name}」吗？`)) return;
   try {
     await deleteProvider(p.id);
+    // 实例已不存在：连同测试状态一并清除，避免内存中残留孤儿条目
+    clearProviderTestState(p.id);
     // 若删除的是本地记录的默认实例，清空本地默认
     if (defaultProviderId.value === p.id) {
       defaultProviderId.value = null;
