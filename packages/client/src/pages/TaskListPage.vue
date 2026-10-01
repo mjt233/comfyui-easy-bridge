@@ -17,16 +17,9 @@
   </v-app-bar>
 
   <v-container>
-    <!-- 两个页签：待调度（queued，尚未提交到任何实例）/ 已提交（已真实提交到具体实例） -->
+    <!-- 两个页签：【已提交】（已真实提交到具体实例，默认打开）在前 / 【待调度】（queued，尚未提交到任何实例）在后 -->
     <v-card>
       <v-tabs v-model="activeTab" color="primary" density="comfortable">
-        <v-tab value="pending-dispatch">
-          <v-icon start>mdi-timer-sand</v-icon>
-          待调度
-          <v-chip v-if="queuedTasks.length > 0" size="x-small" class="ml-2" color="blue">
-            {{ queuedTasks.length }}
-          </v-chip>
-        </v-tab>
         <v-tab value="submitted">
           <v-icon start>mdi-cloud-upload-outline</v-icon>
           已提交
@@ -34,77 +27,19 @@
             {{ submittedTasks.length }}
           </v-chip>
         </v-tab>
+        <v-tab value="pending-dispatch">
+          <v-icon start>mdi-timer-sand</v-icon>
+          待调度
+          <v-chip v-if="queuedTasks.length > 0" size="x-small" class="ml-2" color="blue">
+            {{ queuedTasks.length }}
+          </v-chip>
+        </v-tab>
       </v-tabs>
       <v-divider />
 
-      <!-- 待调度：等待匹配的执行提供商空闲后按顺序提交 -->
+      <!-- 已提交：已真实提交到具体执行提供商实例（含执行中与已结束），与页签顺序一致排在首位 -->
       <v-data-table
-        v-if="activeTab === 'pending-dispatch'"
-        :headers="queuedHeaders"
-        :items="queuedTasks"
-        :loading="loading"
-        item-value="id"
-        no-data-text="暂无待调度任务"
-        @click:row="handleRowClick"
-      >
-        <template #[`item.providerName`]="{ item }">
-          <div class="d-flex align-center ga-2">
-            <span v-if="providerLabel(item)" class="text-body-2">
-              {{ providerLabel(item) }}
-            </span>
-            <span v-else class="text-caption text-grey">-</span>
-            <!-- 目标为分组：等待分组内成员释放并发槽位 -->
-            <v-chip v-if="item.actualProviderId == null" size="x-small" variant="text" color="blue">
-              分组
-            </v-chip>
-          </div>
-        </template>
-        <template #[`item.createdAt`]="{ value }">
-          {{ formatTime(value) }}
-        </template>
-        <template #[`item.status`]="{ item }">
-          <div class="d-flex align-center ga-2">
-            <v-chip :color="statusColor(item.status)" size="small">
-              {{ statusText(item.status) }}
-            </v-chip>
-            <v-chip size="small" variant="text" color="blue">
-              等待可用实例
-            </v-chip>
-          </div>
-        </template>
-        <template #[`item.actions`]="{ item }">
-          <v-btn
-            color="primary"
-            size="small"
-            variant="tonal"
-            class="mr-1"
-            prepend-icon="mdi-swap-horizontal"
-            @click.stop="openReassign(item)"
-          >
-            修改实例
-          </v-btn>
-          <v-btn
-            color="orange-darken-2"
-            size="small"
-            variant="tonal"
-            class="mr-1"
-            prepend-icon="mdi-flash"
-            @click.stop="openForceSubmit(item)"
-          >
-            立即提交
-          </v-btn>
-          <v-btn
-            icon="mdi-information-outline"
-            size="small"
-            variant="text"
-            @click.stop="openDetail(item)"
-          />
-        </template>
-      </v-data-table>
-
-      <!-- 已提交：已真实提交到具体执行提供商实例（含执行中与已结束） -->
-      <v-data-table
-        v-else
+        v-if="activeTab === 'submitted'"
         :headers="submittedHeaders"
         :items="submittedTasks"
         :loading="loading"
@@ -182,6 +117,71 @@
             @click.stop="handleCancelTask(item.id)"
           >
             中断
+          </v-btn>
+          <v-btn
+            icon="mdi-information-outline"
+            size="small"
+            variant="text"
+            @click.stop="openDetail(item)"
+          />
+        </template>
+      </v-data-table>
+
+      <!-- 待调度：等待匹配的执行提供商空闲后按顺序提交 -->
+      <v-data-table
+        v-else
+        :headers="queuedHeaders"
+        :items="queuedTasks"
+        :loading="loading"
+        item-value="id"
+        no-data-text="暂无待调度任务"
+        @click:row="handleRowClick"
+      >
+        <template #[`item.providerName`]="{ item }">
+          <div class="d-flex align-center ga-2">
+            <span v-if="providerLabel(item)" class="text-body-2">
+              {{ providerLabel(item) }}
+            </span>
+            <span v-else class="text-caption text-grey">-</span>
+            <!-- 目标为分组：等待分组内成员释放并发槽位 -->
+            <v-chip v-if="item.actualProviderId == null" size="x-small" variant="text" color="blue">
+              分组
+            </v-chip>
+          </div>
+        </template>
+        <template #[`item.createdAt`]="{ value }">
+          {{ formatTime(value) }}
+        </template>
+        <template #[`item.status`]="{ item }">
+          <div class="d-flex align-center ga-2">
+            <v-chip :color="statusColor(item.status)" size="small">
+              {{ statusText(item.status) }}
+            </v-chip>
+            <v-chip size="small" variant="text" color="blue">
+              等待可用实例
+            </v-chip>
+          </div>
+        </template>
+        <template #[`item.actions`]="{ item }">
+          <v-btn
+            color="primary"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            prepend-icon="mdi-swap-horizontal"
+            @click.stop="openReassign(item)"
+          >
+            修改实例
+          </v-btn>
+          <v-btn
+            color="orange-darken-2"
+            size="small"
+            variant="tonal"
+            class="mr-1"
+            prepend-icon="mdi-flash"
+            @click.stop="openForceSubmit(item)"
+          >
+            立即提交
           </v-btn>
           <v-btn
             icon="mdi-information-outline"
@@ -753,8 +753,11 @@ const submittedHeaders = [
 
 const tasks = ref<TaskLog[]>([]);
 const loading = ref(true);
-/** 当前激活的页签：pending-dispatch=待调度 / submitted=已提交 */
-const activeTab = ref('pending-dispatch');
+/**
+ * 当前激活的页签：submitted=已提交（默认打开，页签顺序第一） / pending-dispatch=待调度。
+ * 默认值必须是页签顺序中的第一项，保证进入页面即展示【已提交】列表。
+ */
+const activeTab = ref('submitted');
 const detailDialog = ref(false);
 /** 详情对话框当前激活的页签 */
 const detailTab = ref('params');
