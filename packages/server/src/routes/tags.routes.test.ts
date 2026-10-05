@@ -8,7 +8,7 @@ import * as schema from '../models/schema';
 import { createAuthRoutes } from './auth.routes';
 import { createTagsRoutes } from './tags.routes';
 
-// 注：认证中间件默认密码 0d000721（见 AGENTS.md）；此处按 workflow.routes.test.ts 现有做法构造已登录请求
+// 注：认证中间件默认密码 0d000721（见 docs/dev/auth.md）；此处按 workflow.routes.test.ts 现有做法构造已登录请求
 describe('标签管理 API', () => {
   let app: express.Express;
   let db: BetterSQLite3Database<typeof schema>;

@@ -1,3 +1,9 @@
+# AGENTS.md
+
+本文件是编码代理的工作指引：只保留**编码约束、验证方式、常用命令与文档索引**。
+业务细节（认证、执行提供商、任务调度、数据库、错误码等）一律在 [`docs/`](docs/) 下，
+修改代码前请按文末 [文档索引](#文档索引) 查阅对应文档。
+
 ## 编码约束
 
 - 避免使用 `any` 类型
@@ -9,7 +15,8 @@
 
 修改代码后需要执行以下命令进行TypeScript类型验证：
 - 验证后端 `pnpm --filter server exec tsc --noEmit`
-- 验证前端 `pnpm --filter client exec tsc --noEmit`
+- 验证前端 `pnpm --filter client exec vue-tsc --noEmit`
+  （Vue SFC 必须用 `vue-tsc`；纯 `tsc` 无法解析 `*.vue` 导入，会报 `Cannot find module './App.vue'`）
 
 ## 技术栈
 
@@ -25,12 +32,13 @@ packages/server/   Express 后端
   src/
     routes/        URL 路径定义 → controller
     controllers/   参数校验 → service
-    services/      业务逻辑
+    services/      业务逻辑（providers/ 为执行提供商实现）
     middleware/    认证中间件、错误处理
-    models/        Drizzle schema + DB 连接
+    models/        Drizzle schema + DB 连接 + 版本化迁移
 packages/client/   Vue 3 + Vuetify 前端
   src/
-    pages/         LoginPage / WorkflowListPage / WorkflowEditPage / WorkflowDetailPage / SettingsPage
+    pages/         每个路由一个页面组件
+    components/    可复用组件（workflow-canvas / build-script 等）
     api/           axios 封装 (client.ts) + API 模块
     router/        路由配置 (web history, lazy loaded pages)
 ```
@@ -49,82 +57,26 @@ pnpm --filter server test:watch    # vitest watch 模式
 
 ## 关键架构约定
 
-- 后端分层: `routes → controllers → services → models (Drizzle)`
-- 每个路由文件导出工厂函数 `createXxxRoutes(db)`，接收 Drizzle 实例
-- Controller/Route 之间通过闭包注入 `db` 依赖，不使用全局单例
-- 前端每个页面有自己的 `<v-app-bar color="primary">`，`<v-main>` 仅在 `App.vue` 中包裹 `<router-view />`
+- 后端分层: `routes → controllers → services → models (Drizzle)`，不跨层调用
+- 每个路由文件导出工厂函数 `createXxxRoutes(db)`；Controller/Route 之间通过闭包注入 `db`，不使用全局单例
+- 路由注册顺序：静态路径必须早于 `:id` 动态路由
+- 前端 `<v-main>` 仅在 `App.vue` 中包裹 `<router-view />`，每个页面自带自己的 `<v-app-bar color="primary">`
 - 页面使用 `@/` 路径别名 (Vite resolve alias)
+- 数据库 schema 变更**必须**走版本化迁移（新建 `vN-xxx.ts` 并在注册表追加），禁止启动时自动改表
 
-## 认证
+## 文档索引
 
-- 默认密码: `0d000721`，首次启动自动 bcrypt 哈希后存入 settings 表
-- Token 存在 `localStorage('token')`，axios 拦截器自动附加 `Authorization: Bearer`
-- 401 时自动清除 token 并跳转 `/login`
-- 受保护路由在 `router.beforeEach` 中检查
-- 公开端点: `POST /api/auth/login`, `POST /api/workflows/:id/execute`
-
-## 执行提供商
-
-- 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
-- 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）/ `group`（自动分配载体，见 [任务调度](docs/dev/task-scheduling.md)）
-- **分组无在线实例行为**：`group` 配置 `noOnlineInstanceBehavior: 'queue' | 'error'`（缺省 `'queue'`，存量数据缺字段即按 queue 处理）。分组内没有任何**在线**成员（在线只看连通性，**并发额度已满但在线的成员仍算在线**）时：`queue` 让任务留在队列等待调度，`error` 把任务立即置为 `failed`（失败原因含 `provider_no_online_instance`，无宽限期、成员恢复后不自动重试）。分组无成员/成员全部停用仍走提交时 400 `provider_no_available_instance`
-- **实例级启用/停用**：`providers.enabled`（0/1，建实例默认 1）适用于全部类型，未配置即视为启用；停用的实例既不参与解析，也不参与自动分配
-- **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径，**仅用于删除**、不用于解析文件路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`autoCleanup=false`（默认）时**任何路径都不删除**（含提交失败路径），文件留存需人工清理；`simulateBuild` 预览上传的文件从无 prompt 提交、必然无人引用，故忽略开关在返回前立即清理；`inputDir` 为空则跳过并记日志。判断入口：`cleanupTaskUploads(provider, json, reason)`，执行路径走开关、预览路径传 `'preview'`；`ComfyUIProvider.cleanupUploadedFiles` 内部再判一次开关作为双保险
-- 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
-- **解析语义（严格）**：工作流显式指定的实例不存在/已停用/配置非法 → 400 `provider_not_configured`，**不静默回退全局默认**；未指定时才用默认实例。只读预览（工作流详情）仍用宽松的 `resolveWorkflowProvider`
-- 实现位于 `services/providers/`：`types.ts`（抽象接口）、`shared.ts`（公共请求）、`comfyui.provider.ts` / `runninghub.provider.ts` / `group.provider.ts`（具体实现）、`provider.service.ts`（CRUD 与实例解析）、`health.service.ts`（可用性巡检）；`services/dispatcher.service.ts` 为统一队列调度器，`services/execution.service.ts` 按实例维护任务状态跟踪器
-- **API Key 回显与编辑原则**：`apiKey` 永不回显明文（列表/摘要一律打码，编辑弹窗留空不预填）；保存时 API Key 留空 = 不修改原 Key，仅输入新值才更新（前端留空则省略 `config` 回传，后端仅显式提供 `config` 时才覆盖）
-
-### 任务调度（待调度 / 已提交）
-
-- 所有任务（无论目标是分组还是具体实例）**一律先进入【待调度】队列**（`task_logs.status='queued'`），
-  由统一调度器 `services/dispatcher.service.ts` 在目标提供商可用时按入队顺序投递；
-  已真实提交到具体实例的任务（`pending`/`completed`/`failed`）属于【已提交】。
-- 分组（`group` 类型）自身不执行任务，是自动分配的载体；成员权重与挑选策略、可用性冷却、
-  媒体暂存与文件名回写、人工改派（`PATCH /api/tasks/:id/provider`）与插队提交
-  （`POST /api/tasks/:id/submit`）等完整规则与代码索引见
-  **[docs/dev/task-scheduling.md](docs/dev/task-scheduling.md)**。
-
-## 数据库
-
-- SQLite 文件: `data/bridge.db` (已 gitignore)
-- 初始建表与后续 schema 变更统一走**版本化迁移**：`packages/server/src/models/migrations/`（引擎 `runner.ts`、注册表 `index.ts`、迁移 `vN-xxx.ts`）
-- 已应用迁移记录在 `schema_migrations` 表；每个迁移在独立事务中执行，失败自动回滚
-- 旧库启动时自动补齐缺失列（迁移 1 幂等兼容），无需人工干预
-- Drizzle schema 定义在 `schema.ts`（六表: `workflows`, `workflow_params`, `workflow_attachments`, `settings`, `task_logs`, `providers`）
-- 新增 schema 变更：在 `migrations/` 新建 `vN-xxx.ts` 并在 `index.ts` 注册表中追加，同步更新设计文档
-- 测试使用 `:memory:` 数据库，不依赖磁盘文件
-- 可以通过 `DATA_DIR` 环境变量覆盖数据库路径
-
-## 测试
-
-- 后端单元测试直接导入模块，使用 `:memory:` SQLite 实例
-- 集成测试使用 supertest + express 子应用 (不监听端口)
-- 服务端启动被 `process.env.VITEST` 守卫，测试导入时不会监听端口
-- 测试文件命名: `*.test.ts`，和被测试文件放在同一目录
-
-## 错误码
-
-| code | 场景 |
-|------|------|
-| `missing_parameter` | 必填参数缺失 |
-| `unauthorized` | Token 无效/过期 |
-| `workflow_not_found` | 工作流不存在 |
-| `alias_conflict` | 别名重复 (UNIQUE 约束) |
-| `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
-| `provider_not_configured` | 未配置默认提供商 / 显式指定的实例不存在、已停用或配置非法（不静默回退默认） |
-| `provider_no_available_instance` | 提交到分组时该分组没有任何可参与自动分配的成员（HTTP 400） |
-| `provider_no_online_instance` | 分组「无在线实例行为」为 `error` 且分组内没有任何在线成员时的**任务级失败标记**（写在任务 `error_message` 中，不是 HTTP 错误码；任务置 `failed`） |
-| `interrupt_unconfirmed` | 中断请求已发出但未能确认执行端已停止（任务保持 pending） |
-| `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
-| `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |
-| `tag_not_found` | 标签不存在 |
-| `tag_conflict` | 同层级标签名重复 |
-| `tag_preset_readonly` | 预设标签不可编辑 / 删除 |
-| `tag_has_children` | 删除的标签存在子标签 |
-| `tag_in_use` | 删除的标签被工作流引用 |
-| `parent_tag_required` | 打子标签未同时包含父标签 |
-| `invalid_metadata` | 元数据键不属于字段定义或值类型不匹配 |
+| 文档 | 内容 |
+|---|---|
+| [docs/dev/](docs/dev/README.md) | 开发与业务参考文档**总索引**（架构、认证、执行提供商、任务调度、数据库、错误码） |
+| [架构与开发约定](docs/dev/architecture.md) | 分层与依赖注入、启动与静态托管、环境变量、前端约定、测试约定、模块索引 |
+| [认证与鉴权](docs/dev/auth.md) | 默认密码、JWT 生命周期、鉴权开关、端点鉴权范围、前端登录行为 |
+| [执行提供商](docs/dev/execution-providers.md) | 实例类型与配置、默认实例与解析语义、资产自动清理、API Key 回显约定 |
+| [任务调度与队列](docs/dev/task-scheduling.md) | 待调度 / 已提交、统一调度器、分组自动分配、健康冷却、人工改派与插队 |
+| [数据库与迁移](docs/dev/database.md) | 表清单与 `settings` 键、版本化迁移机制、迁移历史、新增变更流程 |
+| [错误码](docs/dev/error-codes.md) | 全部错误码、HTTP 状态码与触发场景 |
+| [工作流 API](docs/workflow-api.md) · [详情 API](docs/workflow-detail-api.md) · [列表 API](docs/workflow-list-api.md) | 对外 REST API 文档 |
+| [docs/dev-plans/](docs/dev-plans/) · [docs/impl/](docs/impl/) · [docs/issues/](docs/issues/) · [docs/superpowers/](docs/superpowers/) | 历史设计、实现方案与问题分析归档 |
 
 ## 参考资料
 
