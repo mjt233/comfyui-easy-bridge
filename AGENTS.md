@@ -67,6 +67,7 @@ pnpm --filter server test:watch    # vitest watch 模式
 
 - 工作流执行通过「执行提供商」实例进行，取代旧的全局设置 `comfyui_base_url` / `comfyui_concurrency`（旧设置仅迁移期读取）
 - 类型：`comfyui`（`config.baseUrl` + 可选 `autoCleanup`/`inputDir`，见下）/ `runninghub`（`config.apiKey` + `gpuSize: '24G'|'48G'`，基础地址由 proxy / proxy-plus 推导）/ `group`（自动分配载体，见 [任务调度](docs/dev/task-scheduling.md)）
+- **分组无在线实例行为**：`group` 配置 `noOnlineInstanceBehavior: 'queue' | 'error'`（缺省 `'queue'`，存量数据缺字段即按 queue 处理）。分组内没有任何**在线**成员（在线只看连通性，**并发额度已满但在线的成员仍算在线**）时：`queue` 让任务留在队列等待调度，`error` 把任务立即置为 `failed`（失败原因含 `provider_no_online_instance`，无宽限期、成员恢复后不自动重试）。分组无成员/成员全部停用仍走提交时 400 `provider_no_available_instance`
 - **实例级启用/停用**：`providers.enabled`（0/1，建实例默认 1）适用于全部类型，未配置即视为启用；停用的实例既不参与解析，也不参与自动分配
 - **资产自动清理**：ComfyUI 无删除文件 API；`comfyui` 配置 `autoCleanup=true` 且 `inputDir`（本机输入目录路径，**仅用于删除**、不用于解析文件路径）非空时，任务到达终态（成功/失败）后按任务记录删除本次上传文件；`autoCleanup=false`（默认）时**任何路径都不删除**（含提交失败路径），文件留存需人工清理；`simulateBuild` 预览上传的文件从无 prompt 提交、必然无人引用，故忽略开关在返回前立即清理；`inputDir` 为空则跳过并记日志。判断入口：`cleanupTaskUploads(provider, json, reason)`，执行路径走开关、预览路径传 `'preview'`；`ComfyUIProvider.cleanupUploadedFiles` 内部再判一次开关作为双保险
 - 全局默认实例由设置 `default_provider_id` 指定；工作流 `providerId` 字段可覆盖（空 = 用全局默认）
@@ -112,7 +113,8 @@ pnpm --filter server test:watch    # vitest watch 模式
 | `alias_conflict` | 别名重复 (UNIQUE 约束) |
 | `comfyui_unreachable` | 执行提供商服务不可达或返回错误 |
 | `provider_not_configured` | 未配置默认提供商 / 显式指定的实例不存在、已停用或配置非法（不静默回退默认） |
-| `provider_no_available_instance` | 提交到分组时该分组没有任何可参与自动分配的成员 |
+| `provider_no_available_instance` | 提交到分组时该分组没有任何可参与自动分配的成员（HTTP 400） |
+| `provider_no_online_instance` | 分组「无在线实例行为」为 `error` 且分组内没有任何在线成员时的**任务级失败标记**（写在任务 `error_message` 中，不是 HTTP 错误码；任务置 `failed`） |
 | `interrupt_unconfirmed` | 中断请求已发出但未能确认执行端已停止（任务保持 pending） |
 | `build_script_error` | 动态构建脚本编译失败 / 运行时抛错 / 返回非对象 |
 | `build_script_timeout` | 动态构建脚本执行超时（默认 5s） |

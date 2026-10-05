@@ -14,6 +14,16 @@ export type ProviderType = 'comfyui' | 'runninghub' | 'group';
 export type GroupDispatchPolicy = 'priority' | 'random' | 'failover';
 
 /**
+ * 分组「无在线实例」行为。
+ *
+ * 「在线」只看连通性：成员未处于健康冷却期即视为在线，**不考虑并发额度是否已满**
+ * （成员能连通但槽位占满属于「有在线实例但无空闲槽位」，两种取值下都继续排队等待）。
+ * - queue: 分组内没有任何在线成员时任务留在队列等待调度（缺省值）
+ * - error: 分组内没有任何在线成员时任务立即置为失败（写失败原因，不再排队等待）
+ */
+export type GroupNoOnlineInstanceBehavior = 'queue' | 'error';
+
+/**
  * 分组的一个成员实例。
  * 成员资格本身表达「该实例参与自动分配」：不在任何分组中的实例不会被自动分配。
  */
@@ -27,13 +37,20 @@ export interface GroupMemberConfig {
 /**
  * 分组（自动分配）提供商配置。
  * 分组自身不执行任务：提交到分组的任务先进入独立队列，
- * 由调度器在成员有空闲并发时按 dispatchPolicy 挑选成员并最终提交。
+ * 由调度器在成员有空闲并发时按 dispatchPolicy 挑选成员并最终提交；
+ * 分组内没有任何在线成员时按 noOnlineInstanceBehavior 决定任务去向（等待或直接失败）。
  */
 export interface GroupProviderConfig {
   /** 调度策略；缺省 'priority' */
   dispatchPolicy: GroupDispatchPolicy;
   /** 本组成员；数组顺序即 priority 策略下权重相同时的优先次序 */
   members: GroupMemberConfig[];
+  /**
+   * 无在线实例行为；缺省 'queue'（留在队列等待调度）。
+   * 'error' 表示分组内没有任何在线成员时任务直接置为失败。
+   * 兼容存量数据：字段缺失或取值非法时一律按 'queue' 处理（由 ProviderService 规范化）。
+   */
+  noOnlineInstanceBehavior?: GroupNoOnlineInstanceBehavior;
 }
 
 /** 连通性测试结果 */
@@ -51,7 +68,7 @@ export interface ConnectionTestResult {
  *   - inputDir: ComfyUI 输入目录的本地文件系统路径，**仅作为删除时的路径来源**，不用于解析工作流中的文件路径
  *     （仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
- * - group: { dispatchPolicy, members }
+ * - group: { dispatchPolicy, members, noOnlineInstanceBehavior }
  */
 export type ProviderConfig =
   | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }

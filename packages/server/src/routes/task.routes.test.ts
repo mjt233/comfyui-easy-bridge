@@ -1007,6 +1007,38 @@ describe('Task provider reassignment endpoints', () => {
     }
   });
 
+  it('PATCH /provider 到「无在线实例直接报错」的分组：任务立即失败', async () => {
+    // 成员不可达：分组内没有任何在线成员
+    const { promptCalls } = stubFetch({ unreachableHost: 'member' });
+    const env = createEnv();
+    const errorGroup = env.providerService.create({
+      name: 'ErrG', type: 'group',
+      config: {
+        dispatchPolicy: 'priority',
+        members: [{ providerId: env.member.id, weight: 1 }],
+        noOnlineInstanceBehavior: 'error',
+      },
+    });
+    const task = createQueuedTask(env, env.emptyGroup.id, false);
+    const svc = startExecutionService(env.db);
+    try {
+      const res = await supertest(env.app)
+        .patch(`/api/tasks/${task.id}/provider`)
+        .send({ providerId: errorGroup.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.provider_id).toBe(errorGroup.id);
+      // 报错模式：改派后的调度即判定「无在线实例」，任务直接失败而非排队等待
+      expect(res.body.status).toBe('failed');
+      const after = env.taskService.getById(task.id)!;
+      expect(after.status).toBe('failed');
+      expect(after.errorMessage).toContain('provider_no_online_instance');
+      expect(promptCalls).toHaveLength(0);
+    } finally {
+      svc.stop();
+    }
+  });
+
   it('PATCH /provider 到具体实例但槽位已满：任务保持排队（改派不等于插队）', async () => {
     const { promptCalls } = stubFetch();
     const env = createEnv();

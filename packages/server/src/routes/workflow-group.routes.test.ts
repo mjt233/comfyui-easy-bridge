@@ -16,7 +16,7 @@ import { ProviderService, type ProviderRow } from '../services/providers/provide
 import { TaskService } from '../services/task.service';
 import { startExecutionService, drainAllQueues } from '../services/execution.service';
 import { healthCheckConfig } from '../services/providers/health.service';
-import type { GroupDispatchPolicy } from '../services/providers/types';
+import type { GroupDispatchPolicy, GroupNoOnlineInstanceBehavior } from '../services/providers/types';
 import { dispatcherConfig } from '../services/dispatcher.service';
 
 /** 临时数据目录（暂存文件与数据库隔离用） */
@@ -24,19 +24,21 @@ let tempDataDir = '';
 
 /**
  * 打桩全局 fetch，模拟可用的 ComfyUI 执行端：
- * - /system_stats → 2xx（连通性探测通过）
+ * - /system_stats → 由 options.probeStatus 决定（缺省 2xx，连通性探测通过）
  * - /prompt → 返回递增的 prompt_id
  * - /upload/image → 返回上传后的文件名（并记录调用）
  * - /history/{id} → 返回执行成功
  * - /queue → 空队列（中断确认用）
+ * @param options probeStatus 连通性探测返回的状态码（用于模拟成员全部离线）
  * @returns 提交与上传调用记录
  */
-function stubFetch(): { promptCalls: string[]; uploadCalls: string[] } {
+function stubFetch(options?: { probeStatus?: number }): { promptCalls: string[]; uploadCalls: string[] } {
   const promptCalls: string[] = [];
   const uploadCalls: string[] = [];
+  const probeStatus = options?.probeStatus ?? 200;
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith('/system_stats')) return new Response('{}', { status: 200 });
+    if (url.endsWith('/system_stats')) return new Response('{}', { status: probeStatus });
     if (url.endsWith('/prompt')) {
       promptCalls.push(url);
       return new Response(JSON.stringify({ prompt_id: `pid-${promptCalls.length}` }), { status: 200 });
@@ -133,16 +135,18 @@ describe('分组（自动分配）执行路由', () => {
    * 建一个分组实例。
    * @param members 成员与权重
    * @param dispatchPolicy 调度策略（缺省按权重优先）
+   * @param noOnlineInstanceBehavior 无在线实例行为（缺省 queue：留在队列等待调度）
    * @returns 分组实例行
    */
   function setupGroup(
     members: Array<{ providerId: string; weight: number }>,
     dispatchPolicy: GroupDispatchPolicy = 'priority',
+    noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior = 'queue',
   ): ProviderRow {
     return providerService.create({
       name: 'G',
       type: 'group',
-      config: { dispatchPolicy, members },
+      config: { dispatchPolicy, members, noOnlineInstanceBehavior },
     });
   }
 
@@ -195,6 +199,79 @@ describe('分组（自动分配）执行路由', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('provider_no_available_instance');
+  });
+
+  it('fails the task right away when the error-mode group has no online member', async () => {
+    // 成员全部不可达：提交前的连通性探测全部失败 → 本轮判定「无在线实例」
+    const { promptCalls } = stubFetch({ probeStatus: 503 });
+    const member = setupMember('down');
+    const group = setupGroup([{ providerId: member.id, weight: 1 }], 'priority', 'error');
+    await setupWorkflow('wf-no-online', group.id);
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-no-online/execute')
+      .send({ prompt: 'cat' });
+
+    expect(res.status).toBe(200);
+    // 报错模式：任务不再排队等待，execute 响应即返回 failed
+    expect(res.body.status).toBe('failed');
+    const task = taskService.getById(res.body.task_id as string)!;
+    expect(task.status).toBe('failed');
+    expect(task.errorMessage).toContain('provider_no_online_instance');
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('keeps the task queued for the same unreachable group in the default queue mode', async () => {
+    const { promptCalls } = stubFetch({ probeStatus: 503 });
+    const member = setupMember('down-queue');
+    // 缺省行为：留在队列中等待调度
+    const group = setupGroup([{ providerId: member.id, weight: 1 }]);
+    await setupWorkflow('wf-offline-queue', group.id);
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-offline-queue/execute')
+      .send({ prompt: 'cat' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('queued');
+    const task = taskService.getById(res.body.task_id as string)!;
+    expect(task.errorMessage).toBeNull();
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('keeps the task queued in error mode when members are online but all slots are busy', async () => {
+    const { promptCalls } = stubFetch();
+    const member = setupMember('busy-error', 1);
+    const group = setupGroup([{ providerId: member.id, weight: 1 }], 'priority', 'error');
+    await setupWorkflow('wf-busy-error', group.id);
+
+    // 占满成员唯一的并发槽位（成员仍在线，只是没有空闲并发）
+    const occupying = taskService.create({
+      workflowId: 'wf-busy-error',
+      workflowName: 'wf',
+      aliasValues: '{}',
+      comfyuiUrl: 'http://busy-error:8188/prompt',
+      comfyuiRequestBody: '{"prompt":{}}',
+      comfyuiResponse: null,
+      promptId: 'pid-busy',
+      providerId: member.id,
+      providerName: 'busy-error',
+    });
+    taskService.setActualProvider(occupying.id, {
+      actualProviderId: member.id,
+      actualProviderName: 'busy-error',
+      promptId: 'pid-busy',
+    });
+
+    const res = await supertest(app)
+      .post('/api/workflows/wf-busy-error/execute')
+      .send({ prompt: 'cat' });
+
+    // 「在线」只看连通性：满载不算无在线实例，报错模式下同样排队等待
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('queued');
+    expect(taskService.getById(res.body.task_id as string)?.errorMessage).toBeNull();
+    expect(promptCalls).toHaveLength(0);
   });
 
   it('queues the task when every member slot is busy, then dispatches it after a slot frees up', async () => {
@@ -384,11 +461,14 @@ describe('分组（自动分配）执行路由', () => {
     expect(listRes.status).toBe(200);
     const groupSummary = (listRes.body as Array<{ id: string }>).find((p) => p.id === group.id) as unknown as {
       dispatchPolicy: string;
+      noOnlineInstanceBehavior: string;
       memberCount: number;
       availableSlots: number;
       members: Array<{ providerId: string; weight: number; availableSlots: number }>;
     };
     expect(groupSummary.dispatchPolicy).toBe('priority');
+    // 分组摘要回显无在线实例行为，供前端编辑弹窗预填
+    expect(groupSummary.noOnlineInstanceBehavior).toBe('queue');
     expect(groupSummary.memberCount).toBe(1);
     expect(groupSummary.availableSlots).toBe(2);
     expect(groupSummary.members[0]).toMatchObject({ providerId: member.id, weight: 4, availableSlots: 2 });

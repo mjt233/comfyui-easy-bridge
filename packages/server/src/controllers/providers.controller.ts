@@ -15,7 +15,7 @@ import type { ProviderConfig, ProviderType } from '../services/providers/types';
 function parseConfigBody(
   type: ProviderType,
   raw: unknown,
-): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown; autoCleanup?: unknown; inputDir?: unknown; dispatchPolicy?: unknown; members?: unknown } {
+): { baseUrl?: unknown; apiKey?: unknown; gpuSize?: unknown; autoCleanup?: unknown; inputDir?: unknown; dispatchPolicy?: unknown; members?: unknown; noOnlineInstanceBehavior?: unknown } {
   const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   if (type === 'runninghub') {
     return {
@@ -25,10 +25,11 @@ function parseConfigBody(
     };
   }
   if (type === 'group') {
-    // 分组：调度策略与成员列表原样透出，非法值交给 validateInput 规范化/拒绝
+    // 分组：调度策略、无在线实例行为与成员列表原样透出，非法值交给 validateInput 规范化/拒绝
     return {
       dispatchPolicy: obj.dispatchPolicy,
       members: obj.members,
+      noOnlineInstanceBehavior: obj.noOnlineInstanceBehavior,
     };
   }
   // autoCleanup/inputDir 原样透出，非法值交给 validateInput 规范化

@@ -65,6 +65,8 @@ describe('ProviderService 分组（group）支持', () => {
     expect(result.value.config).toEqual({
       dispatchPolicy: 'random',
       members: [{ providerId: a.id, weight: 5 }],
+      // 未显式提供时规范化为缺省值 queue（留在队列等待调度）
+      noOnlineInstanceBehavior: 'queue',
     });
   });
 
@@ -72,12 +74,68 @@ describe('ProviderService 分组（group）支持', () => {
     const result = service.validateInput({ name: 'G', type: 'group', config: {} });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.config).toEqual({ dispatchPolicy: 'priority', members: [] });
+    expect(result.value.config).toEqual({ dispatchPolicy: 'priority', members: [], noOnlineInstanceBehavior: 'queue' });
   });
 
-  it('validateInput rejects invalid dispatch policy and non-array members', () => {
+  it('validateInput accepts noOnlineInstanceBehavior error and it survives instantiation and summary', () => {
+    const a = createMember('a');
+    // error 是合法取值：校验通过并原样保留
+    const result = service.validateInput({
+      name: 'G',
+      type: 'group',
+      config: { members: [{ providerId: a.id, weight: 1 }], noOnlineInstanceBehavior: 'error' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((result.value.config as { noOnlineInstanceBehavior: string }).noOnlineInstanceBehavior).toBe('error');
+
+    const group = service.create({
+      name: 'G',
+      type: 'group',
+      config: { dispatchPolicy: 'priority', members: [{ providerId: a.id, weight: 1 }], noOnlineInstanceBehavior: 'error' },
+    });
+    // 实例化与对外摘要都要回显该行为（调度器据此决定任务去向，前端据此回显）
+    expect((service.instantiate(group) as GroupProvider).getNoOnlineInstanceBehavior()).toBe('error');
+    expect(service.toSummary(group).noOnlineInstanceBehavior).toBe('error');
+    expect((service.toSummary(group).config as { noOnlineInstanceBehavior: string }).noOnlineInstanceBehavior)
+      .toBe('error');
+  });
+
+  it('instantiate falls back to queue when noOnlineInstanceBehavior is missing or invalid (legacy rows)', () => {
+    const a = createMember('a');
+    // 模拟存量数据：config 里没有该字段
+    const legacy = service.create({
+      name: 'legacy',
+      type: 'group',
+      config: { dispatchPolicy: 'priority', members: [{ providerId: a.id, weight: 1 }] },
+    });
+    expect((service.instantiate(legacy) as GroupProvider).getNoOnlineInstanceBehavior()).toBe('queue');
+
+    // 模拟脏数据：字段取值非法
+    const dirty = service.create({
+      name: 'dirty',
+      type: 'group',
+      config: {
+        dispatchPolicy: 'priority',
+        members: [{ providerId: a.id, weight: 1 }],
+        noOnlineInstanceBehavior: 'boom' as unknown as 'queue',
+      },
+    });
+    expect((service.instantiate(dirty) as GroupProvider).getNoOnlineInstanceBehavior()).toBe('queue');
+    expect(service.toSummary(dirty).noOnlineInstanceBehavior).toBe('queue');
+  });
+
+  it('validateInput rejects invalid dispatch policy, invalid noOnlineInstanceBehavior and non-array members', () => {
     expect(service.validateInput({ name: 'G', type: 'group', config: { dispatchPolicy: 'weighted' } }).ok).toBe(false);
     expect(service.validateInput({ name: 'G', type: 'group', config: { members: 'x' } }).ok).toBe(false);
+    const invalid = service.validateInput({
+      name: 'G',
+      type: 'group',
+      config: { noOnlineInstanceBehavior: 'fail' },
+    });
+    expect(invalid.ok).toBe(false);
+    if (invalid.ok) return;
+    expect(invalid.error).toContain('noOnlineInstanceBehavior');
   });
 
   it('validateInput accepts the failover dispatch policy and it survives instantiation and summary', () => {
@@ -90,7 +148,11 @@ describe('ProviderService 分组（group）支持', () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.config).toEqual({ dispatchPolicy: 'failover', members: [{ providerId: a.id, weight: 2 }] });
+    expect(result.value.config).toEqual({
+      dispatchPolicy: 'failover',
+      members: [{ providerId: a.id, weight: 2 }],
+      noOnlineInstanceBehavior: 'queue',
+    });
 
     const group = service.create({
       name: 'G',

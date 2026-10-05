@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ProviderService } from './providers/provider.service';
 import { HealthService, healthCheckConfig } from './providers/health.service';
-import type { GroupDispatchPolicy } from './providers/types';
+import type { GroupDispatchPolicy, GroupNoOnlineInstanceBehavior } from './providers/types';
 import { DispatcherService, isPermanentSubmitError, rewriteUploadedFilenames } from './dispatcher.service';
 import { TaskService } from './task.service';
 import { buildTestDb } from './providers/test-db.helper';
@@ -77,16 +77,18 @@ describe('DispatcherService 统一队列调度', () => {
    * 建一个分组实例。
    * @param members 成员与权重
    * @param dispatchPolicy 调度策略
+   * @param noOnlineInstanceBehavior 无在线实例行为（缺省 queue：留在队列等待调度）
    * @returns 分组实例行
    */
   function createGroup(
     members: Array<{ providerId: string; weight: number }>,
     dispatchPolicy: GroupDispatchPolicy = 'priority',
+    noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior = 'queue',
   ) {
     return providerService.create({
       name: 'G',
       type: 'group',
-      config: { dispatchPolicy, members },
+      config: { dispatchPolicy, members, noOnlineInstanceBehavior },
     });
   }
 
@@ -404,6 +406,197 @@ describe('DispatcherService 统一队列调度', () => {
 
     // 成员均不可用：任务留在队列，等待冷却结束或成员恢复
     expect(taskService.getById(task.id)?.status).toBe('queued');
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('error mode fails the task when every member is already offline (cooldown)', async () => {
+    const { promptCalls } = stubFetch();
+    const a = createMember('a');
+    const b = createMember('b');
+    const group = createGroup(
+      [{ providerId: a.id, weight: 2 }, { providerId: b.id, weight: 1 }],
+      'priority',
+      'error',
+    );
+    // 两个成员都已进入健康冷却：分组内没有任何在线成员
+    healthService.markFailedNow(a.id, 'a down');
+    healthService.markFailedNow(b.id, 'b down');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    const after = taskService.getById(task.id)!;
+    // 报错模式：不再排队等待，任务立即置为失败并写明原因
+    expect(after.status).toBe('failed');
+    expect(after.errorMessage).toContain('provider_no_online_instance');
+    // 失败原因带出各成员的最近失败原因，便于直接定位
+    expect(after.errorMessage).toContain('a down');
+    expect(after.errorMessage).toContain('b down');
+    expect(after.completedAt).not.toBeNull();
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('error mode fails the task in the same round after every member fails the probe', async () => {
+    const { promptCalls } = stubFetch({ probeStatus: 503 });
+    const a = createMember('a');
+    const b = createMember('b');
+    const group = createGroup(
+      [{ providerId: a.id, weight: 2 }, { providerId: b.id, weight: 1 }],
+      'priority',
+      'error',
+    );
+    const task = createQueuedTask(group.id);
+
+    // 入队时健康表是乐观的（视为在线），本轮逐个探测全部失败后即判定「无在线实例」
+    await dispatcher.drainGroup(group.id);
+
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('failed');
+    expect(healthService.isHealthy(a.id)).toBe(false);
+    expect(healthService.isHealthy(b.id)).toBe(false);
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('error mode fails every queued task of the group when no member is online', async () => {
+    stubFetch();
+    const only = createMember('only');
+    const group = createGroup([{ providerId: only.id, weight: 1 }], 'priority', 'error');
+    healthService.markFailedNow(only.id, 'down');
+    const t1 = createQueuedTask(group.id);
+    const t2 = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 同一分组的排队任务都被判定为「无在线实例」，一并失败（不做队头阻塞）
+    expect(taskService.getById(t1.id)?.status).toBe('failed');
+    expect(taskService.getById(t2.id)?.status).toBe('failed');
+    expect(taskService.listQueuedByTarget(group.id)).toHaveLength(0);
+  });
+
+  it('error mode fails the task when the group lost every member at runtime', async () => {
+    stubFetch();
+    const member = createMember('gone');
+    const group = createGroup([{ providerId: member.id, weight: 1 }], 'priority', 'error');
+    const task = createQueuedTask(group.id);
+    // 排队期间成员被停用：分组已没有可参与自动分配的成员
+    providerService.update(member.id, { enabled: false });
+
+    await dispatcher.drainGroup(group.id);
+
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('failed');
+    expect(after.errorMessage).toContain('provider_no_online_instance');
+    // 无成员时也要给出可读原因（不能是空的原因串）
+    expect(after.errorMessage).toContain('没有可参与自动分配的成员');
+  });
+
+  it('error mode keeps the task queued when online members are merely at full capacity', async () => {
+    const { promptCalls } = stubFetch();
+    const only = createMember('only', 1);
+    const group = createGroup([{ providerId: only.id, weight: 1 }], 'priority', 'error');
+    // 唯一成员的槽位被别的任务占用：成员仍在线（可连通），只是并发已满
+    const occupying = createQueuedTask(group.id);
+    taskService.updateActualProvider(occupying.id, {
+      actualProviderId: only.id,
+      actualProviderName: 'only',
+      promptId: 'pid-occupied',
+    });
+
+    const task = createQueuedTask(group.id);
+    await dispatcher.drainGroup(group.id);
+
+    // 「在线」只看连通性：满载不算无在线实例，报错模式同样排队等待槽位释放
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('queued');
+    expect(after.errorMessage).toBeNull();
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('error mode still dispatches when only some members are offline', async () => {
+    const { promptCalls } = stubFetch();
+    const offline = createMember('offline');
+    const online = createMember('online');
+    const group = createGroup(
+      [{ providerId: offline.id, weight: 9 }, { providerId: online.id, weight: 1 }],
+      'priority',
+      'error',
+    );
+    // 高权重成员离线，但仍有在线成员：属于正常降级挑选，不触发报错
+    healthService.markFailedNow(offline.id, 'down');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('pending');
+    expect(after.actualProviderId).toBe(online.id);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('error mode under failover dispatches to the next tier when the top tier is offline', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high');
+    const low = createMember('low');
+    const group = createGroup(
+      [{ providerId: high.id, weight: 9 }, { providerId: low.id, weight: 1 }],
+      'failover',
+      'error',
+    );
+    healthService.markFailedNow(high.id, 'down');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 最高权重梯队离线但仍有在线成员：顺延到下一梯队，不算「无在线实例」
+    expect(taskService.getById(task.id)?.actualProviderId).toBe(low.id);
+    expect(promptCalls).toHaveLength(1);
+  });
+
+  it('error mode under failover fails the task when every tier is offline', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high');
+    const low = createMember('low');
+    const group = createGroup(
+      [{ providerId: high.id, weight: 9 }, { providerId: low.id, weight: 1 }],
+      'failover',
+      'error',
+    );
+    healthService.markFailedNow(high.id, 'high down');
+    healthService.markFailedNow(low.id, 'low down');
+    const task = createQueuedTask(group.id);
+
+    await dispatcher.drainGroup(group.id);
+
+    // 全部梯队离线：报错模式不再原地等待，任务直接失败
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('failed');
+    expect(after.errorMessage).toContain('provider_no_online_instance');
+    expect(promptCalls).toHaveLength(0);
+  });
+
+  it('failover error mode still waits (instead of failing) when the top tier is merely full', async () => {
+    const { promptCalls } = stubFetch();
+    const high = createMember('high', 1);
+    const low = createMember('low', 5);
+    const group = createGroup(
+      [{ providerId: high.id, weight: 9 }, { providerId: low.id, weight: 1 }],
+      'failover',
+      'error',
+    );
+    const occupying = createQueuedTask(group.id);
+    taskService.updateActualProvider(occupying.id, {
+      actualProviderId: high.id,
+      actualProviderName: 'high',
+      promptId: 'pid-occupied',
+    });
+
+    const task = createQueuedTask(group.id);
+    await dispatcher.drainGroup(group.id);
+
+    // 最高权重梯队在线但满载：灾备模式仍原地等待（报错模式不改变满载语义）
+    const after = taskService.getById(task.id)!;
+    expect(after.status).toBe('queued');
+    expect(after.errorMessage).toBeNull();
     expect(promptCalls).toHaveLength(0);
   });
 

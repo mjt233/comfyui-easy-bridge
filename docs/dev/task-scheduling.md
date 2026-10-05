@@ -104,7 +104,8 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia()` 返回的才�
 ### 5.1 配置与成员
 
 - `group` 类型**自身不执行任务**（无自有端点），作为自动分配载体：
-  配置为 `{ dispatchPolicy: 'priority'|'random'|'failover', members: [{ providerId, weight }] }`；
+  配置为 `{ dispatchPolicy: 'priority'|'random'|'failover', members: [{ providerId, weight }],
+  noOnlineInstanceBehavior: 'queue'|'error' }`（最后一项缺省 `'queue'`，语义见 5.4）；
 - **实例是否参与自动分配 = 它是否被某个分组选为成员**（没有独立的「可被自动分配」开关）；
   成员权重即算力性能权重（正数，缺省 1，非法值规范化为 1）；
 - 分组成员仅限 `comfyui` / `runninghub`（**分组不可嵌套**）；停用或已删除的成员自动跳过；
@@ -120,6 +121,10 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia()` 返回的才�
 | `priority`（缺省） | 在线且**有空闲槽位** | 按权重降序取第一个；权重相同时按分组成员配置顺序 | **降级**到下一个有空闲槽位的低权重成员 |
 | `random` | 在线且**有空闲槽位** | 等概率随机挑选一个 | 随机结果自然落到其他空闲成员上 |
 | `failover`（灾备模式） | **全部在线成员**（不看槽位） | 取权重最大的在线**梯队**；权重相同视为同一梯队，梯队内取配置顺序最靠前的有空闲槽位者 | **原地等待**，绝不降级；仅当梯队内成员全部离线时才顺延到下一个权重梯队 |
+
+- 「在线」**只看连通性**：成员未处于健康冷却期即视为在线，**与并发额度是否已满无关**。
+  成员能连通但槽位占满属于「有在线实例但没有空闲槽位」，此时**任何** `noOnlineInstanceBehavior`
+  取值下都继续排队等待槽位释放；
 
 - 灾备模式的「等待」= 任务留在 `queued` 队列、本轮调度结束，由槽位释放回调 / 健康巡检回调 /
   兜底扫描（30s）唤醒后重试；等待中的成员**不会**被写入「本轮已失败」集合，下一轮仍优先尝试它；
@@ -145,6 +150,30 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia()` 返回的才�
 - 提交探测成功、巡检探测成功都会清零失败计数并解除冷却；
 - **提交失败或媒体上传失败**按实例故障即时冷却（`markFailedNow`）并改投下一个候选，任务保留在队列。
 
+### 5.4 无在线实例行为（`noOnlineInstanceBehavior`）
+
+分组配置项，决定「分组内没有任何在线成员」时排队任务的去向；缺省 `'queue'`。
+
+判定时机：调度器为队头任务挑选成员时（`dispatcher.pickMember` 返回 `no-online-member`），
+即「在线且本轮未尝试失败的成员集合为空」——成员全部处于健康冷却期，或本轮逐个探测/提交失败后
+已全部被判为离线（`attemptedMembers`）。判定**基于即时证据**（同轮内的探测结果），没有额外宽限期。
+
+| 取值 | 语义 |
+|---|---|
+| `queue`（缺省） | 任务留在【待调度】队列等待调度，由槽位释放回调 / 健康巡检回调 / 兜底扫描（30s）唤醒后重试 |
+| `error` | 任务**立即置为 `failed`**（不排队等待）：写 `error_message`（含标记 `provider_no_online_instance` 与各成员最近失败原因）、释放暂存媒体、写 `completed_at` |
+
+- **满载不等于无在线实例**：`priority` / `random` 下在线成员槽位全满 → 留在队列；
+  `failover` 下最高权重梯队在线但满载 → 仍在原地等待。两种情况都**不**触发 `error`；
+- 部分成员离线不影响正常挑选：仍有在线成员时照常投递（`priority` 降级到低权重在线成员、
+  `failover` 顺延到下一权重梯队）；
+- `error` 模式下**同一分组的排队任务会被一并判定**（同一轮 drain 内逐条失败，受
+  `maxSubmitsPerRound` 上限保护），不做队头阻塞；
+- 该行为**仅作用于分组**：具体实例目标的任务仍按 3.2 的探测失败语义留在队列等待；
+- 注意：`error` 是「快失败」而非「重试」——成员恢复后这些任务**不会**自动重试，需要重新提交工作流
+  （或对仍处于 `queued` 的任务人工改派/插队）。分组成员全部进入冷却时（如整机房网络抖动），
+  该分组的排队任务会被立即置为失败，这是选择 `error` 的预期代价；
+
 ## 6. 人工干预（仅 queued 任务）
 
 分类原则：**「修改执行实例」只影响自动调度，「立即提交」才是插队**。
@@ -161,6 +190,8 @@ ComfyUI / RunningHub 的文件存储各自独立，`uploadMedia()` 返回的才�
 - 目标分组当前没有可分配成员时**允许保存**，但响应附带 `warning` 提示任务将持续排队，
   直到分组配置成员或再次调整执行实例；
 - 处理完立刻调度一轮并等待完成，响应中的 `status` 即调度后的真实状态。
+  因此改派到「`noOnlineInstanceBehavior = 'error'` 且当前无在线成员」的分组时，
+  响应 `status` 会是 `failed`（任务在改派后的调度轮中直接失败，见 5.4）；
 
 ### 6.2 立即提交（插队）
 
@@ -197,9 +228,9 @@ pending 任务先向执行端发中断并确认停止（走 `actualProviderId`�
 
 | 模块 | 职责 |
 |---|---|
-| `services/dispatcher.service.ts` | 统一调度器：实例队列 + 分组队列消费、候选挑选、提交、媒体上传与文件名回写、插队入口 |
+| `services/dispatcher.service.ts` | 统一调度器：实例队列 + 分组队列消费、候选挑选（区分「无在线成员」与「无空闲槽位」）、提交、媒体上传与文件名回写、插队入口、`error` 模式的「无在线实例」任务失败 |
 | `services/execution.service.ts` | 启动健康巡检与调度器；按实例维护状态跟踪器（WebSocket / 轮询终态、进度、输出回填、终态清理） |
-| `services/providers/group.provider.ts` | `GroupProvider`：分组配置与成员列表，执行类方法显式报错 |
+| `services/providers/group.provider.ts` | `GroupProvider`：分组配置（调度策略、无在线实例行为）、成员列表，执行类方法显式报错 |
 | `services/providers/health.service.ts` | 健康状态表、巡检定时器、冷却与恢复判定 |
 | `services/providers/provider.service.ts` | 实例 CRUD、成员解析（过滤/去重/排除分组）、摘要与空闲槽位 |
 | `services/task-staging.service.ts` | 暂存文件写入/读取/释放/过期清理 |
@@ -214,6 +245,7 @@ pending 任务先向执行端发中断并确认停止（走 `actualProviderId`�
 | code | 场景 |
 |---|---|
 | `provider_no_available_instance` | 提交到分组时该分组没有任何可参与自动分配的成员（400） |
+| `provider_no_online_instance` | **任务级失败标记**（写在任务 `error_message` 中，不是 HTTP 错误码）：分组 `noOnlineInstanceBehavior='error'` 且分组内没有任何在线成员时任务置 `failed`（无在线实例时 execute 仍返回 200 + `status: 'failed'`） |
 | `provider_not_configured` | 工作流/改派/插队显式指定的实例不存在、已停用或配置非法；插队目标为分组（400） |
 | `invalid_status` | 对非 queued 任务执行改派或插队、对终态任务执行取消（400） |
 | `comfyui_unreachable` | 插队提交时目标实例探测/上传失败（502，任务保持 queued） |
@@ -225,9 +257,9 @@ pending 任务先向执行端发中断并确认停止（走 `actualProviderId`�
 
 | 测试文件 | 覆盖点 |
 |---|---|
-| `services/dispatcher.service.test.ts` | 权重优先与同权重次序、跳过满载成员、全满留队列、探测失败改投、冷却成员跳过、随机策略、单轮填满并发、**灾备模式（满载等待不降级、槽位释放后由最高权重成员投递、同权重梯队取空闲者、离线顺延、探测失败本轮顺延、全离线留队列）**、4xx 永久失败、5xx 保留队列、并发触发不重复提交、缺请求体失败、停用分组/实例不消费队列、实例队列独立调度、插队（无视并发、探测失败保持排队）、暂存媒体上传与文件名回写 |
-| `services/providers/provider-group.test.ts` | 分组配置校验（策略白名单含 failover、权重规范化、成员去重）、成员解析过滤、实例化与摘要回显调度策略 |
+| `services/dispatcher.service.test.ts` | 权重优先与同权重次序、跳过满载成员、全满留队列、探测失败改投、冷却成员跳过、随机策略、单轮填满并发、**灾备模式（满载等待不降级、槽位释放后由最高权重成员投递、同权重梯队取空闲者、离线顺延、探测失败本轮顺延、全离线留队列）**、**无在线实例行为（error 模式：全冷却即失败并写明成员原因、同轮探测全失败即失败、同分组排队任务一并失败、部分成员离线仍正常投递；error 模式下在线但满载仍排队、failover 梯队满载仍等待、全梯队离线才失败）**、4xx 永久失败、5xx 保留队列、并发触发不重复提交、缺请求体失败、停用分组/实例不消费队列、实例队列独立调度、插队（无视并发、探测失败保持排队）、暂存媒体上传与文件名回写 |
+| `services/providers/provider-group.test.ts` | 分组配置校验（策略白名单含 failover、无在线实例行为白名单与缺省 queue、非法值拒绝、权重规范化、成员去重）、成员解析过滤、实例化与摘要回显调度策略与无在线实例行为、存量/脏数据回退 queue |
 | `services/execution.service.test.ts` | 启动消费队列、实例变更重建、显式触发全量调度、槽位释放后的周期性自愈、提交失败日志、状态探测数据源（RunningHub 平台接口 / ComfyUI history） |
-| `routes/task.routes.test.ts` | 改派到具体实例/分组（空分组警告、槽位满仍排队）、改派与插队的参数/状态校验、插队改道与不可达保持排队、取消触发的队列自愈 |
-| `routes/workflow-group.routes.test.ts` | 分组直接执行、无成员 400、满载入队后投递、**灾备模式满载等待后由最高权重成员执行**、按指定成员插队、插队到分组被拒、媒体暂存到成员上传、分组任务中断 |
+| `routes/task.routes.test.ts` | 改派到具体实例/分组（空分组警告、槽位满仍排队）、**改派到无在线实例的 error 分组即失败**、改派与插队的参数/状态校验、插队改道与不可达保持排队、取消触发的队列自愈 |
+| `routes/workflow-group.routes.test.ts` | 分组直接执行、无成员 400、满载入队后投递、**无在线实例行为（error 分组全离线 execute 即 status=failed、queue 分组同场景保持 queued、error 分组满载仍 queued）**、**灾备模式满载等待后由最高权重成员执行**、按指定成员插队、插队到分组被拒、媒体暂存到成员上传、分组任务中断、分组摘要回显无在线实例行为 |
 | `routes/workflow.routes.test.ts` | execute 统一入队（含动态构建、显式 providerId 覆盖、类型覆盖、媒体暂存与清理名单） |

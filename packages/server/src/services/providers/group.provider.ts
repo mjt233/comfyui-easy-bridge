@@ -3,6 +3,7 @@ import type {
   ExecutionProvider,
   ExecutionResult,
   GroupDispatchPolicy,
+  GroupNoOnlineInstanceBehavior,
   ProviderType,
   UploadFileInput,
 } from './types';
@@ -44,6 +45,7 @@ export class GroupProvider implements ExecutionProvider {
    * @param concurrency 并发上限字段（分组不使用，固定为 1）
    * @param dispatchPolicy 调度策略：priority（按权重优先）/ random（随机）/ failover（灾备模式）
    * @param members 已解析的成员列表
+   * @param noOnlineInstanceBehavior 无在线实例行为：queue（留在队列等待）/ error（直接报错置失败）
    */
   constructor(
     readonly id: string,
@@ -51,6 +53,7 @@ export class GroupProvider implements ExecutionProvider {
     readonly concurrency: number,
     private readonly dispatchPolicy: GroupDispatchPolicy,
     private readonly members: ResolvedGroupMember[],
+    private readonly noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior,
   ) {}
 
   /**
@@ -70,11 +73,16 @@ export class GroupProvider implements ExecutionProvider {
    * 返回分组类型化配置副本。
    * 分组配置不含敏感信息，可安全序列化。
    */
-  getConfig(): { dispatchPolicy: GroupDispatchPolicy; members: { providerId: string; weight: number }[] } {
+  getConfig(): {
+    dispatchPolicy: GroupDispatchPolicy;
+    members: { providerId: string; weight: number }[];
+    noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior;
+  } {
     return {
       dispatchPolicy: this.dispatchPolicy,
       // 仅输出成员 ID 与权重，不泄露成员实例的凭据
       members: this.members.map((m) => ({ providerId: m.providerId, weight: m.weight })),
+      noOnlineInstanceBehavior: this.noOnlineInstanceBehavior,
     };
   }
 
@@ -86,6 +94,16 @@ export class GroupProvider implements ExecutionProvider {
    */
   getDispatchPolicy(): GroupDispatchPolicy {
     return this.dispatchPolicy;
+  }
+
+  /**
+   * 当前「无在线实例」行为。
+   * 判定（是否没有任何在线成员）由调度器实现（见 dispatcher.pickMember / drainGroup）：
+   * 分组自身只负责携带配置。
+   * @returns 无在线实例行为
+   */
+  getNoOnlineInstanceBehavior(): GroupNoOnlineInstanceBehavior {
+    return this.noOnlineInstanceBehavior;
   }
 
   /**

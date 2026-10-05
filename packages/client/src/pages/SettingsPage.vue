@@ -223,7 +223,7 @@
             </v-radio-group>
           </template>
 
-          <!-- group 类型：调度策略 + 成员实例与算力性能权重 -->
+          <!-- group 类型：调度策略 + 无在线实例行为 + 成员实例与算力性能权重 -->
           <template v-else>
             <v-radio-group
               v-model="providerForm.dispatchPolicy"
@@ -243,6 +243,25 @@
                 value="failover"
               />
             </v-radio-group>
+
+            <v-radio-group
+              v-model="providerForm.noOnlineInstanceBehavior"
+              label="无在线实例时"
+              class="mb-1"
+            >
+              <v-radio
+                label="留在队列中等待调度（默认）"
+                value="queue"
+              />
+              <v-radio
+                label="直接报错（任务立即失败）"
+                value="error"
+              />
+            </v-radio-group>
+            <div class="text-caption text-medium-emphasis mb-2">
+              「在线」只看连通性：成员能连上即算在线，并发额度已满不算无在线实例（此时仍排队等待）。
+              选择「直接报错」后，分组成员全部连不通时任务立即失败并记录原因，不再排队等待。
+            </div>
 
             <v-divider class="my-4" />
 
@@ -424,6 +443,7 @@ import {
 import type {
   GroupDispatchPolicy,
   GroupMemberConfig,
+  GroupNoOnlineInstanceBehavior,
   ProviderConfigInput,
   ProviderSummary,
   ProviderType,
@@ -511,6 +531,8 @@ const providerForm = ref<{
   gpuSize: '24G' | '48G';
   /** group 调度策略 */
   dispatchPolicy: GroupDispatchPolicy;
+  /** group 无在线实例行为 */
+  noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior;
   /** group 成员实例与权重 */
   members: GroupMemberConfig[];
   /** 并发上限 */
@@ -526,6 +548,7 @@ const providerForm = ref<{
   apiKey: '',
   gpuSize: '24G',
   dispatchPolicy: 'priority',
+  noOnlineInstanceBehavior: 'queue',
   members: [],
   concurrency: 1,
   enabled: true,
@@ -850,6 +873,7 @@ function openCreateDialog() {
     apiKey: '',
     gpuSize: '24G',
     dispatchPolicy: 'priority',
+    noOnlineInstanceBehavior: 'queue',
     members: [],
     concurrency: 1,
     enabled: true,
@@ -869,8 +893,9 @@ function openEditDialog(p: ProviderSummary) {
   const autoCleanup = 'autoCleanup' in config && typeof config.autoCleanup === 'boolean' ? config.autoCleanup : false;
   const inputDir = 'inputDir' in config && typeof config.inputDir === 'string' ? config.inputDir : '';
   const gpuSize = 'gpuSize' in config && (config.gpuSize === '24G' || config.gpuSize === '48G') ? config.gpuSize : '24G';
-  // 分组配置：调度策略与成员（成员权重缺省 1）
+  // 分组配置：调度策略、无在线实例行为与成员（成员权重缺省 1）
   const dispatchPolicy = resolveDispatchPolicy(config);
+  const noOnlineInstanceBehavior = resolveNoOnlineInstanceBehavior(config);
   const members: GroupMemberConfig[] = 'members' in config && Array.isArray(config.members)
     ? config.members
       .filter((m) => m && typeof m.providerId === 'string' && m.providerId !== '')
@@ -886,6 +911,7 @@ function openEditDialog(p: ProviderSummary) {
     apiKey: '',
     gpuSize,
     dispatchPolicy,
+    noOnlineInstanceBehavior,
     members,
     concurrency: p.concurrency,
     enabled: p.enabled,
@@ -918,6 +944,17 @@ function resolveDispatchPolicy(config: ProviderConfigInput): GroupDispatchPolicy
 }
 
 /**
+ * 解析分组配置中的无在线实例行为，非法或缺失值回退缺省值 queue（留在队列等待调度）。
+ * @param config 提供商配置（判别联合，仅 group 配置携带 noOnlineInstanceBehavior）
+ * @returns 合法的无在线实例行为
+ */
+function resolveNoOnlineInstanceBehavior(config: ProviderConfigInput): GroupNoOnlineInstanceBehavior {
+  // config 为判别联合：用 in 收窄；服务端 config 损坏/存量数据缺失时按缺省值处理
+  const raw = 'noOnlineInstanceBehavior' in config ? config.noOnlineInstanceBehavior : undefined;
+  return raw === 'error' ? 'error' : 'queue';
+}
+
+/**
  * 生成实例列表子标题：
  * - 分组：调度策略 + 成员数 + 空闲并发槽位 + 启用状态
  * - 普通实例：类型 + 解析地址/GPU 档位 + 并发 + 启用状态（含自动清理标记与健康冷却提示）
@@ -927,7 +964,9 @@ function resolveDispatchPolicy(config: ProviderConfigInput): GroupDispatchPolicy
 function providerSubtitle(p: ProviderSummary): string {
   const status = p.enabled ? '已启用' : '已停用';
   if (p.type === 'group') {
-    return `分组 · ${dispatchPolicyLabel(p.dispatchPolicy)} · ${p.memberCount} 个成员 · 空闲并发 ${p.availableSlots} · ${status}`;
+    // 仅「直接报错」时标注，避免默认值的噪声
+    const noOnline = p.noOnlineInstanceBehavior === 'error' ? ' · 无在线实例报错' : '';
+    return `分组 · ${dispatchPolicyLabel(p.dispatchPolicy)}${noOnline} · ${p.memberCount} 个成员 · 空闲并发 ${p.availableSlots} · ${status}`;
   }
   const typeLabel = p.type === 'runninghub' ? 'RunningHub' : 'ComfyUI 原生';
   const config = p.config;
@@ -956,6 +995,8 @@ function buildConfigPayload(): ProviderConfigInput {
   if (providerForm.value.type === 'group') {
     return {
       dispatchPolicy: providerForm.value.dispatchPolicy,
+      // 无在线实例行为：queue（默认，留在队列等待）/ error（直接报错置任务失败）
+      noOnlineInstanceBehavior: providerForm.value.noOnlineInstanceBehavior,
       // 权重非法（<=0/NaN）时回退 1，与后端规范化保持一致
       members: providerForm.value.members.map((m) => ({
         providerId: m.providerId,

@@ -1295,7 +1295,10 @@ async function confirmExecute() {
       // 本次执行显式指定的提供商；空串 = 缺省（后端按 工作流配置 → 全局默认 解析）
       executeProviderId.value || null,
     );
-    snackbar.value = { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
+    snackbar.value = result.status === 'failed'
+      // 调度阶段即失败（如分组「无在线实例时直接报错」）：据实提示，避免"已提交"的误导
+      ? { show: true, text: '任务执行失败（详见任务日志）', color: 'error' }
+      : { show: true, text: `任务已提交 (${result.task_id.slice(0, 8)}...)`, color: 'success' };
     executeDialog.value = false;
   } catch {
     snackbar.value = { show: true, text: '执行失败', color: 'error' };

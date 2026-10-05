@@ -10,6 +10,15 @@ export type ProviderType = 'comfyui' | 'runninghub' | 'group';
 export type GroupDispatchPolicy = 'priority' | 'random' | 'failover';
 
 /**
+ * 分组「无在线实例」行为。
+ * 「在线」只看连通性：成员未处于健康冷却期即视为在线，不考虑并发额度是否已满
+ * （能连通但槽位占满属于「有在线实例但无空闲槽位」，两种取值下都继续排队等待）。
+ * - queue: 分组内没有任何在线成员时任务留在队列等待调度（缺省值）
+ * - error: 分组内没有任何在线成员时任务立即置为失败（写失败原因，不再排队等待）
+ */
+export type GroupNoOnlineInstanceBehavior = 'queue' | 'error';
+
+/**
  * 分组成员配置。
  * 成员资格本身表达「该实例参与自动分配」：不在任何分组中的实例不会被自动分配。
  */
@@ -30,6 +39,8 @@ export interface GroupProviderConfig {
   dispatchPolicy: GroupDispatchPolicy;
   /** 本组成员 */
   members: GroupMemberConfig[];
+  /** 无在线实例行为；缺省 'queue'（留在队列等待调度） */
+  noOnlineInstanceBehavior?: GroupNoOnlineInstanceBehavior;
 }
 
 /**
@@ -38,7 +49,7 @@ export interface GroupProviderConfig {
  *   - autoCleanup: 是否在任务终态后自动清理本次上传的资产文件（默认 false）
  *   - inputDir: ComfyUI 输入目录的本地文件系统路径（仅同机部署有效；为空时无法清理）
  * - runninghub: { apiKey, gpuSize }
- * - group: { dispatchPolicy, members }
+ * - group: { dispatchPolicy, members, noOnlineInstanceBehavior? }
  */
 export type ProviderConfigInput =
   | { baseUrl: string; autoCleanup?: boolean; inputDir?: string }
@@ -105,6 +116,8 @@ export interface ProviderSummary {
   trackingMode: 'websocket' | 'polling';
   /** 分组专属：调度策略；非分组为 null */
   dispatchPolicy: GroupDispatchPolicy | null;
+  /** 分组专属：无在线实例行为；非分组为 null */
+  noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior | null;
   /** 分组专属：成员数量；非分组为 0 */
   memberCount: number;
   /** 分组专属：全部成员的空闲并发槽位合计；非分组为 0 */

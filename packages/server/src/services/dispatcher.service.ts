@@ -65,6 +65,20 @@ export function rewriteUploadedFilenames(requestBodyJson: string, renames: Map<s
 }
 
 /**
+ * 分组成员挑选结果（判别联合）。
+ *
+ * 关键区分「无在线成员」与「有在线成员但无空闲槽位」：
+ * - no-online-member：分组内没有任何可连通的成员（全部处于健康冷却期，或本轮探测全部失败），
+ *   由调用方按分组的「无在线实例行为」处理：queue 留在队列等待、error 直接置任务失败；
+ * - no-free-slot：存在在线成员但其并发槽位已占满（含灾备模式最高权重梯队满载），
+ *   两种行为下都留在队列等待槽位释放——并发已满但在线的成员仍算在线。
+ */
+type MemberPickResult =
+  | { kind: 'member'; member: ResolvedGroupMember }
+  | { kind: 'no-free-slot' }
+  | { kind: 'no-online-member' };
+
+/**
  * 判断提交失败是否属于「永久性失败」。
  * 永久性失败（工作流本身有问题，如 payload 非法）不应改投其他成员，直接置任务失败；
  * 其余（网络异常、超时、5xx、实例级故障）视为瞬时故障，保留任务在队列中等待重试。
@@ -85,6 +99,9 @@ export function isPermanentSubmitError(message: string | null): boolean {
  *
  * 1. 分组队列（drainGroup）：取该分组最早的 queued 任务，
  *    在可分配成员中按策略（priority / random / failover 灾备模式）挑选成员提交；
+ *    分组内没有任何**在线**成员（连通性判定，与并发槽位无关）时按分组的
+ *    `noOnlineInstanceBehavior` 处理：queue（缺省）留在队列等待，error 直接把任务置为失败；
+ *    在线成员只是并发占满时两种配置下都继续排队等待槽位释放；
  * 2. 实例队列（drainProvider）：取锁定到该实例的最早的 queued 任务，
  *    实例有空闲槽位且探测通过时提交。
  *
@@ -147,6 +164,9 @@ export class DispatcherService {
 
   /**
    * 调度单个分组的队列，直到没有可提交的任务。
+   *
+   * 分组内没有任何在线成员时的去向由分组配置 `noOnlineInstanceBehavior` 决定：
+   * queue（缺省）留在队列等待成员恢复，error 直接把任务置为失败（无宽限期，成员恢复后不自动重试）。
    * @param groupId 分组实例 ID
    */
   async drainGroup(groupId: string): Promise<void> {
@@ -165,14 +185,20 @@ export class DispatcherService {
         // 本轮已经尝试过并失败的成员（探测失败/提交瞬时故障），避免重复尝试同一个
         const attempted = this.attemptedMembers.get(task.id) ?? new Set<string>();
         this.attemptedMembers.set(task.id, attempted);
-        const member = this.pickMember(group, attempted, task.id);
-        // 无可用候选（槽位全满或全部已在冷却/本轮已失败）：本轮结束，任务留在队列等待。
+        const pick = this.pickMember(group, attempted, task.id);
+        // 分组内没有任何在线成员（全部冷却中或本轮探测全部失败）：
+        // 行为为 error 时任务立即失败（不再排队等待），并继续处理队列中的下一条任务
+        if (pick.kind === 'no-online-member' && group.getNoOnlineInstanceBehavior() === 'error') {
+          this.failNoOnlineInstance(task.id, group);
+          continue;
+        }
+        // 留在队列等待：无在线成员（queue 行为）或在线成员槽位全满，本轮结束。
         // 灾备模式下「最高权重梯队满载」也走此分支：任务原地等待槽位释放，不降级到低权重成员
-        if (!member) {
+        if (pick.kind !== 'member') {
           this.attemptedMembers.delete(task.id);
           break;
         }
-        const outcome = await this.submitTask(task.id, member.provider, `group:${group.id}`);
+        const outcome = await this.submitTask(task.id, pick.member.provider, `group:${group.id}`);
         if (outcome === 'submitted') {
           this.forgetTaskAttempts(task.id);
           // 提交成功后继续尝试填满其余空闲槽位
@@ -180,7 +206,7 @@ export class DispatcherService {
         }
         if (outcome === 'member-failed') {
           // 当前成员故障（已进入冷却）：记住它，本轮改投其他可用成员
-          attempted.add(member.providerId);
+          attempted.add(pick.member.providerId);
           continue;
         }
         // 任务永久失败：清理记录，继续处理队列中的下一个任务
@@ -269,51 +295,53 @@ export class DispatcherService {
    * - priority：在「有空闲槽位」的候选中按算力性能权重降序取第一个；权重相同时按分组成员配置顺序
    * - random：在「有空闲槽位」的候选中等概率随机挑选
    * - failover（灾备模式）：只认权重最大的在线梯队；梯队内任一成员有空闲槽位即提交，
-   *   整个梯队满载时**原地等待**（返回 null，由调用方结束本轮），绝不降级到低权重成员；
+   *   整个梯队满载时**原地等待**（返回 no-free-slot，由调用方结束本轮），绝不降级到低权重成员；
    *   仅当该梯队离线（冷却中或本轮已失败）时才顺延到下一个权重梯队
    * @param group 分组 provider
    * @param attempted 本轮已尝试失败的成员 ID 集合
    * @param taskId 队头任务 ID（仅供灾备模式的等待日志去重使用）
-   * @returns 选中的成员；无可用候选或灾备模式需等待槽位释放时返回 null
+   * @returns 挑选结果：选中成员 / 在线成员无空闲槽位 / 无任何在线成员
    */
-  private pickMember(group: GroupProvider, attempted: Set<string>, taskId: string): ResolvedGroupMember | null {
+  private pickMember(group: GroupProvider, attempted: Set<string>, taskId: string): MemberPickResult {
     // 在线且本轮未失败过的成员，按权重降序稳定排序（同权重保持分组成员配置顺序）
     const online = group.listMembers()
       .filter((member) => !attempted.has(member.providerId) && this.healthService.isHealthy(member.providerId))
       .sort((a, b) => b.weight - a.weight);
-    if (online.length === 0) return null;
+    // 一个在线成员都没有：交由调用方按「无在线实例行为」处理（等待或直接报错）
+    if (online.length === 0) return { kind: 'no-online-member' };
 
     // 灾备模式：候选集合必须包含满载成员（否则会误判为「无候选」而静默降级），故单独挑选
     if (group.getDispatchPolicy() === 'failover') {
       return this.pickFailoverMember(online, taskId);
     }
 
-    // priority / random：仅在有空闲槽位的在线成员中挑选
+    // priority / random：仅在有空闲槽位的在线成员中挑选。
+    // 在线但满载不等于「无在线实例」：两种行为下都留在队列等待槽位释放
     const available = online.filter((member) => this.slotsOf(member.provider) > 0);
-    if (available.length === 0) return null;
+    if (available.length === 0) return { kind: 'no-free-slot' };
 
     if (group.getDispatchPolicy() === 'random') {
       // 随机策略：等概率挑选一个可用候选
       const index = Math.floor(Math.random() * available.length);
-      return available[index];
+      return { kind: 'member', member: available[index] };
     }
 
     // 按权重优先：已按权重降序排序，取第一个（权重相同时即配置顺序最靠前者）
-    return available[0];
+    return { kind: 'member', member: available[0] };
   }
 
   /**
    * 灾备模式的成员挑选：固定使用权重最大的在线梯队。
    *
    * 权重相同的成员构成同一优先级梯队，梯队内优先使用有空闲槽位的成员（同权重按配置顺序取第一个空闲者）；
-   * 整个梯队都满载时返回 null，让任务留在队列**等待槽位释放**——这正是灾备模式与 priority 的核心差异：
+   * 整个梯队都满载时返回 no-free-slot，让任务留在队列**等待槽位释放**——这正是灾备模式与 priority 的核心差异：
    * 不会因为满载而降级使用低权重成员。只有当梯队内成员全部离线（冷却中或本轮已失败）时，
-   * 调用方的下一轮挑选才会顺延到下一个权重梯队。
+   * 调用方的下一轮挑选才会顺延到下一个权重梯队（全部梯队都离线时由 pickMember 判为无在线成员）。
    * @param online 在线且本轮未失败过的成员（已按权重降序排序，首项即最高权重）
    * @param taskId 队头任务 ID（等待日志去重用）
-   * @returns 选中的成员；最高权重梯队满载需等待时返回 null
+   * @returns 挑选结果：选中成员 / 最高权重梯队满载需等待
    */
-  private pickFailoverMember(online: ResolvedGroupMember[], taskId: string): ResolvedGroupMember | null {
+  private pickFailoverMember(online: ResolvedGroupMember[], taskId: string): MemberPickResult {
     // 排序后首项的权重即最高权重，同权重成员构成一个梯队
     const topWeight = online[0].weight;
     const tier = online.filter((member) => member.weight === topWeight);
@@ -323,13 +351,37 @@ export class DispatcherService {
     if (free) {
       // 任务已脱离等待状态：清理去重记录，便于它下次因满载而等待时重新提示
       this.failoverWaitLogged.delete(taskId);
-      return free;
+      return { kind: 'member', member: free };
     }
 
     // 梯队整体满载：不降级到低权重成员，任务留在队列等待槽位释放，
     // 由槽位释放回调 / 健康巡检回调 / 兜底扫描唤醒后重试
     this.logFailoverWait(taskId, tier);
-    return null;
+    return { kind: 'no-free-slot' };
+  }
+
+  /**
+   * 把任务置为「无在线实例」失败（分组配置 noOnlineInstanceBehavior = 'error' 时的行为）。
+   * 失败原因带上每个成员的最近一次失败原因，便于直接定位是哪个实例连不通；
+   * 报错模式下不等待成员恢复（无宽限期），成员恢复后任务也不会自动重试。
+   * @param taskId 任务 ID（须为 queued 状态）
+   * @param group 目标分组
+   */
+  private failNoOnlineInstance(taskId: string, group: GroupProvider): void {
+    const members = group.listMembers();
+    // 汇总各成员的最近失败原因（从未探测过的成员给出占位说明）；
+    // 分组已无任何可参与自动分配的成员（运行期被全部停用/删除）时给出明确说明，避免错误信息为空
+    const detail = members.length === 0
+      ? '分组没有可参与自动分配的成员'
+      : members
+        .map((member) => `${member.providerName}: ${this.healthService.getSnapshot(member.providerId).lastError ?? '不可用'}`)
+        .join('；');
+    const errorMessage = `无在线实例（provider_no_online_instance）：${detail}`;
+    this.taskService.updateStatus(taskId, { status: 'failed', errorMessage });
+    // 任务不会再提交，暂存媒体无需保留
+    void releaseStaged(taskId);
+    this.forgetTaskAttempts(taskId);
+    console.warn(`[Dispatcher:group:${group.id}] task ${taskId} failed: no online instance (${detail})`);
   }
 
   /**

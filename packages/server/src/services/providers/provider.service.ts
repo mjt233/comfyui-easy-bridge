@@ -9,6 +9,7 @@ import type { HealthService } from './health.service';
 import type {
   ExecutionProvider,
   GroupDispatchPolicy,
+  GroupNoOnlineInstanceBehavior,
   GroupProviderConfig,
   ProviderConfig,
   ProviderType,
@@ -97,6 +98,8 @@ export interface ProviderSummary {
   trackingMode: 'websocket' | 'polling';
   /** 分组专属：调度策略；非分组为 null */
   dispatchPolicy: GroupDispatchPolicy | null;
+  /** 分组专属：无在线实例行为；非分组为 null */
+  noOnlineInstanceBehavior: GroupNoOnlineInstanceBehavior | null;
   /** 分组专属：成员数量；非分组为 0 */
   memberCount: number;
   /** 分组专属：全部成员的空闲并发槽位合计；非分组为 0 */
@@ -115,6 +118,12 @@ const DISPATCH_POLICIES: readonly GroupDispatchPolicy[] = ['priority', 'random',
 
 /** 默认调度策略：按权重优先 */
 const DEFAULT_DISPATCH_POLICY: GroupDispatchPolicy = 'priority';
+
+/** 无在线实例行为白名单 */
+const NO_ONLINE_INSTANCE_BEHAVIORS: readonly GroupNoOnlineInstanceBehavior[] = ['queue', 'error'];
+
+/** 默认无在线实例行为：留在队列中等待调度 */
+const DEFAULT_NO_ONLINE_INSTANCE_BEHAVIOR: GroupNoOnlineInstanceBehavior = 'queue';
 
 /** 默认算力性能权重 */
 const DEFAULT_MEMBER_WEIGHT = 1;
@@ -337,7 +346,11 @@ export class ProviderService {
     // 配置非法（members 非数组）时无法实例化
     if (members === null) return null;
     const policy = DISPATCH_POLICIES.includes(config.dispatchPolicy) ? config.dispatchPolicy : DEFAULT_DISPATCH_POLICY;
-    return new GroupProvider(row.id, row.name, row.concurrency, policy, members);
+    // 旧数据没有该字段（或取值非法）时回退默认值，保证存量分组的排队语义不变
+    const rawBehavior = config.noOnlineInstanceBehavior;
+    const behavior: GroupNoOnlineInstanceBehavior =
+      rawBehavior === 'queue' || rawBehavior === 'error' ? rawBehavior : DEFAULT_NO_ONLINE_INSTANCE_BEHAVIOR;
+    return new GroupProvider(row.id, row.name, row.concurrency, policy, members, behavior);
   }
 
   /**
@@ -470,7 +483,7 @@ export class ProviderService {
   }
 
   /**
-   * 构建分组摘要的专属字段（调度策略、成员明细、空闲槽位合计）。
+   * 构建分组摘要的专属字段（调度策略、无在线实例行为、成员明细、空闲槽位合计）。
    * @param row 分组实例行
    * @param healthService 健康检测服务；缺省时跳过健康判定
    * @returns 分组专属摘要字段
@@ -478,14 +491,15 @@ export class ProviderService {
   private buildGroupSummaryFields(
     row: ProviderRow,
     healthService?: HealthService,
-  ): Pick<ProviderSummary, 'dispatchPolicy' | 'memberCount' | 'availableSlots' | 'members'> {
+  ): Pick<ProviderSummary, 'dispatchPolicy' | 'noOnlineInstanceBehavior' | 'memberCount' | 'availableSlots' | 'members'> {
     const group = this.resolveGroupById(row.id);
     if (!group) {
-      return { dispatchPolicy: null, memberCount: 0, availableSlots: 0, members: [] };
+      return { dispatchPolicy: null, noOnlineInstanceBehavior: null, memberCount: 0, availableSlots: 0, members: [] };
     }
     const members = group.listMembers().map((m) => this.buildMemberSummary(m, healthService));
     return {
       dispatchPolicy: group.getDispatchPolicy(),
+      noOnlineInstanceBehavior: group.getNoOnlineInstanceBehavior(),
       memberCount: members.length,
       availableSlots: members.reduce((sum, m) => sum + m.availableSlots, 0),
       members,
@@ -680,6 +694,7 @@ export class ProviderService {
   /**
    * 校验 group（分组）类型输入。
    * dispatchPolicy 缺省为 priority，取值为 priority / random / failover（灾备模式）；
+   * noOnlineInstanceBehavior 缺省为 queue（留在队列等待调度），取值为 queue / error（直接报错）；
    * members 缺省空数组，逐项规范化：
    * - 丢弃非对象条目与缺失 providerId 的条目
    * - 同一 providerId 重复出现时保留首次出现的权重
@@ -691,13 +706,24 @@ export class ProviderService {
    * @returns 校验结果
    */
   private validateGroupInput(name: string, raw: ProviderInputLike): ValidationResult {
-    const cfg = raw.config as { dispatchPolicy?: unknown; members?: unknown } | undefined;
+    const cfg = raw.config as {
+      dispatchPolicy?: unknown;
+      members?: unknown;
+      noOnlineInstanceBehavior?: unknown;
+    } | undefined;
     // dispatchPolicy 缺省 priority；显式提供非法值则拒绝
     const rawPolicy = cfg?.dispatchPolicy;
     if (rawPolicy !== undefined && !DISPATCH_POLICIES.includes(rawPolicy as GroupDispatchPolicy)) {
       return { ok: false, error: 'dispatchPolicy must be priority, random or failover' };
     }
     const dispatchPolicy = (rawPolicy as GroupDispatchPolicy | undefined) ?? DEFAULT_DISPATCH_POLICY;
+    // noOnlineInstanceBehavior 缺省 queue；显式提供非法值则拒绝
+    const rawBehavior = cfg?.noOnlineInstanceBehavior;
+    if (rawBehavior !== undefined && !NO_ONLINE_INSTANCE_BEHAVIORS.includes(rawBehavior as GroupNoOnlineInstanceBehavior)) {
+      return { ok: false, error: 'noOnlineInstanceBehavior must be queue or error' };
+    }
+    const noOnlineInstanceBehavior =
+      (rawBehavior as GroupNoOnlineInstanceBehavior | undefined) ?? DEFAULT_NO_ONLINE_INSTANCE_BEHAVIOR;
     // members 缺省空数组；显式提供非数组则拒绝
     if (cfg?.members !== undefined && !Array.isArray(cfg.members)) {
       return { ok: false, error: 'members must be an array' };
@@ -708,7 +734,7 @@ export class ProviderService {
       value: {
         name,
         type: 'group',
-        config: { dispatchPolicy, members },
+        config: { dispatchPolicy, members, noOnlineInstanceBehavior },
         // 分组自身不执行任务，并发上限字段无意义，固定为 1
         concurrency: 1,
         enabled: this.normalizeEnabled(raw.enabled),
@@ -774,7 +800,7 @@ export class ProviderService {
     // 分组专属字段：成员明细与空闲槽位合计
     const groupFields = type === 'group'
       ? this.buildGroupSummaryFields(row, healthService)
-      : { dispatchPolicy: null, memberCount: 0, availableSlots: 0, members: [] };
+      : { dispatchPolicy: null, noOnlineInstanceBehavior: null, memberCount: 0, availableSlots: 0, members: [] };
     // 实例自身健康状态：分组由其成员体现，故为 null
     const snapshot = type === 'group' ? null : healthService?.getSnapshot(row.id) ?? null;
     return {
